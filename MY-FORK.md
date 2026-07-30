@@ -51,7 +51,7 @@ personal customizations, backed up at
   it from `%LOCALAPPDATA%\Programs\t3code\resources\resource-monitor\`.
 - **Nightly version pin**: `version` in `apps/server`, `apps/desktop`, `apps/web`, and
   `packages/contracts` package.json is set to the published nightly (currently
-  `0.0.32-nightly.20260729.951`) so the app identifies as Nightly and device
+  `0.0.32-nightly.20260730.953`) so the app identifies as Nightly and device
   connections install a matching published `t3@<version>` CLI on remote machines.
   Refresh it after upstream updates with:
   `node scripts/update-release-package-versions.ts $(npm view t3 dist-tags.nightly)`.
