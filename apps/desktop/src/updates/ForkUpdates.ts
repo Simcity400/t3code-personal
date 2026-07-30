@@ -235,6 +235,17 @@ export const make = Effect.gen(function* () {
       );
     }
 
+    // Load the freshly built backend bundle once so Windows Defender's
+    // first-open scan of the thousands of files rewritten by install+build
+    // happens here, while the user is already waiting on the update, instead
+    // of adding a minute-plus stall to the next app launch. Best effort.
+    yield* setStep("Warming up the new build…");
+    const warmup = yield* resolveSpawnCommand("node", [
+      path.join(repoRoot, "apps/server/dist/bin.mjs"),
+      "--help",
+    ]);
+    yield* timedExit(warmup.command, warmup.args, { shell: warmup.shell }).pipe(Effect.ignore);
+
     yield* setStep("Backing up to your private repo…");
     yield* timedExit("git", ["push", "origin", "main"]).pipe(Effect.ignore);
 
