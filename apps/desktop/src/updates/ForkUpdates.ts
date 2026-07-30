@@ -8,6 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Path from "effect/Path";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
@@ -33,6 +34,19 @@ const FORK_APPLY_STEP_TIMEOUT = Duration.minutes(20);
 const CONFLICT_MESSAGE =
   "An official change overlaps one of your customizations, so this update needs a hand. " +
   'Open Claude Code in the project folder and say "finish the upstream merge".';
+
+const NIGHTLY_VERSION_PATTERN = /^\d+\.\d+\.\d+-nightly\.\d{8}\.\d+$/;
+const NPM_NIGHTLY_PROBE_SCRIPT =
+  "fetch('https://registry.npmjs.org/-/package/t3/dist-tags').then(function(r){return r.json()}).then(function(d){console.log(d.nightly)})";
+
+interface ForkCheckOutcome {
+  readonly commitsBehind: number;
+  readonly summary: string | null;
+  readonly updateAvailable: boolean;
+}
+
+const ManifestVersion = Schema.Struct({ version: Schema.optional(Schema.String) });
+const decodeManifestVersion = Schema.decodeEffect(Schema.fromJsonString(ManifestVersion));
 
 export class ForkUpdates extends Context.Service<
   ForkUpdates,
@@ -132,7 +146,7 @@ export const make = Effect.gen(function* () {
 
     const outcome = yield* Effect.gen(function* () {
       const fetchExit = yield* runExit("git", ["fetch", "upstream", "--quiet"]);
-      if (fetchExit !== 0) return Option.none<{ commitsBehind: number; summary: string | null }>();
+      if (fetchExit !== 0) return Option.none<ForkCheckOutcome>();
       const countRaw = yield* runCapture("git", ["rev-list", "--count", "HEAD..upstream/main"]);
       const parsed = Number.parseInt(countRaw.trim(), 10);
       const commitsBehind = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
@@ -140,13 +154,38 @@ export const make = Effect.gen(function* () {
         commitsBehind > 0
           ? (yield* runCapture("git", ["log", "-1", "--format=%s", "upstream/main"])).trim() || null
           : null;
-      return Option.some({ commitsBehind, summary });
+      // A nightly release can ship without new upstream commits (the official
+      // app's updater keys off the npm dist-tag, not git). Surface it so the
+      // update button appears here around the same time as the official
+      // update prompt; the apply flow re-pins the version even when the merge
+      // itself is a no-op. Only probed when git already has nothing to offer.
+      let releaseSummary: string | null = null;
+      if (commitsBehind === 0) {
+        const nightly = (yield* runCapture("node", ["-e", NPM_NIGHTLY_PROBE_SCRIPT]).pipe(
+          Effect.orElseSucceed(() => ""),
+        )).trim();
+        if (NIGHTLY_VERSION_PATTERN.test(nightly)) {
+          const manifestRaw = yield* fileSystem
+            .readFileString(path.join(repoRoot, "apps", "desktop", "package.json"))
+            .pipe(Effect.orElseSucceed(() => "{}"));
+          const pinned = yield* decodeManifestVersion(manifestRaw).pipe(
+            Effect.map((manifest) => manifest.version),
+            Effect.orElseSucceed(() => undefined),
+          );
+          if (pinned !== undefined && pinned !== nightly) {
+            releaseSummary = `nightly ${nightly} released`;
+          }
+        }
+      }
+      return Option.some({
+        commitsBehind,
+        summary: summary ?? releaseSummary,
+        updateAvailable: commitsBehind > 0 || releaseSummary !== null,
+      });
     }).pipe(
       Effect.timeoutOption(FORK_CHECK_TIMEOUT),
       Effect.map(Option.flatten),
-      Effect.catchCause(() =>
-        Effect.succeed(Option.none<{ commitsBehind: number; summary: string | null }>()),
-      ),
+      Effect.catchCause(() => Effect.succeed(Option.none<ForkCheckOutcome>())),
     );
 
     const checkedAt = yield* currentIsoTimestamp;
@@ -157,13 +196,13 @@ export const make = Effect.gen(function* () {
       return yield* updateState((s) => ({ ...s, status: "idle", checkedAt }));
     }
 
-    const { commitsBehind, summary } = outcome.value;
-    if (commitsBehind > 0) {
-      yield* logForkInfo("official update available", { commitsBehind });
+    const { commitsBehind, summary, updateAvailable } = outcome.value;
+    if (updateAvailable) {
+      yield* logForkInfo("official update available", { commitsBehind, summary });
     }
     return yield* updateState((s) => ({
       ...s,
-      status: commitsBehind > 0 ? "update-available" : "idle",
+      status: updateAvailable ? "update-available" : "idle",
       commitsBehind,
       latestSummary: summary,
       checkedAt,
@@ -221,11 +260,8 @@ export const make = Effect.gen(function* () {
     // offline checks just keep the current pin.
     yield* setStep("Matching the official nightly version…");
     yield* Effect.gen(function* () {
-      const nightly = (yield* runCapture("node", [
-        "-e",
-        "fetch('https://registry.npmjs.org/-/package/t3/dist-tags').then(function(r){return r.json()}).then(function(d){console.log(d.nightly)})",
-      ])).trim();
-      if (!/^\d+\.\d+\.\d+-nightly\.\d{8}\.\d+$/.test(nightly)) return;
+      const nightly = (yield* runCapture("node", ["-e", NPM_NIGHTLY_PROBE_SCRIPT])).trim();
+      if (!NIGHTLY_VERSION_PATTERN.test(nightly)) return;
       const stampExit = yield* runExit("node", [
         path.join(repoRoot, "scripts", "update-release-package-versions.ts"),
         nightly,

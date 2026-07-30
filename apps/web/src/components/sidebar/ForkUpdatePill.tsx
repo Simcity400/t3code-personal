@@ -62,10 +62,14 @@ export function ForkUpdatePill() {
 
   if (state.status !== "update-available") return null;
 
+  // commitsBehind 0 with update-available means a nightly release shipped
+  // without new upstream commits; updating re-pins the version to match it.
   const changeCount =
-    state.commitsBehind === 1
-      ? "1 new official change"
-      : `${state.commitsBehind} new official changes`;
+    state.commitsBehind === 0
+      ? "New official release"
+      : state.commitsBehind === 1
+        ? "1 new official change"
+        : `${state.commitsBehind} new official changes`;
   const tooltip = `${changeCount}${
     state.latestSummary ? ` — latest: ${state.latestSummary}` : ""
   }. Click to update and restart.`;
