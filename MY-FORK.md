@@ -6,7 +6,10 @@ personal customizations, backed up at
 
 ## Using it
 
-- **Start the app**: double-click `Launch T3 Code (My Version).cmd`
+- **Start the app**: double-click `Launch T3 Code (My Version).vbs` (silent — no
+  terminal window; the desktop "T3 Code (Nightly)" shortcut points here with the
+  nightly icon). `Launch T3 Code (My Version).cmd` does the same with a visible
+  terminal, useful when something fails to start.
 - **Get official updates**: double-click `Update T3 Code (My Version).cmd` — it pulls the
   latest official release, merges it with the customizations, rebuilds, and backs up to
   the private repo. If a merge conflict appears, open Claude Code in this folder and say
