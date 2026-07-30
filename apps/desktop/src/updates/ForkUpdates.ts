@@ -43,9 +43,15 @@ const NPM_NIGHTLY_PROBE_SCRIPT =
 
 interface ForkCheckOutcome {
   readonly commitsBehind: number;
+  readonly personalCommitsBehind: number;
   readonly summary: string | null;
   readonly updateAvailable: boolean;
 }
+
+const PERSONAL_CONFLICT_MESSAGE =
+  "Changes pushed from your other computer overlap this machine's edits, so this " +
+  'update needs a hand. Open Claude Code in the project folder and say "finish the ' +
+  'personal-changes merge".';
 
 const ManifestVersion = Schema.Struct({ version: Schema.optional(Schema.String) });
 const decodeManifestVersion = Schema.decodeEffect(Schema.fromJsonString(ManifestVersion));
@@ -73,6 +79,7 @@ const INITIAL_STATE: ForkUpdateState = {
   supported: false,
   status: "idle",
   commitsBehind: 0,
+  personalCommitsBehind: 0,
   latestSummary: null,
   step: null,
   message: null,
@@ -139,6 +146,16 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  const readPinnedVersion = Effect.gen(function* () {
+    const manifestRaw = yield* fileSystem
+      .readFileString(path.join(repoRoot, "apps", "desktop", "package.json"))
+      .pipe(Effect.orElseSucceed(() => "{}"));
+    return yield* decodeManifestVersion(manifestRaw).pipe(
+      Effect.map((manifest) => manifest.version),
+      Effect.orElseSucceed(() => undefined),
+    );
+  });
+
   const performCheck: Effect.Effect<ForkUpdateState> = Effect.gen(function* () {
     const state = yield* Ref.get(stateRef);
     if (!state.supported || (state.status !== "idle" && state.status !== "update-available")) {
@@ -147,49 +164,69 @@ export const make = Effect.gen(function* () {
     yield* updateState((s) => ({ ...s, status: "checking" }));
 
     const outcome = yield* Effect.gen(function* () {
-      // Release-gated: the official app prompts when the npm nightly dist-tag
-      // moves (it polls every 4 minutes), so this check keys off the same
-      // event at the same cadence — both machines then surface the update
-      // within the same few-minute window. Upstream commits that are not yet
-      // in a published nightly stay quiet; the Update cmd still applies them
-      // on demand.
-      const nightly = (yield* runCapture("node", ["-e", NPM_NIGHTLY_PROBE_SCRIPT])).trim();
-      if (!NIGHTLY_VERSION_PATTERN.test(nightly)) return Option.none<ForkCheckOutcome>();
-      const manifestRaw = yield* fileSystem
-        .readFileString(path.join(repoRoot, "apps", "desktop", "package.json"))
-        .pipe(Effect.orElseSucceed(() => "{}"));
-      const pinned = yield* decodeManifestVersion(manifestRaw).pipe(
-        Effect.map((manifest) => manifest.version),
-        Effect.orElseSucceed(() => undefined),
-      );
-      if (pinned === undefined || pinned === nightly) {
-        return Option.some<ForkCheckOutcome>({
-          commitsBehind: 0,
-          summary: null,
-          updateAvailable: false,
+      const countAgainst = (ref: string) =>
+        Effect.gen(function* () {
+          const countRaw = yield* runCapture("git", ["rev-list", "--count", `HEAD..${ref}`]).pipe(
+            Effect.orElseSucceed(() => "0"),
+          );
+          const parsed = Number.parseInt(countRaw.trim(), 10);
+          return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
         });
-      }
-      // A new nightly is out. Fetch upstream so the pill can say how many
-      // official changes ride along; the apply flow merges them and re-pins.
-      let commitsBehind = 0;
-      let summary: string | null = `nightly ${nightly} released`;
-      const fetchExit = yield* runExit("git", ["fetch", "upstream", "--quiet"]);
-      if (fetchExit === 0) {
-        const countRaw = yield* runCapture("git", [
-          "rev-list",
-          "--count",
-          "HEAD..upstream/main",
-        ]).pipe(Effect.orElseSucceed(() => "0"));
-        const parsed = Number.parseInt(countRaw.trim(), 10);
-        commitsBehind = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-        if (commitsBehind > 0) {
-          summary =
-            (yield* runCapture("git", ["log", "-1", "--format=%s", "upstream/main"]).pipe(
+
+      // Personal changes pushed from another machine (private backup remote).
+      // Not release-gated: they should surface on the next poll.
+      let personalCommitsBehind = 0;
+      let personalSummary: string | null = null;
+      const originFetchExit = yield* runExit("git", ["fetch", "origin", "--quiet"]);
+      if (originFetchExit === 0) {
+        personalCommitsBehind = yield* countAgainst("origin/main");
+        if (personalCommitsBehind > 0) {
+          personalSummary =
+            (yield* runCapture("git", ["log", "-1", "--format=%s", "origin/main"]).pipe(
               Effect.orElseSucceed(() => ""),
-            )).trim() || summary;
+            )).trim() || null;
         }
       }
-      return Option.some({ commitsBehind, summary, updateAvailable: true });
+
+      // Official updates are release-gated: the official app prompts when the
+      // npm nightly dist-tag moves (it polls every 4 minutes), so this check
+      // keys off the same event at the same cadence — machines then surface
+      // the update within the same few-minute window. Upstream commits that
+      // are not yet in a published nightly stay quiet; the Update cmd still
+      // applies them on demand.
+      const nightly = (yield* runCapture("node", ["-e", NPM_NIGHTLY_PROBE_SCRIPT]).pipe(
+        Effect.orElseSucceed(() => ""),
+      )).trim();
+      if (originFetchExit !== 0 && !NIGHTLY_VERSION_PATTERN.test(nightly)) {
+        // Both probes unreachable — treat as a transient failure and retry.
+        return Option.none<ForkCheckOutcome>();
+      }
+      let commitsBehind = 0;
+      let releaseSummary: string | null = null;
+      if (NIGHTLY_VERSION_PATTERN.test(nightly)) {
+        const pinned = yield* readPinnedVersion;
+        if (pinned !== undefined && pinned !== nightly) {
+          // A new nightly is out. Fetch upstream so the pill can say how many
+          // official changes ride along; the apply flow merges and re-pins.
+          releaseSummary = `nightly ${nightly} released`;
+          const fetchExit = yield* runExit("git", ["fetch", "upstream", "--quiet"]);
+          if (fetchExit === 0) {
+            commitsBehind = yield* countAgainst("upstream/main");
+            if (commitsBehind > 0) {
+              releaseSummary =
+                (yield* runCapture("git", ["log", "-1", "--format=%s", "upstream/main"]).pipe(
+                  Effect.orElseSucceed(() => ""),
+                )).trim() || releaseSummary;
+            }
+          }
+        }
+      }
+      return Option.some({
+        commitsBehind,
+        personalCommitsBehind,
+        summary: releaseSummary ?? personalSummary,
+        updateAvailable: releaseSummary !== null || personalCommitsBehind > 0,
+      });
     }).pipe(
       Effect.timeoutOption(FORK_CHECK_TIMEOUT),
       Effect.map(Option.flatten),
@@ -204,14 +241,15 @@ export const make = Effect.gen(function* () {
       return yield* updateState((s) => ({ ...s, status: "idle", checkedAt }));
     }
 
-    const { commitsBehind, summary, updateAvailable } = outcome.value;
+    const { commitsBehind, personalCommitsBehind, summary, updateAvailable } = outcome.value;
     if (updateAvailable) {
-      yield* logForkInfo("official update available", { commitsBehind, summary });
+      yield* logForkInfo("update available", { commitsBehind, personalCommitsBehind, summary });
     }
     return yield* updateState((s) => ({
       ...s,
       status: updateAvailable ? "update-available" : "idle",
       commitsBehind,
+      personalCommitsBehind,
       latestSummary: summary,
       checkedAt,
       message: null,
@@ -248,38 +286,68 @@ export const make = Effect.gen(function* () {
   const runApply: Effect.Effect<boolean> = Effect.gen(function* () {
     yield* logForkInfo("applying official update");
 
-    yield* setStep("Merging official changes…");
-    const mergeExit = yield* timedExit("git", ["merge", "upstream/main", "--no-edit"]);
-    if (mergeExit !== 0) {
-      yield* runExit("git", ["merge", "--abort"]).pipe(Effect.ignore);
-      yield* logForkWarning("fork update merge conflicted; aborted merge");
-      yield* updateState((s) => ({
-        ...s,
-        status: "conflict",
-        step: null,
-        message: CONFLICT_MESSAGE,
-      }));
-      return false;
+    // Personal changes pushed from another machine come in first so the
+    // upstream merge below sees the same base everywhere. A failed origin
+    // fetch just skips this step — official updates still apply.
+    yield* setStep("Syncing changes from your other machines…");
+    if ((yield* timedExit("git", ["fetch", "origin", "--quiet"])) === 0) {
+      const originMergeExit = yield* timedExit("git", ["merge", "origin/main", "--no-edit"]);
+      if (originMergeExit !== 0) {
+        yield* runExit("git", ["merge", "--abort"]).pipe(Effect.ignore);
+        yield* logForkWarning("personal-changes merge conflicted; aborted merge");
+        yield* updateState((s) => ({
+          ...s,
+          status: "conflict",
+          step: null,
+          message: PERSONAL_CONFLICT_MESSAGE,
+        }));
+        return false;
+      }
     }
 
-    // Keep the fork's version pin in sync with the published nightly: releases
-    // move the npm dist-tag even when upstream main gains no commits, and a
-    // stale pin makes connected devices report version drift. Best effort —
-    // offline checks just keep the current pin.
-    yield* setStep("Matching the official nightly version…");
-    yield* Effect.gen(function* () {
-      const nightly = (yield* runCapture("node", ["-e", NPM_NIGHTLY_PROBE_SCRIPT])).trim();
-      if (!NIGHTLY_VERSION_PATTERN.test(nightly)) return;
-      const stampExit = yield* runExit("node", [
-        path.join(repoRoot, "scripts", "update-release-package-versions.ts"),
-        nightly,
-      ]);
-      if (stampExit !== 0) return;
-      // Exits non-zero when the pin is already current; that's fine.
-      yield* runExit("git", ["commit", "-am", `chore(fork): pin nightly ${nightly}`]).pipe(
-        Effect.ignore,
-      );
-    }).pipe(Effect.timeoutOption(Duration.minutes(2)), Effect.ignore);
+    // Official changes stay release-gated here too: merge upstream and re-pin
+    // the version only when a published nightly is actually ahead of the pin.
+    // A personal-changes-only apply must not smuggle in unreleased commits.
+    const nightly = (yield* runCapture("node", ["-e", NPM_NIGHTLY_PROBE_SCRIPT]).pipe(
+      Effect.timeoutOption(Duration.minutes(2)),
+      Effect.map(Option.getOrElse(() => "")),
+      Effect.orElseSucceed(() => ""),
+    )).trim();
+    const pinned = yield* readPinnedVersion;
+    const releaseDrift =
+      NIGHTLY_VERSION_PATTERN.test(nightly) && pinned !== undefined && pinned !== nightly;
+
+    if (releaseDrift) {
+      yield* setStep("Merging official changes…");
+      yield* timedExit("git", ["fetch", "upstream", "--quiet"]);
+      const mergeExit = yield* timedExit("git", ["merge", "upstream/main", "--no-edit"]);
+      if (mergeExit !== 0) {
+        yield* runExit("git", ["merge", "--abort"]).pipe(Effect.ignore);
+        yield* logForkWarning("fork update merge conflicted; aborted merge");
+        yield* updateState((s) => ({
+          ...s,
+          status: "conflict",
+          step: null,
+          message: CONFLICT_MESSAGE,
+        }));
+        return false;
+      }
+
+      // Keep the version pin in sync with the published nightly so connected
+      // devices don't report version drift. Best effort.
+      yield* setStep("Matching the official nightly version…");
+      yield* Effect.gen(function* () {
+        const stampExit = yield* runExit("node", [
+          path.join(repoRoot, "scripts", "update-release-package-versions.ts"),
+          nightly,
+        ]);
+        if (stampExit !== 0) return;
+        // Exits non-zero when the pin is already current; that's fine.
+        yield* runExit("git", ["commit", "-am", `chore(fork): pin nightly ${nightly}`]).pipe(
+          Effect.ignore,
+        );
+      }).pipe(Effect.timeoutOption(Duration.minutes(2)), Effect.ignore);
+    }
 
     yield* setStep("Installing dependencies…");
     const install = yield* resolveSpawnCommand("pnpm", ["install"]);

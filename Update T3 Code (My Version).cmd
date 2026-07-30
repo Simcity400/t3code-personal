@@ -13,6 +13,11 @@ echo.
 git fetch upstream
 if errorlevel 1 goto :fail
 
+echo Syncing changes from your other machines...
+git fetch origin
+if not errorlevel 1 git merge origin/main --no-edit
+if errorlevel 1 goto :conflict
+
 git merge upstream/main --no-edit
 if errorlevel 1 goto :conflict
 

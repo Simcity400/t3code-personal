@@ -15,6 +15,25 @@ personal customizations, backed up at
   the private repo. If a merge conflict appears, open Claude Code in this folder and say
   "finish the upstream merge".
 
+## Setting up another computer
+
+1. Install Git, Node.js, and pnpm (`npm i -g pnpm`), and sign in to GitHub so the
+   private repo can be cloned.
+2. `git clone https://github.com/Simcity400/t3code-personal.git "T3 Code Personal"`
+3. Double-click `Setup T3 Code (My Version).cmd` in the clone — it wires the
+   `upstream` remote, writes `.env`, copies the resource-monitor sidecar from the
+   installed official app (if present), installs, builds, and puts a shortcut on the
+   desktop.
+4. Sign in to T3 Connect inside the app (encrypted credentials don't transfer between
+   machines).
+
+Machines stay in sync through the update pill: official nightlies appear on all
+machines within the same few-minute window, and personal changes pushed to the
+private repo from one machine appear on the others as "Update from your other
+computer" on the next 4-minute check. Conflicting personal edits made on two
+machines at once surface as an update conflict — open Claude Code and ask it to
+finish the merge.
+
 ## Customizations so far
 
 - **Color themes** (Settings → Appearance): Default, High contrast, Paper, Ocean — each

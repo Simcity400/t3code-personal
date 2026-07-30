@@ -62,14 +62,26 @@ export function ForkUpdatePill() {
 
   if (state.status !== "update-available") return null;
 
-  // commitsBehind 0 with update-available means a nightly release shipped
-  // without new upstream commits; updating re-pins the version to match it.
-  const changeCount =
-    state.commitsBehind === 0
-      ? "New official release"
-      : state.commitsBehind === 1
+  // Official part: commitsBehind 0 with update-available means a nightly
+  // release shipped without new upstream commits (updating re-pins the
+  // version). Personal part: commits another machine pushed to the private
+  // backup repo.
+  const parts: string[] = [];
+  if (state.commitsBehind > 0) {
+    parts.push(
+      state.commitsBehind === 1
         ? "1 new official change"
-        : `${state.commitsBehind} new official changes`;
+        : `${state.commitsBehind} new official changes`,
+    );
+  }
+  if (state.personalCommitsBehind > 0) {
+    parts.push(
+      state.personalCommitsBehind === 1
+        ? "1 change from your other computer"
+        : `${state.personalCommitsBehind} changes from your other computer`,
+    );
+  }
+  const changeCount = parts.length > 0 ? parts.join(" and ") : "New official release";
   const tooltip = `${changeCount}${
     state.latestSummary ? ` — latest: ${state.latestSummary}` : ""
   }. Click to update and restart.`;
@@ -87,7 +99,11 @@ export function ForkUpdatePill() {
               onClick={handleUpdate}
             >
               <DownloadIcon className="size-3.5" />
-              <span>Official update available</span>
+              <span>
+                {state.commitsBehind === 0 && state.personalCommitsBehind > 0
+                  ? "Update from your other computer"
+                  : "Official update available"}
+              </span>
             </button>
           }
         />
