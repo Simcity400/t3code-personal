@@ -56,9 +56,11 @@ personal customizations, backed up at
   `packages/contracts` package.json is pinned to the published npm nightly so the app
   identifies as Nightly and device connections install a matching published
   `t3@<version>` CLI on remote machines. Both update paths (the in-app updater and the
-  Update cmd) re-pin automatically after merging upstream. Nightly releases can move
-  without new upstream commits, so the app may briefly show version drift against an
-  auto-updated official install until the next update run; to re-pin manually:
+  Update cmd) re-pin automatically after merging upstream. The in-app update prompt is
+  release-gated: it appears when the published npm nightly moves (checked every 4
+  minutes, same cadence as official installs), so machines see update prompts in the
+  same window. Upstream commits not yet in a nightly don't prompt — run the Update cmd
+  to apply them early. To re-pin manually:
   `node scripts/update-release-package-versions.ts $(npm view t3 dist-tags.nightly)`
   then rebuild. Upstream version bumps may conflict with this pin during merges —
   resolve by re-running that command.

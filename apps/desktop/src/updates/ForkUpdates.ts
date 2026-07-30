@@ -27,7 +27,9 @@ import * as IpcChannels from "../ipc/channels.ts";
 // exclusive with this one — it requires isPackaged, this requires !isPackaged.
 
 const FORK_CHECK_STARTUP_DELAY = "20 seconds";
-const FORK_CHECK_POLL_INTERVAL = "30 minutes";
+// Matches DesktopUpdates' AUTO_UPDATE_POLL_INTERVAL so this machine surfaces a
+// new nightly in the same window as officially installed apps elsewhere.
+const FORK_CHECK_POLL_INTERVAL = "4 minutes";
 const FORK_CHECK_TIMEOUT = Duration.minutes(3);
 const FORK_APPLY_STEP_TIMEOUT = Duration.minutes(20);
 
@@ -145,43 +147,49 @@ export const make = Effect.gen(function* () {
     yield* updateState((s) => ({ ...s, status: "checking" }));
 
     const outcome = yield* Effect.gen(function* () {
+      // Release-gated: the official app prompts when the npm nightly dist-tag
+      // moves (it polls every 4 minutes), so this check keys off the same
+      // event at the same cadence — both machines then surface the update
+      // within the same few-minute window. Upstream commits that are not yet
+      // in a published nightly stay quiet; the Update cmd still applies them
+      // on demand.
+      const nightly = (yield* runCapture("node", ["-e", NPM_NIGHTLY_PROBE_SCRIPT])).trim();
+      if (!NIGHTLY_VERSION_PATTERN.test(nightly)) return Option.none<ForkCheckOutcome>();
+      const manifestRaw = yield* fileSystem
+        .readFileString(path.join(repoRoot, "apps", "desktop", "package.json"))
+        .pipe(Effect.orElseSucceed(() => "{}"));
+      const pinned = yield* decodeManifestVersion(manifestRaw).pipe(
+        Effect.map((manifest) => manifest.version),
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (pinned === undefined || pinned === nightly) {
+        return Option.some<ForkCheckOutcome>({
+          commitsBehind: 0,
+          summary: null,
+          updateAvailable: false,
+        });
+      }
+      // A new nightly is out. Fetch upstream so the pill can say how many
+      // official changes ride along; the apply flow merges them and re-pins.
+      let commitsBehind = 0;
+      let summary: string | null = `nightly ${nightly} released`;
       const fetchExit = yield* runExit("git", ["fetch", "upstream", "--quiet"]);
-      if (fetchExit !== 0) return Option.none<ForkCheckOutcome>();
-      const countRaw = yield* runCapture("git", ["rev-list", "--count", "HEAD..upstream/main"]);
-      const parsed = Number.parseInt(countRaw.trim(), 10);
-      const commitsBehind = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-      const summary =
-        commitsBehind > 0
-          ? (yield* runCapture("git", ["log", "-1", "--format=%s", "upstream/main"])).trim() || null
-          : null;
-      // A nightly release can ship without new upstream commits (the official
-      // app's updater keys off the npm dist-tag, not git). Surface it so the
-      // update button appears here around the same time as the official
-      // update prompt; the apply flow re-pins the version even when the merge
-      // itself is a no-op. Only probed when git already has nothing to offer.
-      let releaseSummary: string | null = null;
-      if (commitsBehind === 0) {
-        const nightly = (yield* runCapture("node", ["-e", NPM_NIGHTLY_PROBE_SCRIPT]).pipe(
-          Effect.orElseSucceed(() => ""),
-        )).trim();
-        if (NIGHTLY_VERSION_PATTERN.test(nightly)) {
-          const manifestRaw = yield* fileSystem
-            .readFileString(path.join(repoRoot, "apps", "desktop", "package.json"))
-            .pipe(Effect.orElseSucceed(() => "{}"));
-          const pinned = yield* decodeManifestVersion(manifestRaw).pipe(
-            Effect.map((manifest) => manifest.version),
-            Effect.orElseSucceed(() => undefined),
-          );
-          if (pinned !== undefined && pinned !== nightly) {
-            releaseSummary = `nightly ${nightly} released`;
-          }
+      if (fetchExit === 0) {
+        const countRaw = yield* runCapture("git", [
+          "rev-list",
+          "--count",
+          "HEAD..upstream/main",
+        ]).pipe(Effect.orElseSucceed(() => "0"));
+        const parsed = Number.parseInt(countRaw.trim(), 10);
+        commitsBehind = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+        if (commitsBehind > 0) {
+          summary =
+            (yield* runCapture("git", ["log", "-1", "--format=%s", "upstream/main"]).pipe(
+              Effect.orElseSucceed(() => ""),
+            )).trim() || summary;
         }
       }
-      return Option.some({
-        commitsBehind,
-        summary: summary ?? releaseSummary,
-        updateAvailable: commitsBehind > 0 || releaseSummary !== null,
-      });
+      return Option.some({ commitsBehind, summary, updateAvailable: true });
     }).pipe(
       Effect.timeoutOption(FORK_CHECK_TIMEOUT),
       Effect.map(Option.flatten),
