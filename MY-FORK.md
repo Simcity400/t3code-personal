@@ -50,13 +50,15 @@ personal customizations, backed up at
   `apps/desktop/resources/resource-monitor/` (gitignored). If it goes missing, re-copy
   it from `%LOCALAPPDATA%\Programs\t3code\resources\resource-monitor\`.
 - **Nightly version pin**: `version` in `apps/server`, `apps/desktop`, `apps/web`, and
-  `packages/contracts` package.json is set to the published nightly (currently
-  `0.0.32-nightly.20260730.953`) so the app identifies as Nightly and device
-  connections install a matching published `t3@<version>` CLI on remote machines.
-  Refresh it after upstream updates with:
-  `node scripts/update-release-package-versions.ts $(npm view t3 dist-tags.nightly)`.
-  Upstream version bumps may conflict with this pin during updates — resolve by
-  re-running that command.
+  `packages/contracts` package.json is pinned to the published npm nightly so the app
+  identifies as Nightly and device connections install a matching published
+  `t3@<version>` CLI on remote machines. Both update paths (the in-app updater and the
+  Update cmd) re-pin automatically after merging upstream. Nightly releases can move
+  without new upstream commits, so the app may briefly show version drift against an
+  auto-updated official install until the next update run; to re-pin manually:
+  `node scripts/update-release-package-versions.ts $(npm view t3 dist-tags.nightly)`
+  then rebuild. Upstream version bumps may conflict with this pin during merges —
+  resolve by re-running that command.
 
 ## Repo layout
 

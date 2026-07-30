@@ -17,6 +17,15 @@ git merge upstream/main --no-edit
 if errorlevel 1 goto :conflict
 
 echo.
+echo Matching the official nightly version...
+set "NIGHTLY="
+for /f "usebackq delims=" %%v in (`node -e "fetch('https://registry.npmjs.org/-/package/t3/dist-tags').then(function(r){return r.json()}).then(function(d){console.log(d.nightly)})"`) do set "NIGHTLY=%%v"
+if not defined NIGHTLY goto :afterstamp
+node scripts/update-release-package-versions.ts %NIGHTLY%
+git commit -am "chore(fork): pin nightly %NIGHTLY%" >nul 2>&1
+:afterstamp
+
+echo.
 echo Installing dependencies...
 call pnpm install
 if errorlevel 1 goto :fail

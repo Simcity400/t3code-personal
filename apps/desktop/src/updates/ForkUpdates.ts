@@ -215,6 +215,28 @@ export const make = Effect.gen(function* () {
       return false;
     }
 
+    // Keep the fork's version pin in sync with the published nightly: releases
+    // move the npm dist-tag even when upstream main gains no commits, and a
+    // stale pin makes connected devices report version drift. Best effort —
+    // offline checks just keep the current pin.
+    yield* setStep("Matching the official nightly version…");
+    yield* Effect.gen(function* () {
+      const nightly = (yield* runCapture("node", [
+        "-e",
+        "fetch('https://registry.npmjs.org/-/package/t3/dist-tags').then(function(r){return r.json()}).then(function(d){console.log(d.nightly)})",
+      ])).trim();
+      if (!/^\d+\.\d+\.\d+-nightly\.\d{8}\.\d+$/.test(nightly)) return;
+      const stampExit = yield* runExit("node", [
+        path.join(repoRoot, "scripts", "update-release-package-versions.ts"),
+        nightly,
+      ]);
+      if (stampExit !== 0) return;
+      // Exits non-zero when the pin is already current; that's fine.
+      yield* runExit("git", ["commit", "-am", `chore(fork): pin nightly ${nightly}`]).pipe(
+        Effect.ignore,
+      );
+    }).pipe(Effect.timeoutOption(Duration.minutes(2)), Effect.ignore);
+
     yield* setStep("Installing dependencies…");
     const install = yield* resolveSpawnCommand("pnpm", ["install"]);
     const installExit = yield* timedExit(install.command, install.args, {
