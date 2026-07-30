@@ -84,6 +84,7 @@ describe("theme failure handling", () => {
     vi.stubGlobal("document", {
       documentElement: {
         classList: { toggle: vi.fn() },
+        dataset: {},
       },
     });
 
@@ -141,14 +142,16 @@ describe("theme failure handling", () => {
     readSnapshot?.();
     readSnapshot?.();
 
-    expect(getItem).toHaveBeenCalledTimes(1);
+    // Two reads per attempt: the theme key and the color-theme key. Both
+    // cache their failure until a relevant storage event arrives.
+    expect(getItem).toHaveBeenCalledTimes(2);
     expect(errorLog).toHaveBeenCalledTimes(1);
 
     const unsubscribe = subscribeToTheme?.(() => undefined);
     storageHandler?.({ key: "t3code:theme" } as StorageEvent);
     readSnapshot?.();
 
-    expect(getItem).toHaveBeenCalledTimes(2);
+    expect(getItem).toHaveBeenCalledTimes(4);
     expect(errorLog).toHaveBeenCalledTimes(2);
     unsubscribe?.();
   });
