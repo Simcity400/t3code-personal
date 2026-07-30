@@ -254,6 +254,49 @@ export const DesktopUpdateCheckResultSchema = Schema.Struct({
   state: DesktopUpdateStateSchema,
 });
 
+// Personal-fork source updates: state for the in-app "official update"
+// flow available when the app runs from a git checkout with an `upstream`
+// remote (see apps/desktop/src/updates/ForkUpdates.ts). Distinct from the
+// packaged-build electron-updater state above, which stays untouched.
+export type ForkUpdateStatus =
+  | "idle"
+  | "checking"
+  | "update-available"
+  | "updating"
+  | "restarting"
+  | "conflict"
+  | "error";
+
+export interface ForkUpdateState {
+  supported: boolean;
+  status: ForkUpdateStatus;
+  commitsBehind: number;
+  latestSummary: string | null;
+  step: string | null;
+  message: string | null;
+  checkedAt: string | null;
+}
+
+export const ForkUpdateStatusSchema = Schema.Literals([
+  "idle",
+  "checking",
+  "update-available",
+  "updating",
+  "restarting",
+  "conflict",
+  "error",
+]);
+
+export const ForkUpdateStateSchema = Schema.Struct({
+  supported: Schema.Boolean,
+  status: ForkUpdateStatusSchema,
+  commitsBehind: Schema.Int,
+  latestSummary: Schema.NullOr(Schema.String),
+  step: Schema.NullOr(Schema.String),
+  message: Schema.NullOr(Schema.String),
+  checkedAt: Schema.NullOr(Schema.String),
+});
+
 // Stable id for the Windows-native primary backend. Desktop side wraps
 // this with a brand inside DesktopBackendManager; web side keeps it as
 // a plain string so the env-runtime can compare against it without
@@ -1016,6 +1059,10 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  getForkUpdateState: () => Promise<ForkUpdateState>;
+  checkForForkUpdate: () => Promise<ForkUpdateState>;
+  applyForkUpdate: () => Promise<ForkUpdateState>;
+  onForkUpdateState: (listener: (state: ForkUpdateState) => void) => () => void;
   /**
    * Desktop-only preview surface. Present iff the renderer is hosted by the
    * Electron desktop build; web builds have `preview === undefined`.
