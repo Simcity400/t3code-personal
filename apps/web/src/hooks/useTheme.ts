@@ -5,18 +5,30 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 
 const ThemePreference = Schema.Literals(["light", "dark", "system"]);
 type Theme = typeof ThemePreference.Type;
+
+export const COLOR_THEMES = ["default", "contrast", "paper", "ocean"] as const;
+export type ColorTheme = (typeof COLOR_THEMES)[number];
+export const DEFAULT_COLOR_THEME: ColorTheme = "default";
+
+function isColorTheme(value: unknown): value is ColorTheme {
+  return typeof value === "string" && (COLOR_THEMES as readonly string[]).includes(value);
+}
+
 type ThemeSnapshot = {
   theme: Theme;
   systemDark: boolean;
+  colorTheme: ColorTheme;
 };
 
 type DesktopThemeBridge = Pick<DesktopBridge, "setTheme">;
 
 const STORAGE_KEY = "t3code:theme";
+const COLOR_THEME_STORAGE_KEY = "t3code:color-theme";
 const MEDIA_QUERY = "(prefers-color-scheme: dark)";
 const DEFAULT_THEME_SNAPSHOT: ThemeSnapshot = {
   theme: "system",
   systemDark: false,
+  colorTheme: DEFAULT_COLOR_THEME,
 };
 const THEME_COLOR_META_NAME = "theme-color";
 const DYNAMIC_THEME_COLOR_SELECTOR = `meta[name="${THEME_COLOR_META_NAME}"][data-dynamic-theme-color="true"]`;
@@ -100,6 +112,32 @@ export function writeThemePreference(theme: Theme): void {
   }
 }
 
+let colorThemeStorageReadFailed = false;
+
+export function readColorThemePreference(): ColorTheme {
+  if (typeof window === "undefined" || colorThemeStorageReadFailed) return DEFAULT_COLOR_THEME;
+  try {
+    const raw = window.localStorage.getItem(COLOR_THEME_STORAGE_KEY);
+    return isColorTheme(raw) ? raw : DEFAULT_COLOR_THEME;
+  } catch {
+    colorThemeStorageReadFailed = true;
+    return DEFAULT_COLOR_THEME;
+  }
+}
+
+export function writeColorThemePreference(colorTheme: ColorTheme): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(COLOR_THEME_STORAGE_KEY, colorTheme);
+  } catch (cause) {
+    throw new ThemeStorageError({
+      operation: "write",
+      storageKey: COLOR_THEME_STORAGE_KEY,
+      cause,
+    });
+  }
+}
+
 function getStored(): Theme {
   if (themeStorageReadFailure !== null) {
     return DEFAULT_THEME_SNAPSHOT.theme;
@@ -173,10 +211,14 @@ export function syncBrowserChromeTheme() {
   ensureThemeColorMetaTag().setAttribute("content", backgroundColor);
 }
 
-function applyTheme(theme: Theme, suppressTransitions = false) {
+function applyTheme(theme: Theme, colorTheme: ColorTheme, suppressTransitions = false) {
   if (typeof document === "undefined" || typeof window === "undefined") return;
   const systemDark = theme === "system" ? getSystemDark() : false;
-  if (lastAppliedTheme?.theme === theme && lastAppliedTheme.systemDark === systemDark) {
+  if (
+    lastAppliedTheme?.theme === theme &&
+    lastAppliedTheme.systemDark === systemDark &&
+    lastAppliedTheme.colorTheme === colorTheme
+  ) {
     syncDesktopTheme(theme);
     return;
   }
@@ -186,7 +228,16 @@ function applyTheme(theme: Theme, suppressTransitions = false) {
   }
   const isDark = theme === "dark" || (theme === "system" && systemDark);
   document.documentElement.classList.toggle("dark", isDark);
-  lastAppliedTheme = { theme, systemDark };
+  // Tolerate minimal documentElement stubs (tests) that only provide classList.
+  const rootDataset: DOMStringMap | undefined = document.documentElement.dataset;
+  if (rootDataset) {
+    if (colorTheme === DEFAULT_COLOR_THEME) {
+      delete rootDataset.appTheme;
+    } else {
+      rootDataset.appTheme = colorTheme;
+    }
+  }
+  lastAppliedTheme = { theme, systemDark, colorTheme };
   syncBrowserChromeTheme();
   syncDesktopTheme(theme);
   if (suppressTransitions) {
@@ -234,19 +285,25 @@ export function syncDesktopTheme(theme: Theme) {
 
 // Apply immediately on module load to prevent flash
 if (typeof document !== "undefined" && typeof window !== "undefined") {
-  applyTheme(getStored());
+  applyTheme(getStored(), readColorThemePreference());
 }
 
 function getSnapshot(): ThemeSnapshot {
   if (typeof window === "undefined") return DEFAULT_THEME_SNAPSHOT;
   const theme = getStored();
   const systemDark = theme === "system" ? getSystemDark() : false;
+  const colorTheme = readColorThemePreference();
 
-  if (lastSnapshot && lastSnapshot.theme === theme && lastSnapshot.systemDark === systemDark) {
+  if (
+    lastSnapshot &&
+    lastSnapshot.theme === theme &&
+    lastSnapshot.systemDark === systemDark &&
+    lastSnapshot.colorTheme === colorTheme
+  ) {
     return lastSnapshot;
   }
 
-  lastSnapshot = { theme, systemDark };
+  lastSnapshot = { theme, systemDark, colorTheme };
   return lastSnapshot;
 }
 
@@ -261,16 +318,17 @@ function subscribe(listener: () => void): () => void {
   // Listen for system preference changes
   const mq = typeof window.matchMedia === "function" ? window.matchMedia(MEDIA_QUERY) : null;
   const handleChange = () => {
-    if (getStored() === "system") applyTheme("system", true);
+    if (getStored() === "system") applyTheme("system", readColorThemePreference(), true);
     emitChange();
   };
   mq?.addEventListener("change", handleChange);
 
   // Listen for storage changes from other tabs
   const handleStorage = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEY) {
+    if (e.key === STORAGE_KEY || e.key === COLOR_THEME_STORAGE_KEY) {
       themeStorageReadFailure = null;
-      applyTheme(getStored(), true);
+      colorThemeStorageReadFailed = false;
+      applyTheme(getStored(), readColorThemePreference(), true);
       emitChange();
     }
   };
@@ -286,6 +344,7 @@ function subscribe(listener: () => void): () => void {
 export function useTheme() {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const theme = snapshot.theme;
+  const colorTheme = snapshot.colorTheme;
 
   const resolvedTheme: "light" | "dark" =
     theme === "system" ? (snapshot.systemDark ? "dark" : "light") : theme;
@@ -311,14 +370,37 @@ export function useTheme() {
       });
       return;
     }
-    applyTheme(next, true);
+    applyTheme(next, readColorThemePreference(), true);
+    emitChange();
+  }, []);
+
+  const setColorTheme = useCallback((next: ColorTheme) => {
+    if (typeof window === "undefined") return;
+    try {
+      writeColorThemePreference(next);
+    } catch (cause) {
+      const error = isThemeStorageError(cause)
+        ? cause
+        : new ThemeStorageError({
+            operation: "write",
+            storageKey: COLOR_THEME_STORAGE_KEY,
+            cause,
+          });
+      console.error(error.message, {
+        operation: error.operation,
+        storageKey: error.storageKey,
+        ...safeErrorLogAttributes(error),
+      });
+      return;
+    }
+    applyTheme(getStored(), next, true);
     emitChange();
   }, []);
 
   // Keep DOM in sync on mount/change
   useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
+    applyTheme(theme, colorTheme);
+  }, [theme, colorTheme]);
 
-  return { theme, setTheme, resolvedTheme } as const;
+  return { theme, setTheme, resolvedTheme, colorTheme, setColorTheme } as const;
 }

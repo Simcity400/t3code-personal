@@ -58,6 +58,16 @@ export const GlassOpacity = Schema.Int.check(
 );
 export type GlassOpacity = typeof GlassOpacity.Type;
 export const DEFAULT_GLASS_OPACITY: GlassOpacity = 80;
+export const MIN_UI_FONT_SIZE = 13;
+export const MAX_UI_FONT_SIZE = 20;
+export const UiFontSize = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_UI_FONT_SIZE,
+    maximum: MAX_UI_FONT_SIZE,
+  }),
+);
+export type UiFontSize = typeof UiFontSize.Type;
+export const DEFAULT_UI_FONT_SIZE: UiFontSize = 16;
 export const EnvironmentIdentificationMode = Schema.Literals(["artwork", "pill", "none"]);
 export type EnvironmentIdentificationMode = typeof EnvironmentIdentificationMode.Type;
 export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationMode = "artwork";
@@ -76,6 +86,7 @@ export const ClientSettingsSchema = Schema.Struct({
   glassOpacity: GlassOpacity.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_GLASS_OPACITY)),
   ),
+  uiFontSize: UiFontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_UI_FONT_SIZE))),
   // Model favorites. Historically keyed by provider kind, now
   // widened to `ProviderInstanceId` so users can favorite a specific model
   // on a custom provider instance (e.g. "Codex Personal · gpt-5") without
@@ -680,6 +691,7 @@ export const ClientSettingsPatch = Schema.Struct({
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),
   glassOpacity: Schema.optionalKey(GlassOpacity),
+  uiFontSize: Schema.optionalKey(UiFontSize),
   favorites: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({

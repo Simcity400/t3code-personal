@@ -23,6 +23,7 @@ import {
   issueSshWebSocketTicket,
   resolveSshPasswordPrompt,
 } from "./methods/sshEnvironment.ts";
+import { applyForkUpdate, checkForForkUpdate, getForkUpdateState } from "./methods/forkUpdates.ts";
 import {
   checkForUpdate,
   downloadUpdate,
@@ -88,6 +89,9 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(downloadUpdate);
   yield* ipc.handle(installUpdate);
   yield* ipc.handle(checkForUpdate);
+  yield* ipc.handle(getForkUpdateState);
+  yield* ipc.handle(checkForForkUpdate);
+  yield* ipc.handle(applyForkUpdate);
   for (const previewMethod of PreviewIpc.methods) {
     yield* ipc.handle(previewMethod);
   }

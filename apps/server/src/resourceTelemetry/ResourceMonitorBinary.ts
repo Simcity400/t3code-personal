@@ -69,6 +69,13 @@ function binaryName(platform: NodeJS.Platform): string {
 export type ResourceMonitorLinuxLibc = "gnu" | "musl";
 
 function detectResourceMonitorLinuxLibc(): ResourceMonitorLinuxLibc {
+  // The libc flavor only matters for picking the Linux rust target.
+  // process.report.getReport() can take over a minute on Windows hosts with
+  // many network adapters (per-interface reverse DNS in the report header),
+  // so never call it off Linux.
+  if (process.platform !== "linux") {
+    return "gnu";
+  }
   try {
     const report = process.report?.getReport() as
       | {
