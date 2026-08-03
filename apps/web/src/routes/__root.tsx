@@ -1,4 +1,5 @@
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
+import { DEFAULT_UI_FONT_SIZE } from "@t3tools/contracts/settings";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -128,6 +129,7 @@ function RootRouteView() {
       <AnchoredToastProvider>
         <DocumentTitleSync />
         <GlassAppearanceSync />
+        <TextSizeSync />
         {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
         <RelayClientInstallDialog />
         <ConnectOnboardingDialog />
@@ -148,6 +150,20 @@ function GlassAppearanceSync() {
   useEffect(() => {
     document.documentElement.style.setProperty("--glass-opacity", `${glassOpacity}%`);
   }, [glassOpacity]);
+
+  return null;
+}
+
+function TextSizeSync() {
+  const uiFontSize = useClientSettings((settings) => settings.uiFontSize);
+
+  useEffect(() => {
+    if (uiFontSize === DEFAULT_UI_FONT_SIZE) {
+      document.documentElement.style.removeProperty("font-size");
+    } else {
+      document.documentElement.style.fontSize = `${uiFontSize}px`;
+    }
+  }, [uiFontSize]);
 
   return null;
 }

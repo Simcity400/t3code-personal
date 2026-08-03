@@ -35,7 +35,9 @@ import {
   DEFAULT_UNIFIED_SETTINGS,
   type EnvironmentIdentificationMode,
   MAX_GLASS_OPACITY,
+  MAX_UI_FONT_SIZE,
   MIN_GLASS_OPACITY,
+  MIN_UI_FONT_SIZE,
 } from "@t3tools/contracts/settings";
 import {
   getBackgroundActivityBaseProfile,
@@ -63,7 +65,7 @@ import {
 } from "../SidebarStageBackdrop";
 import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
-import { useTheme } from "../../hooks/useTheme";
+import { type ColorTheme, DEFAULT_COLOR_THEME, useTheme } from "../../hooks/useTheme";
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
@@ -154,6 +156,13 @@ const THEME_OPTIONS = [
     label: "Dark",
   },
 ] as const;
+
+const COLOR_THEME_OPTIONS: ReadonlyArray<{ value: ColorTheme; label: string }> = [
+  { value: "default", label: "Default" },
+  { value: "contrast", label: "High contrast" },
+  { value: "paper", label: "Paper" },
+  { value: "ocean", label: "Ocean" },
+];
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, string> = {
   artwork: "Artwork",
@@ -949,7 +958,7 @@ function BackgroundActivityAdvancedDialog({
 }
 
 export function AppearanceSettingsPanel() {
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, colorTheme, setColorTheme } = useTheme();
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const environmentStageLabel = useEnvironmentStageLabel();
@@ -960,6 +969,12 @@ export function AppearanceSettingsPanel() {
   const glassOpacitySliderStyle = {
     "--glass-slider-progress": `${glassOpacityRatio * 100}%`,
     "--glass-slider-fill-offset": `${0.5 - glassOpacityRatio}rem`,
+  } as CSSProperties;
+  const uiFontSizeRatio =
+    (settings.uiFontSize - MIN_UI_FONT_SIZE) / (MAX_UI_FONT_SIZE - MIN_UI_FONT_SIZE);
+  const uiFontSizeSliderStyle = {
+    "--glass-slider-progress": `${uiFontSizeRatio * 100}%`,
+    "--glass-slider-fill-offset": `${0.5 - uiFontSizeRatio}rem`,
   } as CSSProperties;
 
   return (
@@ -995,6 +1010,88 @@ export function AppearanceSettingsPanel() {
                 ))}
               </SelectPopup>
             </Select>
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("color-theme")}
+          description="Pick a color palette. High contrast maximizes readability; Paper and Ocean are softer alternatives to the default grays."
+          resetAction={
+            colorTheme !== DEFAULT_COLOR_THEME ? (
+              <SettingResetButton
+                label="color theme"
+                onClick={() => setColorTheme(DEFAULT_COLOR_THEME)}
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={colorTheme}
+              onValueChange={(value) => {
+                const option = COLOR_THEME_OPTIONS.find((candidate) => candidate.value === value);
+                if (option) {
+                  setColorTheme(option.value);
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Color theme">
+                <SelectValue>
+                  {COLOR_THEME_OPTIONS.find((option) => option.value === colorTheme)?.label ??
+                    "Default"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {COLOR_THEME_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("text-size")}
+          description="Scale the size of text and controls across the app."
+          resetAction={
+            settings.uiFontSize !== DEFAULT_UNIFIED_SETTINGS.uiFontSize ? (
+              <SettingResetButton
+                label="text size"
+                onClick={() => updateSettings({ uiFontSize: DEFAULT_UNIFIED_SETTINGS.uiFontSize })}
+              />
+            ) : null
+          }
+          control={
+            <div className="flex w-full items-center gap-3 sm:w-52">
+              <output
+                className="min-w-12 rounded-md bg-muted px-2 py-1 text-center font-mono text-xs font-medium tabular-nums text-foreground"
+                htmlFor="ui-font-size"
+              >
+                {settings.uiFontSize}px
+              </output>
+              <input
+                aria-label="Text size"
+                className="glass-opacity-slider min-w-0 flex-1"
+                id="ui-font-size"
+                max={MAX_UI_FONT_SIZE}
+                min={MIN_UI_FONT_SIZE}
+                onChange={(event) => {
+                  const uiFontSize = Number(event.currentTarget.value);
+                  if (
+                    Number.isInteger(uiFontSize) &&
+                    uiFontSize >= MIN_UI_FONT_SIZE &&
+                    uiFontSize <= MAX_UI_FONT_SIZE
+                  ) {
+                    updateSettings({ uiFontSize });
+                  }
+                }}
+                step={1}
+                style={uiFontSizeSliderStyle}
+                type="range"
+                value={settings.uiFontSize}
+              />
+            </div>
           }
         />
 

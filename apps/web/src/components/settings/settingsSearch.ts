@@ -43,6 +43,17 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/appearance",
   },
   {
+    id: "color-theme",
+    title: "Color theme",
+    to: "/settings/appearance",
+  },
+  {
+    // Distinct from the slider control's `ui-font-size` id.
+    id: "text-size",
+    title: "Text size",
+    to: "/settings/appearance",
+  },
+  {
     // Prefixed because the slider control already owns the `glass-opacity` id.
     id: "setting-glass-opacity",
     title: "Glass opacity",

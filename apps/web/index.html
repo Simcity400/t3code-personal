@@ -13,8 +13,13 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <script>
       (() => {
-        const LIGHT_BACKGROUND = "#ffffff";
         const DARK_BACKGROUND = "#161616";
+        const THEME_BACKGROUNDS = {
+          default: { light: "#ffffff", dark: DARK_BACKGROUND },
+          contrast: { light: "#ffffff", dark: "#0b0b0e" },
+          paper: { light: "#f6f1e7", dark: "#211e19" },
+          ocean: { light: "#f3f7fb", dark: "#0e1621" },
+        };
         const themeColorMeta = document.querySelector('meta[name="theme-color"]');
         try {
           const storedTheme = window.localStorage.getItem("t3code:theme");
@@ -22,11 +27,20 @@
             storedTheme === "light" || storedTheme === "dark" || storedTheme === "system"
               ? storedTheme
               : "system";
+          const storedColorTheme = window.localStorage.getItem("t3code:color-theme");
+          const colorTheme =
+            storedColorTheme !== null && storedColorTheme in THEME_BACKGROUNDS
+              ? storedColorTheme
+              : "default";
           const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
           const isDark = theme === "dark" || (theme === "system" && prefersDark);
           document.documentElement.classList.toggle("dark", isDark);
-          const chromeColor = isDark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+          if (colorTheme !== "default") {
+            document.documentElement.dataset.appTheme = colorTheme;
+          }
+          const chromeColor = THEME_BACKGROUNDS[colorTheme][isDark ? "dark" : "light"];
           document.documentElement.style.backgroundColor = chromeColor;
+          document.documentElement.style.setProperty("--boot-background", chromeColor);
           themeColorMeta?.setAttribute("content", chromeColor);
         } catch {
           document.documentElement.classList.add("dark");
@@ -45,7 +59,7 @@
       }
 
       body {
-        background: #ffffff;
+        background: var(--boot-background, #ffffff);
         color: #262626;
         font-family:
           "DM Sans Variable",
@@ -58,7 +72,7 @@
       }
 
       html.dark body {
-        background: #161616;
+        background: var(--boot-background, #161616);
         color: #f5f5f5;
       }
 

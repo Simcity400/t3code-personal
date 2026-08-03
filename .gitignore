@@ -36,3 +36,6 @@ node_modules/
 *.log
 .env*
 !.env.example
+
+# Personal fork: resource-monitor sidecar copied from the installed app (see MY-FORK.md)
+apps/desktop/resources/resource-monitor/

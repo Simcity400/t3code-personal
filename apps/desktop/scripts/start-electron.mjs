@@ -5,7 +5,12 @@ import { desktopDir, resolveElectronLaunchCommand } from "./electron-launcher.mj
 const childEnv = { ...process.env };
 delete childEnv.ELECTRON_RUN_AS_NODE;
 
-const electronCommand = resolveElectronLaunchCommand(["dist-electron/main.cjs"]);
+// Launch the app DIRECTORY, not the entry file: with a bare file Electron has
+// no package.json, so app.getVersion() reports Electron's own version (the
+// stage label resolves to "Alpha" instead of "Nightly") and the default app
+// identity is "Electron". The directory launch reads main/version/productName
+// from apps/desktop/package.json.
+const electronCommand = resolveElectronLaunchCommand([desktopDir]);
 const child = NodeChildProcess.spawn(electronCommand.electronPath, electronCommand.args, {
   stdio: "inherit",
   cwd: desktopDir,
