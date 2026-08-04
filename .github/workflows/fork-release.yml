@@ -1,37 +1,99 @@
 name: Fork Release
 
-# Fork-only pipeline: builds an unsigned Windows installer on every push and
-# publishes it as a GitHub prerelease on this repository. Packaged apps point
-# their electron-updater feed here (GITHUB_REPOSITORY at build time), so the
-# in-app update button picks these releases up. Kept separate from upstream's
-# release.yml to avoid merge conflicts; that workflow needs T3's own secrets
-# and runners and cannot run on this fork.
+# Fork-only pipeline: merges upstream on a schedule, builds an unsigned
+# Windows installer, and publishes it as a GitHub prerelease on this
+# repository. Packaged apps point their electron-updater feed here
+# (GITHUB_REPOSITORY at build time), so the in-app update button picks these
+# releases up. Kept separate from upstream's release.yml to avoid merge
+# conflicts; that workflow needs T3's own secrets and runners and cannot run
+# on this fork.
 
 on:
   push:
     branches:
       - main
       - subagent-preview
+  schedule:
+    # 19:00 UTC = 5am AEST: a fresh build with upstream's changes each morning.
+    - cron: "0 19 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: fork-release-${{ github.ref }}
+  group: fork-release
   cancel-in-progress: true
 
+env:
+  FORK_BRANCH: subagent-preview
+
 jobs:
+  # Scheduled and manual runs first pull in upstream's latest changes. This
+  # replaces the from-source ForkUpdates merge flow once the app runs packaged
+  # (ForkUpdates is inactive in packaged builds). A merge conflict fails this
+  # job with instructions; pushes from a local resolution build as usual.
+  sync_upstream:
+    name: Merge upstream/main
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      ref: ${{ steps.sync.outputs.ref }}
+      has_changes: ${{ steps.sync.outputs.has_changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.FORK_BRANCH }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - id: sync
+        name: Merge upstream and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/pingdotgg/t3code.git
+          git fetch upstream main
+
+          if ! git merge --no-edit upstream/main; then
+            echo "::error::Merge conflict with upstream. On your computer, open Claude Code in the T3 Code folder and say: finish the upstream merge, then push. The next build will pick it up."
+            exit 1
+          fi
+
+          # Pushes made with GITHUB_TOKEN never trigger workflows, so this
+          # cannot recurse; the build continues in this same run instead.
+          git push origin "HEAD:$FORK_BRANCH"
+
+          head_sha="$(git rev-parse HEAD)"
+          echo "ref=$head_sha" >> "$GITHUB_OUTPUT"
+
+          last_tag="$(git tag --list 'v*-nightly.*' --sort=-creatordate | head -n 1)"
+          if [[ -n "$last_tag" && "$(git rev-parse "$last_tag^{commit}")" == "$head_sha" ]]; then
+            echo "Nothing new since the last release ($last_tag). Skipping build."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
   # Same rationale as upstream release.yml: node-pty has no Linux prebuilt,
   # and the Windows package bundles a Linux pty.node for the WSL backend.
   build_wsl_node_pty:
     name: Build WSL node-pty (linux-x64)
+    needs: [sync_upstream]
+    if: |
+      !cancelled() &&
+      (github.event_name == 'push' ||
+       (needs.sync_upstream.result == 'success' && needs.sync_upstream.outputs.has_changes == 'true'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
           sparse-checkout: |
             /*
             !/.repos/
@@ -66,7 +128,8 @@ jobs:
 
   release:
     name: Build and release Windows x64
-    needs: [build_wsl_node_pty]
+    needs: [sync_upstream, build_wsl_node_pty]
+    if: ${{ !cancelled() && needs.build_wsl_node_pty.result == 'success' }}
     runs-on: windows-2025
     timeout-minutes: 60
     env:
@@ -85,6 +148,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
           sparse-checkout: |
             /*
             !/.repos/
@@ -114,7 +178,7 @@ jobs:
           node scripts/resolve-nightly-release.ts \
             --date "$nightly_date" \
             --run-number "${{ github.run_number }}" \
-            --sha "${{ github.sha }}" \
+            --sha "$(git rev-parse HEAD)" \
             --github-output
 
       - name: Align package versions to release version
@@ -158,7 +222,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_meta.outputs.tag }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
           name: ${{ steps.release_meta.outputs.name }}
           prerelease: true
           make_latest: false
