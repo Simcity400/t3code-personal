@@ -1454,6 +1454,7 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
   const env = yield* Config.all({
     updateRepository: Config.string("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
     githubRepository: Config.string("GITHUB_REPOSITORY").pipe(Config.option),
+    updatePrivate: Config.string("T3CODE_DESKTOP_UPDATE_PRIVATE").pipe(Config.option),
   });
   const rawRepo = (
     Option.getOrUndefined(env.updateRepository)?.trim() ||
@@ -1465,10 +1466,17 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
   const [owner, repo, ...rest] = rawRepo.split("/");
   if (!owner || !repo || rest.length > 0) return undefined;
 
+  // A private update repository makes electron-updater use its authenticated
+  // GitHub provider, which reads GH_TOKEN from the environment at runtime.
+  const isPrivate = ["true", "1"].includes(
+    Option.getOrUndefined(env.updatePrivate)?.trim().toLowerCase() ?? "",
+  );
+
   return {
     provider: "github",
     owner,
     repo,
+    ...(isPrivate ? { private: true } : {}),
     releaseType: updateChannel === "nightly" ? "prerelease" : "release",
     ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
   };

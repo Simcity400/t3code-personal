@@ -152,6 +152,27 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         releaseType: "prerelease",
         channel: "nightly",
       });
+
+      const privateConfig = yield* resolveGitHubPublishConfig("nightly").pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                T3CODE_DESKTOP_UPDATE_REPOSITORY: "pingdotgg/t3code",
+                T3CODE_DESKTOP_UPDATE_PRIVATE: "true",
+              },
+            }),
+          ),
+        ),
+      );
+      assert.deepStrictEqual(privateConfig, {
+        provider: "github",
+        owner: "pingdotgg",
+        repo: "t3code",
+        private: true,
+        releaseType: "prerelease",
+        channel: "nightly",
+      });
     }),
   );
 
