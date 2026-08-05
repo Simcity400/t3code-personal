@@ -43,8 +43,10 @@ finish the merge.
 - **Color themes** (Settings → Appearance): Default, High contrast, Paper, Ocean — each
   with light and dark variants. Implemented in `apps/web/src/themes.css` via a
   `data-app-theme` attribute set by `apps/web/src/hooks/useTheme.ts`.
-- **Text size** (Settings → Appearance): 13–20px slider, persisted as `uiFontSize` in
-  client settings, applied by `TextSizeSync` in `apps/web/src/routes/__root.tsx`.
+- **Text size**: retired 2026-08-05 — the official app gained its own font size
+  controls (Settings → Appearance), which replaced the fork's 13–20px `uiFontSize`
+  slider. A previously customized text size resets to the default once; re-set it
+  in the official controls.
 - **Shared profile with the installed app**: `apps/desktop/src/main.ts` pins the
   Electron userData profile (`%APPDATA%\t3code`) synchronously at startup, so this
   from-source build uses the same Windows encryption key as the installed T3 Code and
