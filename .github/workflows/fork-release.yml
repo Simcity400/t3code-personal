@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FORK_BRANCH: subagent-preview
+  FORK_BRANCH: main
 
 jobs:
   # Scheduled and manual runs first pull in upstream's latest changes. This

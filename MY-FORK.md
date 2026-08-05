@@ -14,10 +14,17 @@ personal customizations, backed up at
   Avoid launching the _official_ app from the Start menu or old taskbar pins — on
   this machine it can't boot (upstream bug) and its background processes block this
   build until cleared.
-- **Get official updates**: double-click `Update T3 Code (My Version).cmd` — it pulls the
-  latest official release, merges it with the customizations, rebuilds, and backs up to
-  the private repo. If a merge conflict appears, open Claude Code in this folder and say
-  "finish the upstream merge".
+- **Get official updates**: use the in-app update pill, or double-click
+  `Update T3 Code (My Version).cmd`. Since 2026-08-05, **GitHub is the single source of
+  truth**: a scheduled workflow (`.github/workflows/fork-sync.yml`) merges official
+  changes into `main` and pins versions on GitHub, and every machine only downloads
+  that ready-made `main` and rebuilds — machines never merge or pin locally. Stray
+  local commits are backed up to an origin `backup/…` branch, then the machine is
+  reset to match GitHub. If the workflow hits a merge conflict it pushes a
+  `needs-merge-help` marker branch; the pill then says to open Claude Code (on any
+  computer) and say "finish the upstream merge" — resolve, push `main`, and the next
+  sync run cleans the marker up (or delete it sooner:
+  `git push origin :needs-merge-help`).
 
 ## Setting up another computer
 
@@ -31,12 +38,13 @@ personal customizations, backed up at
 4. Sign in to T3 Connect inside the app (encrypted credentials don't transfer between
    machines).
 
-Machines stay in sync through the update pill: official nightlies appear on all
-machines within the same few-minute window, and personal changes pushed to the
-private repo from one machine appear on the others as "Update from your other
-computer" on the next 4-minute check. Conflicting personal edits made on two
-machines at once surface as an update conflict — open Claude Code and ask it to
-finish the merge.
+Machines stay in sync through the update pill: whenever GitHub's `main` moves —
+a synced official nightly (within ~2 hours of release) or personal changes pushed
+from any machine — the other machines surface it on their next 4-minute check and
+apply it as a plain download. Because no machine ever merges locally, machines
+cannot conflict with each other anymore; the only merge that can conflict is
+GitHub's own official-changes sync, resolved once with Claude Code from any
+machine.
 
 ## Customizations so far
 

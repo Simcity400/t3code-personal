@@ -1,34 +1,41 @@
 @echo off
-rem One-click update: pulls the latest official T3 Code release, merges it with
-rem your personal edits, rebuilds the app, and backs everything up to your
-rem private GitHub repo.
+rem One-click update: downloads the latest ready-made version from your private
+rem GitHub repo and rebuilds the app. GitHub is the single source of truth --
+rem a scheduled workflow there (fork-sync.yml) merges the official changes and
+rem stamps versions, so this script never merges anything itself. If this
+rem machine somehow has stray local changes, they are backed up to GitHub
+rem first, then the machine is made to match GitHub exactly.
 setlocal
 cd /d "%~dp0"
 
 echo ============================================================
-echo  Updating your T3 Code from the official repository...
+echo  Updating your T3 Code from your GitHub...
 echo ============================================================
 echo.
 
-git fetch upstream
-if errorlevel 1 goto :fail
+git fetch origin --prune
+if errorlevel 1 goto :offline
 
-echo Syncing changes from your other machines...
-git fetch origin
-if not errorlevel 1 git merge origin/main --no-edit
-if errorlevel 1 goto :conflict
+set "DIVERGED="
+set "AHEAD=0"
+for /f "usebackq delims=" %%c in (`git rev-list --count origin/main..HEAD`) do set "AHEAD=%%c"
+if not "%AHEAD%"=="0" set "DIVERGED=1"
+git diff --quiet || set "DIVERGED=1"
+git diff --cached --quiet || set "DIVERGED=1"
 
-git merge upstream/main --no-edit
-if errorlevel 1 goto :conflict
-
-echo.
-echo Matching the official nightly version...
-set "NIGHTLY="
-for /f "usebackq delims=" %%v in (`node -e "fetch('https://registry.npmjs.org/-/package/t3/dist-tags').then(function(r){return r.json()}).then(function(d){console.log(d.nightly)})"`) do set "NIGHTLY=%%v"
-if not defined NIGHTLY goto :afterstamp
-node scripts/update-release-package-versions.ts %NIGHTLY%
-git commit -am "chore(fork): pin nightly %NIGHTLY%" >nul 2>&1
-:afterstamp
+if defined DIVERGED (
+  echo Backing up this machine's local changes to GitHub first...
+  set "BACKUP=backup/manual-%RANDOM%%RANDOM%"
+  git add -A
+  git commit -m "backup: local changes before matching GitHub" >nul 2>&1
+  git branch --force "%BACKUP%"
+  git push origin "HEAD:refs/heads/%BACKUP%" >nul 2>&1
+  git reset --hard origin/main
+  if errorlevel 1 goto :fail
+) else (
+  git merge --ff-only origin/main
+  if errorlevel 1 goto :fail
+)
 
 echo.
 echo Installing dependencies...
@@ -40,8 +47,6 @@ echo Rebuilding the app...
 call pnpm build:desktop
 if errorlevel 1 goto :fail
 
-git push origin main
-
 echo.
 echo ============================================================
 echo  Update complete! Start the app with:
@@ -50,16 +55,9 @@ echo ============================================================
 pause
 exit /b 0
 
-:conflict
+:offline
 echo.
-echo ============================================================
-echo  The official update changed the same code as one of your
-echo  personal edits, so the merge needs a human (or AI) touch.
-echo.
-echo  Open Claude Code in this folder and say:
-echo    "finish the upstream merge"
-echo  and it will resolve the conflict for you.
-echo ============================================================
+echo Couldn't reach GitHub - check the internet connection and try again.
 pause
 exit /b 1
 
