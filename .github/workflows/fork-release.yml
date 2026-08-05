@@ -8,16 +8,10 @@ name: Fork Release
 # conflicts; that workflow needs T3's own secrets and runners and cannot run
 # on this fork.
 
+# Dormant by choice (2026-08-05): Alex prefers the from-source ForkUpdates
+# flow, so automatic triggers are disabled and no Actions minutes are spent.
+# Trigger manually from the Actions tab to produce an installer on demand.
 on:
-  push:
-    branches:
-      - main
-      - subagent-preview
-  schedule:
-    # 19:00 UTC = 5am AEST, every second day. Daily Windows builds (~80 billed
-    # minutes each on a private repo) would exceed the 2,000 free monthly
-    # Actions minutes; every-other-day stays comfortably inside the free tier.
-    - cron: "0 19 */2 * *"
   workflow_dispatch:
 
 permissions:
