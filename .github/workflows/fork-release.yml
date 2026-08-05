@@ -14,8 +14,10 @@ on:
       - main
       - subagent-preview
   schedule:
-    # 19:00 UTC = 5am AEST: a fresh build with upstream's changes each morning.
-    - cron: "0 19 * * *"
+    # 19:00 UTC = 5am AEST, every second day. Daily Windows builds (~80 billed
+    # minutes each on a private repo) would exceed the 2,000 free monthly
+    # Actions minutes; every-other-day stays comfortably inside the free tier.
+    - cron: "0 19 */2 * *"
   workflow_dispatch:
 
 permissions:
