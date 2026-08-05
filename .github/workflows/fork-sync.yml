@@ -1,0 +1,122 @@
+name: Fork Sync
+
+# Fork-only pipeline that makes GitHub the single source of truth. Every two
+# hours it checks whether the official app published a new nightly; when it
+# has, this job merges upstream/main into main and pins the package versions,
+# so every machine only ever pulls a ready-made main — no machine merges or
+# pins locally, and machines can never invent conflicting history.
+#
+# When the upstream merge conflicts with fork customizations, the job pushes a
+# marker branch `needs-merge-help`; the in-app fork updater shows a pill
+# telling Alex to open Claude Code (on any machine) and say "finish the
+# upstream merge". After the resolved merge is pushed to main, the next sync
+# run deletes the marker automatically.
+#
+# Costs almost nothing: the gate job is seconds without a checkout, and the
+# full sync only runs when a new nightly is actually out (~once a day).
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Check for a new official nightly
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+      nightly: ${{ steps.check.outputs.nightly }}
+    steps:
+      - id: check
+        name: Compare npm nightly to the pinned version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          nightly="$(curl -fsSL https://registry.npmjs.org/-/package/t3/dist-tags | jq -r '.nightly // empty')"
+          pinned="$(gh api "repos/$GITHUB_REPOSITORY/contents/apps/desktop/package.json?ref=main" --jq .content | base64 -d | jq -r '.version // empty')"
+          marker="$(gh api "repos/$GITHUB_REPOSITORY/branches/needs-merge-help" --jq .name 2>/dev/null || true)"
+
+          echo "nightly=$nightly" >> "$GITHUB_OUTPUT"
+          echo "npm nightly: ${nightly:-unknown} | pinned: ${pinned:-unknown} | conflict marker: ${marker:-none}"
+
+          if [[ -n "$nightly" && -n "$pinned" && "$nightly" != "$pinned" ]] || [[ -n "$marker" ]]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing to do."
+          fi
+
+  sync:
+    name: Merge upstream and pin
+    needs: gate
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge upstream/main
+        id: merge
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/pingdotgg/t3code.git
+          git fetch upstream main
+
+          if ! git merge --no-edit upstream/main; then
+            git merge --abort || true
+            # Leave a marker branch the in-app updater can see; the pill then
+            # asks Alex to have Claude Code resolve the merge from any machine.
+            git push origin refs/remotes/upstream/main:refs/heads/needs-merge-help --force
+            echo "::error::Official changes conflict with fork customizations. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge. Once the resolved merge is pushed to main, this workflow cleans up on its next run."
+            exit 1
+          fi
+
+      - name: Pin package versions to the official nightly
+        env:
+          NIGHTLY: ${{ needs.gate.outputs.nightly }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$NIGHTLY" ]]; then
+            echo "No nightly version resolved; skipping pin."
+            exit 0
+          fi
+          node -e '
+            const fs = require("fs");
+            const version = process.env.NIGHTLY;
+            for (const file of [
+              "apps/desktop/package.json",
+              "apps/server/package.json",
+              "apps/web/package.json",
+              "packages/contracts/package.json",
+            ]) {
+              const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+              if (manifest.version === version) continue;
+              manifest.version = version;
+              fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n");
+            }
+          '
+          if ! git diff --quiet; then
+            git commit -am "chore(fork): pin nightly $NIGHTLY"
+          fi
+
+      - name: Push main and clear the conflict marker
+        run: |
+          set -euo pipefail
+          git push origin main
+          git push origin :refs/heads/needs-merge-help 2>/dev/null || true

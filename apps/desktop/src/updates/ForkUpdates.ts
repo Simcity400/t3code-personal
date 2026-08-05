@@ -8,7 +8,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Path from "effect/Path";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
@@ -20,41 +19,38 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 
 // Personal-fork source updater. Only active when the app runs from a git
-// checkout that has an `upstream` remote (see MY-FORK.md): polls upstream for
-// new official commits, and applies them by merging + reinstalling +
-// rebuilding in place, then asks DesktopLifecycle to relaunch. The packaged
-// electron-updater flow (DesktopUpdates.ts) is untouched and mutually
-// exclusive with this one — it requires isPackaged, this requires !isPackaged.
+// checkout that has an `upstream` remote (see MY-FORK.md). GitHub is the
+// single source of truth: a scheduled workflow (fork-sync.yml) merges
+// official changes and pins versions on origin/main, and this updater only
+// ever downloads that branch — it never merges or pins locally, so two
+// machines can never invent conflicting history. Stray local commits are
+// backed up to an origin `backup/…` branch, then the machine snaps to match
+// origin/main. The packaged electron-updater flow (DesktopUpdates.ts) is
+// untouched and mutually exclusive with this one — it requires isPackaged,
+// this requires !isPackaged.
 
 const FORK_CHECK_STARTUP_DELAY = "20 seconds";
 // Matches DesktopUpdates' AUTO_UPDATE_POLL_INTERVAL so this machine surfaces a
 // new nightly in the same window as officially installed apps elsewhere.
+// origin/main moves within ~2 hours of a nightly (fork-sync.yml's cadence).
 const FORK_CHECK_POLL_INTERVAL = "4 minutes";
 const FORK_CHECK_TIMEOUT = Duration.minutes(3);
 const FORK_APPLY_STEP_TIMEOUT = Duration.minutes(20);
 
-const CONFLICT_MESSAGE =
-  "An official change overlaps one of your customizations, so this update needs a hand. " +
-  'Open Claude Code in the project folder and say "finish the upstream merge".';
+// fork-sync.yml pushes this marker branch when the official changes conflict
+// with fork customizations, and deletes it once a resolved main is pushed.
+const SYNC_CONFLICT_REF = "origin/needs-merge-help";
 
-const NIGHTLY_VERSION_PATTERN = /^\d+\.\d+\.\d+-nightly\.\d{8}\.\d+$/;
-const NPM_NIGHTLY_PROBE_SCRIPT =
-  "fetch('https://registry.npmjs.org/-/package/t3/dist-tags').then(function(r){return r.json()}).then(function(d){console.log(d.nightly)})";
+const CONFLICT_MESSAGE =
+  "An official change overlaps one of your customizations, so GitHub needs a hand. " +
+  'Open Claude Code in the project folder on any computer and say "finish the upstream merge".';
 
 interface ForkCheckOutcome {
   readonly commitsBehind: number;
-  readonly personalCommitsBehind: number;
+  readonly syncConflict: boolean;
   readonly summary: string | null;
   readonly updateAvailable: boolean;
 }
-
-const PERSONAL_CONFLICT_MESSAGE =
-  "Changes pushed from your other computer overlap this machine's edits, so this " +
-  'update needs a hand. Open Claude Code in the project folder and say "finish the ' +
-  'personal-changes merge".';
-
-const ManifestVersion = Schema.Struct({ version: Schema.optional(Schema.String) });
-const decodeManifestVersion = Schema.decodeEffect(Schema.fromJsonString(ManifestVersion));
 
 export class ForkUpdates extends Context.Service<
   ForkUpdates,
@@ -146,86 +142,50 @@ export const make = Effect.gen(function* () {
       }),
     );
 
-  const readPinnedVersion = Effect.gen(function* () {
-    const manifestRaw = yield* fileSystem
-      .readFileString(path.join(repoRoot, "apps", "desktop", "package.json"))
-      .pipe(Effect.orElseSucceed(() => "{}"));
-    return yield* decodeManifestVersion(manifestRaw).pipe(
-      Effect.map((manifest) => manifest.version),
-      Effect.orElseSucceed(() => undefined),
-    );
-  });
-
   const performCheck: Effect.Effect<ForkUpdateState> = Effect.gen(function* () {
     const state = yield* Ref.get(stateRef);
-    if (!state.supported || (state.status !== "idle" && state.status !== "update-available")) {
+    if (
+      !state.supported ||
+      (state.status !== "idle" &&
+        state.status !== "update-available" &&
+        state.status !== "conflict")
+    ) {
       return state;
     }
     yield* updateState((s) => ({ ...s, status: "checking" }));
 
     const outcome = yield* Effect.gen(function* () {
-      const countAgainst = (ref: string) =>
-        Effect.gen(function* () {
-          const countRaw = yield* runCapture("git", ["rev-list", "--count", `HEAD..${ref}`]).pipe(
-            Effect.orElseSucceed(() => "0"),
-          );
-          const parsed = Number.parseInt(countRaw.trim(), 10);
-          return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-        });
-
-      // Personal changes pushed from another machine (private backup remote).
-      // Not release-gated: they should surface on the next poll.
-      let personalCommitsBehind = 0;
-      let personalSummary: string | null = null;
-      const originFetchExit = yield* runExit("git", ["fetch", "origin", "--quiet"]);
-      if (originFetchExit === 0) {
-        personalCommitsBehind = yield* countAgainst("origin/main");
-        if (personalCommitsBehind > 0) {
-          personalSummary =
-            (yield* runCapture("git", ["log", "-1", "--format=%s", "origin/main"]).pipe(
-              Effect.orElseSucceed(() => ""),
-            )).trim() || null;
-        }
-      }
-
-      // Official updates are release-gated: the official app prompts when the
-      // npm nightly dist-tag moves (it polls every 4 minutes), so this check
-      // keys off the same event at the same cadence — machines then surface
-      // the update within the same few-minute window. Upstream commits that
-      // are not yet in a published nightly stay quiet; the Update cmd still
-      // applies them on demand.
-      const nightly = (yield* runCapture("node", ["-e", NPM_NIGHTLY_PROBE_SCRIPT]).pipe(
-        Effect.orElseSucceed(() => ""),
-      )).trim();
-      if (originFetchExit !== 0 && !NIGHTLY_VERSION_PATTERN.test(nightly)) {
-        // Both probes unreachable — treat as a transient failure and retry.
+      // GitHub is authoritative: the only question is whether origin/main has
+      // moved past this machine. fork-sync.yml release-gates what lands on
+      // origin/main, so no npm or upstream probing happens here. --prune so a
+      // deleted conflict marker disappears from the local view too.
+      const originFetchExit = yield* runExit("git", ["fetch", "origin", "--prune", "--quiet"]);
+      if (originFetchExit !== 0) {
         return Option.none<ForkCheckOutcome>();
       }
-      let commitsBehind = 0;
-      let releaseSummary: string | null = null;
-      if (NIGHTLY_VERSION_PATTERN.test(nightly)) {
-        const pinned = yield* readPinnedVersion;
-        if (pinned !== undefined && pinned !== nightly) {
-          // A new nightly is out. Fetch upstream so the pill can say how many
-          // official changes ride along; the apply flow merges and re-pins.
-          releaseSummary = `nightly ${nightly} released`;
-          const fetchExit = yield* runExit("git", ["fetch", "upstream", "--quiet"]);
-          if (fetchExit === 0) {
-            commitsBehind = yield* countAgainst("upstream/main");
-            if (commitsBehind > 0) {
-              releaseSummary =
-                (yield* runCapture("git", ["log", "-1", "--format=%s", "upstream/main"]).pipe(
-                  Effect.orElseSucceed(() => ""),
-                )).trim() || releaseSummary;
-            }
-          }
-        }
+
+      const countRaw = yield* runCapture("git", ["rev-list", "--count", "HEAD..origin/main"]).pipe(
+        Effect.orElseSucceed(() => "0"),
+      );
+      const parsed = Number.parseInt(countRaw.trim(), 10);
+      const commitsBehind = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+
+      let summary: string | null = null;
+      if (commitsBehind > 0) {
+        summary =
+          (yield* runCapture("git", ["log", "-1", "--format=%s", "origin/main"]).pipe(
+            Effect.orElseSucceed(() => ""),
+          )).trim() || null;
       }
+
+      const syncConflict =
+        (yield* runExit("git", ["rev-parse", "--verify", "--quiet", SYNC_CONFLICT_REF])) === 0;
+
       return Option.some({
         commitsBehind,
-        personalCommitsBehind,
-        summary: releaseSummary ?? personalSummary,
-        updateAvailable: releaseSummary !== null || personalCommitsBehind > 0,
+        syncConflict,
+        summary,
+        updateAvailable: commitsBehind > 0,
       });
     }).pipe(
       Effect.timeoutOption(FORK_CHECK_TIMEOUT),
@@ -235,21 +195,35 @@ export const make = Effect.gen(function* () {
 
     const checkedAt = yield* currentIsoTimestamp;
     if (Option.isNone(outcome)) {
-      // Transient failure (offline, upstream unreachable): stay quiet and let
+      // Transient failure (offline, origin unreachable): stay quiet and let
       // the next poll retry rather than surfacing an error pill.
       yield* logForkWarning("fork update check failed; will retry on next poll");
       return yield* updateState((s) => ({ ...s, status: "idle", checkedAt }));
     }
 
-    const { commitsBehind, personalCommitsBehind, summary, updateAvailable } = outcome.value;
+    const { commitsBehind, syncConflict, summary, updateAvailable } = outcome.value;
+    if (syncConflict) {
+      // GitHub's sync hit an upstream conflict; surface it until the marker
+      // branch disappears (fork-sync.yml deletes it after a resolved push).
+      yield* logForkWarning("fork sync conflict marker present on origin");
+      return yield* updateState((s) => ({
+        ...s,
+        status: "conflict",
+        commitsBehind,
+        personalCommitsBehind: 0,
+        latestSummary: summary,
+        checkedAt,
+        message: CONFLICT_MESSAGE,
+      }));
+    }
     if (updateAvailable) {
-      yield* logForkInfo("update available", { commitsBehind, personalCommitsBehind, summary });
+      yield* logForkInfo("update available", { commitsBehind, summary });
     }
     return yield* updateState((s) => ({
       ...s,
       status: updateAvailable ? "update-available" : "idle",
       commitsBehind,
-      personalCommitsBehind,
+      personalCommitsBehind: 0,
       latestSummary: summary,
       checkedAt,
       message: null,
@@ -284,69 +258,53 @@ export const make = Effect.gen(function* () {
     );
 
   const runApply: Effect.Effect<boolean> = Effect.gen(function* () {
-    yield* logForkInfo("applying official update");
+    yield* logForkInfo("matching this machine to origin/main");
 
-    // Personal changes pushed from another machine come in first so the
-    // upstream merge below sees the same base everywhere. A failed origin
-    // fetch just skips this step — official updates still apply.
-    yield* setStep("Syncing changes from your other machines…");
-    if ((yield* timedExit("git", ["fetch", "origin", "--quiet"])) === 0) {
-      const originMergeExit = yield* timedExit("git", ["merge", "origin/main", "--no-edit"]);
-      if (originMergeExit !== 0) {
-        yield* runExit("git", ["merge", "--abort"]).pipe(Effect.ignore);
-        yield* logForkWarning("personal-changes merge conflicted; aborted merge");
-        yield* updateState((s) => ({
-          ...s,
-          status: "conflict",
-          step: null,
-          message: PERSONAL_CONFLICT_MESSAGE,
-        }));
-        return false;
-      }
+    yield* setStep("Getting the latest from GitHub…");
+    if ((yield* timedExit("git", ["fetch", "origin", "--prune", "--quiet"])) !== 0) {
+      return yield* failApply(
+        "Couldn't reach GitHub. Check the internet connection and press update again.",
+      );
     }
 
-    // Official changes stay release-gated here too: merge upstream and re-pin
-    // the version only when a published nightly is actually ahead of the pin.
-    // A personal-changes-only apply must not smuggle in unreleased commits.
-    const nightly = (yield* runCapture("node", ["-e", NPM_NIGHTLY_PROBE_SCRIPT]).pipe(
-      Effect.timeoutOption(Duration.minutes(2)),
-      Effect.map(Option.getOrElse(() => "")),
-      Effect.orElseSucceed(() => ""),
-    )).trim();
-    const pinned = yield* readPinnedVersion;
-    const releaseDrift =
-      NIGHTLY_VERSION_PATTERN.test(nightly) && pinned !== undefined && pinned !== nightly;
+    // GitHub is authoritative. A machine with stray local commits or edits
+    // never merges them: they're preserved on an origin backup branch (and a
+    // local branch as a fallback), then the machine snaps to origin/main.
+    const dirty =
+      (yield* runCapture("git", ["status", "--porcelain"]).pipe(
+        Effect.orElseSucceed(() => ""),
+      )).trim() !== "";
+    const aheadRaw = yield* runCapture("git", ["rev-list", "--count", "origin/main..HEAD"]).pipe(
+      Effect.orElseSucceed(() => "0"),
+    );
+    const commitsAhead = Number.parseInt(aheadRaw.trim(), 10) || 0;
 
-    if (releaseDrift) {
-      yield* setStep("Merging official changes…");
-      yield* timedExit("git", ["fetch", "upstream", "--quiet"]);
-      const mergeExit = yield* timedExit("git", ["merge", "upstream/main", "--no-edit"]);
-      if (mergeExit !== 0) {
-        yield* runExit("git", ["merge", "--abort"]).pipe(Effect.ignore);
-        yield* logForkWarning("fork update merge conflicted; aborted merge");
-        yield* updateState((s) => ({
-          ...s,
-          status: "conflict",
-          step: null,
-          message: CONFLICT_MESSAGE,
-        }));
-        return false;
+    if (dirty || commitsAhead > 0) {
+      yield* setStep("Backing up this machine's local changes…");
+      const backupName = `backup/${(yield* currentIsoTimestamp).replaceAll(":", "-")}`;
+      if (dirty) {
+        yield* timedExit("git", ["add", "-A"]).pipe(Effect.ignore);
+        yield* timedExit("git", [
+          "commit",
+          "-m",
+          "backup: local changes before matching GitHub",
+        ]).pipe(Effect.ignore);
       }
-
-      // Keep the version pin in sync with the published nightly so connected
-      // devices don't report version drift. Best effort.
-      yield* setStep("Matching the official nightly version…");
-      yield* Effect.gen(function* () {
-        const stampExit = yield* runExit("node", [
-          path.join(repoRoot, "scripts", "update-release-package-versions.ts"),
-          nightly,
-        ]);
-        if (stampExit !== 0) return;
-        // Exits non-zero when the pin is already current; that's fine.
-        yield* runExit("git", ["commit", "-am", `chore(fork): pin nightly ${nightly}`]).pipe(
-          Effect.ignore,
+      // Local branch first so the work survives even when the push fails.
+      yield* timedExit("git", ["branch", "--force", backupName]).pipe(Effect.ignore);
+      yield* timedExit("git", ["push", "origin", `HEAD:refs/heads/${backupName}`]).pipe(
+        Effect.ignore,
+      );
+      yield* logForkInfo("backed up local changes before reset", { backupName, commitsAhead });
+      if ((yield* timedExit("git", ["reset", "--hard", "origin/main"])) !== 0) {
+        return yield* failApply(
+          "Couldn't match this machine to GitHub. Run the Update file in the project folder to see details.",
         );
-      }).pipe(Effect.timeoutOption(Duration.minutes(2)), Effect.ignore);
+      }
+    } else if ((yield* timedExit("git", ["merge", "--ff-only", "origin/main"])) !== 0) {
+      return yield* failApply(
+        "Couldn't match this machine to GitHub. Run the Update file in the project folder to see details.",
+      );
     }
 
     yield* setStep("Installing dependencies…");
@@ -379,9 +337,6 @@ export const make = Effect.gen(function* () {
       "--help",
     ]);
     yield* timedExit(warmup.command, warmup.args, { shell: warmup.shell }).pipe(Effect.ignore);
-
-    yield* setStep("Backing up to your private repo…");
-    yield* timedExit("git", ["push", "origin", "main"]).pipe(Effect.ignore);
 
     yield* logForkInfo("official update applied; restarting");
     yield* updateState((s) => ({
