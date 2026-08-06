@@ -51,6 +51,8 @@ machine.
 - **Color themes** (Settings → Appearance): Default, High contrast, Paper, Ocean — each
   with light and dark variants. Implemented in `apps/web/src/themes.css` via a
   `data-app-theme` attribute set by `apps/web/src/hooks/useTheme.ts`.
+- **Full-brightness chat text** (2026-08-06): the official app dims assistant messages
+  to 80% foreground; a rule at the end of `themes.css` restores 100% in every theme.
 - **Text size**: retired 2026-08-05 — the official app gained its own font size
   controls (Settings → Appearance), which replaced the fork's 13–20px `uiFontSize`
   slider. A previously customized text size resets to the default once; re-set it
