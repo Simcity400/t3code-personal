@@ -679,30 +679,34 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
   if (!payload) {
     return false;
   }
-  // A task owned by an agent (a subagent's own background shell) is
-  // agent-internal regardless of bypass tagging.
-  if (
-    (activity.kind === "task.started" ||
-      activity.kind === "task.progress" ||
-      activity.kind === "task.updated" ||
-      activity.kind === "task.completed") &&
-    typeof payload.agentId === "string" &&
-    payload.agentId.trim().length > 0
-  ) {
-    return true;
+  const isTaskRow =
+    activity.kind === "task.started" ||
+    activity.kind === "task.progress" ||
+    activity.kind === "task.updated" ||
+    activity.kind === "task.completed";
+  // Task rows classify by the server stamp: a subagent's own background
+  // shell (agentId + "background") is agent-internal, but a nested AGENT
+  // (agentId + "agent") stays visible so its rows can anchor a spawn CTA
+  // (review finding: hiding on agentId alone removed nested agents and
+  // their anchors). Bypassed agent lifecycle rows also pass — collapse
+  // folds every such row into its batch's single CTA row, which is how
+  // Codex children (whose rows are ALL bypassed) get an anchor at the
+  // spawn point.
+  if (isTaskRow) {
+    const ownedByAgent = typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
+    if (ownedByAgent || payload.timelineBypass === true) {
+      const isAgentTaskRow =
+        activity.kind !== "task.updated" &&
+        typeof payload.taskId === "string" &&
+        !isBackgroundTaskActivity(payload);
+      return !isAgentTaskRow;
+    }
+    return false;
   }
   if (payload.timelineBypass === true) {
-    // Bypassed agent lifecycle rows still feed the spawn CTA: collapse folds
-    // every such row into its batch's single row, so letting them through
-    // preserves the quiet-timeline invariant while giving Codex children —
-    // whose rows are ALL bypassed — a CTA anchor (wire-probe finding: no
-    // CTA ever formed for a Codex fleet).
-    const isAgentTaskRow =
-      (activity.kind === "task.progress" || activity.kind === "task.completed") &&
-      typeof payload.taskId === "string" &&
-      !isBackgroundTaskActivity(payload);
-    return !isAgentTaskRow;
+    return true;
   }
+  // Non-task rows (attributed tool activity) owned by an agent are internal.
   return typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
 }
 
@@ -888,7 +892,13 @@ function agentSpawnGroupKey(entry: DerivedWorkLogEntry): string {
   if (entry.isWorkflowCoordinator) {
     return `wf:${taskId}`;
   }
-  return `direct:${entry.turnId ?? "no-turn"}`;
+  // No turn id means no batch signal at all: fall back to one group per
+  // task. Unrelated turn-less spawns (separate fleets whose rows lost their
+  // turn) must not collapse into one immortal "direct:no-turn" CTA
+  // accumulating every agent the thread ever ran (review finding). Adapters
+  // stamp spawn turns (Codex spawnTurnId; Claude rows ride real turns), so
+  // this path is defensive.
+  return entry.turnId ? `direct:${entry.turnId}` : `direct:task:${taskId}`;
 }
 
 function collapseDerivedWorkLogEntries(

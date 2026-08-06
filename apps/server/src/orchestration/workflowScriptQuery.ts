@@ -33,16 +33,18 @@ export const readWorkflowScript = Effect.fn("orchestration.readWorkflowScript")(
 
   if (!NodePath.isAbsolute(requested) || NodePath.extname(requested) !== ".js") {
     return yield* Effect.fail(
-      new OrchestrationGetWorkflowScriptError({
-        message: "Workflow scripts must be absolute .js paths.",
-      }),
+      new OrchestrationGetWorkflowScriptError({ reason: "invalid-path", scriptPath: requested }),
     );
   }
 
   const root = yield* Effect.tryPromise({
     try: () => NodeFSP.realpath(scriptsRoot()),
     catch: (cause) =>
-      new OrchestrationGetWorkflowScriptError({ message: "Script root unavailable.", cause }),
+      new OrchestrationGetWorkflowScriptError({
+        reason: "root-unavailable",
+        scriptPath: requested,
+        cause,
+      }),
   });
 
   // Realpath the FILE itself (not just its directory): a symlink named
@@ -50,39 +52,44 @@ export const readWorkflowScript = Effect.fn("orchestration.readWorkflowScript")(
   const resolved = yield* Effect.tryPromise({
     try: () => NodeFSP.realpath(requested),
     catch: (cause) =>
-      new OrchestrationGetWorkflowScriptError({ message: "Script not found.", cause }),
+      new OrchestrationGetWorkflowScriptError({
+        reason: "not-found",
+        scriptPath: requested,
+        cause,
+      }),
   });
 
   if (resolved !== root && !resolved.startsWith(`${root}${NodePath.sep}`)) {
     return yield* Effect.fail(
-      new OrchestrationGetWorkflowScriptError({
-        message: "Script path is outside the workflow scripts root.",
-      }),
+      new OrchestrationGetWorkflowScriptError({ reason: "outside-root", scriptPath: resolved }),
     );
   }
   if (NodePath.extname(resolved) !== ".js") {
     return yield* Effect.fail(
-      new OrchestrationGetWorkflowScriptError({ message: "Resolved script is not a .js file." }),
+      new OrchestrationGetWorkflowScriptError({ reason: "not-js", scriptPath: resolved }),
     );
   }
 
   // TOCTOU-safe read (review finding): open FIRST, then verify what was
   // actually opened via the file descriptor. Re-checking the path after
-  // open would race against a swap; fstat on the handle cannot.
+  // open would race against a swap; fstat on the handle cannot. The two
+  // containment checks fail with their own tagged reasons (not manufactured
+  // Errors folded into read-failed); "read-failed" is reserved for genuine
+  // platform failures with the real cause attached.
   const read = yield* Effect.tryPromise({
     try: async () => {
       const handle = await NodeFSP.open(resolved, "r");
       try {
         const stat = await handle.stat();
         if (!stat.isFile()) {
-          throw new Error("not a regular file");
+          return { failure: "not-regular-file" as const };
         }
         // The opened inode must be the same one realpath resolved to: a
         // process swapping the path between realpath and open changes the
         // inode, which this comparison catches.
         const pathStat = await NodeFSP.lstat(resolved);
         if (stat.ino !== pathStat.ino || stat.dev !== pathStat.dev) {
-          throw new Error("file changed between resolution and open");
+          return { failure: "changed-during-read" as const };
         }
         const truncated = stat.size > SCRIPT_BYTE_CAP;
         const buffer = Buffer.alloc(Math.min(stat.size, SCRIPT_BYTE_CAP));
@@ -96,8 +103,18 @@ export const readWorkflowScript = Effect.fn("orchestration.readWorkflowScript")(
       }
     },
     catch: (cause) =>
-      new OrchestrationGetWorkflowScriptError({ message: "Script read failed.", cause }),
+      new OrchestrationGetWorkflowScriptError({
+        reason: "read-failed",
+        scriptPath: resolved,
+        cause,
+      }),
   });
+  if ("failure" in read) {
+    return yield* new OrchestrationGetWorkflowScriptError({
+      reason: read.failure,
+      scriptPath: resolved,
+    });
+  }
 
   return {
     scriptPath: resolved,

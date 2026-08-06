@@ -19,7 +19,10 @@ import type {
   AgentPanelWorkflowGroup,
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import { formatSubagentTokenCount } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  formatSubagentModelLabel,
+  formatSubagentTokenCount,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -139,6 +142,7 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
 function AgentRow({ agent }: { agent: RuntimeSubagent }) {
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
+  const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
 
   return (
     <div className="rounded-md px-1.5 py-1">
@@ -172,8 +176,10 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
             </span>
           ) : null}
           <span className="mt-0.5 flex items-center gap-1 font-mono text-[.7rem] text-muted-foreground/70">
+            {modelLabel ? <span className="truncate">{modelLabel}</span> : null}
             {agent.usage ? (
               <span className="tabular-nums">
+                {modelLabel ? "· " : ""}
                 {formatSubagentTokenCount(agent.usage.totalTokens)} tok
               </span>
             ) : null}
@@ -430,9 +436,11 @@ function SettledWorkflowSection({ group }: { group: AgentPanelWorkflowGroup }) {
   const [open, setOpen] = useState(false);
   const members = workflowMembers(group);
   const failed = members.filter((member) => member.status === "failed").length;
+  // Coordinator usage may already aggregate members (panel-footer rule):
+  // count it only when there are no member rows to sum.
   const totalTokens = members.reduce(
     (sum, member) => sum + (member.usage?.totalTokens ?? 0),
-    group.workflow.usage?.totalTokens ?? 0,
+    members.length === 0 ? (group.workflow.usage?.totalTokens ?? 0) : 0,
   );
   const elapsed =
     group.workflow.startedAt && group.workflow.completedAt

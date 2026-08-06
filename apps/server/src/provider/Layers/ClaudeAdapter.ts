@@ -201,6 +201,10 @@ interface ClaudeTaskAgentState {
   runHandles: TaskRunHandles | undefined;
   /** Set when this task was launched from inside a subagent. */
   owningAgentId: string | undefined;
+  /** Seeded from the launching tool's input; refined by the subagent's own
+   * assistant snapshots (authoritative API model). */
+  model: string | undefined;
+  effort: string | undefined;
 }
 
 interface ClaudeSessionContext {
@@ -211,6 +215,9 @@ interface ClaudeSessionContext {
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
   currentApiModelId: string | undefined;
+  /** Effective effort for the session's turns; subagents without an explicit
+   * effort override inherit this. */
+  currentEffort: string | undefined;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
@@ -221,6 +228,14 @@ interface ClaudeSessionContext {
   readonly inFlightTools: Map<number, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   readonly taskAgents: Map<string, ClaudeTaskAgentState>;
+  /**
+   * Last emitted workflow-member fingerprint per member slot. A coordinator
+   * task_progress repeats the FULL member array every tick; without a
+   * material-transition filter one provider tick fans out into up to 100
+   * runtime events (event-log writes, queue pressure, client reducer work)
+   * even when nothing changed for most members.
+   */
+  readonly workflowMemberFingerprints: Map<string, string>;
   /** Task ids that have started and not yet reached a terminal state. */
   readonly liveTaskIds: Set<string>;
   turnState: ClaudeTurnState | undefined;
@@ -960,6 +975,8 @@ function taskLinkageFor(
     ...(agent.owningAgentId ? { agentId: agent.owningAgentId } : {}),
     ...(agent.description ? { title: agent.description } : {}),
     ...(agent.subagentType ? { role: agent.subagentType } : {}),
+    ...(agent.model ? { model: agent.model } : {}),
+    ...(agent.effort ? { effort: agent.effort } : {}),
     ...(agent.toolUseId ? { toolUseId: agent.toolUseId } : {}),
     ...(agent.workflowName ? { workflowName: agent.workflowName } : {}),
     ...(agent.runHandles ? { runHandles: agent.runHandles } : {}),
@@ -2764,6 +2781,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             skipTranscript: existing?.skipTranscript ?? false,
             runHandles,
             owningAgentId: existing?.owningAgentId,
+            model: existing?.model,
+            effort: existing?.effort,
           });
         }
       }
@@ -2798,6 +2817,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const assistantParentToolUseId = (message as { parent_tool_use_id?: string | null })
       .parent_tool_use_id;
     if (assistantParentToolUseId !== null && assistantParentToolUseId !== undefined) {
+      // The snapshot's message.model is the authoritative API model the
+      // subagent actually ran on — refine the seeded launch-time value.
+      const owningTaskId = agentIdForParentToolUse(context.taskAgents, assistantParentToolUseId);
+      const snapshotModel = trimmedString(message.message.model);
+      const owningAgent = owningTaskId ? context.taskAgents.get(owningTaskId) : undefined;
+      if (owningAgent && snapshotModel) {
+        owningAgent.model = snapshotModel;
+      }
       context.lastAssistantUuid = message.uuid;
       yield* updateResumeCursor(context);
       return;
@@ -2921,26 +2948,29 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
     const coordinatorId = message.task_id;
-    const coordinatorLinkage = taskLinkageFor(context.taskAgents, coordinatorId);
-    if (progress.phases.length > 0) {
-      // Phases ride on a coordinator-addressed progress row.
-      const stamp = yield* makeEventStamp();
-      yield* offerRuntimeEvent({
-        ...base,
-        eventId: stamp.eventId,
-        createdAt: stamp.createdAt,
-        type: "task.progress",
-        payload: {
-          taskId: RuntimeTaskId.make(coordinatorId),
-          description: message.description,
-          phases: progress.phases,
-          ...coordinatorLinkage,
-        },
-      });
-    }
     for (const entry of progress.agents) {
       const memberTaskId = `${coordinatorId}:wf:${entry.index}`;
       const status = workflowAgentStatus(entry);
+      // Material-transition filter: the wire repeats every member each tick.
+      // Emit only when something the client renders actually changed, so a
+      // 100-agent fleet costs ~1 event per changed member instead of 100
+      // per tick (review finding: unbounded event amplification).
+      const fingerprint = [
+        status,
+        entry.label ?? "",
+        entry.model ?? "",
+        entry.lastToolName ?? "",
+        entry.error ?? "",
+        entry.tokens ?? "",
+        entry.toolCalls ?? "",
+        entry.phaseIndex ?? "",
+        entry.phaseTitle ?? "",
+        entry.attempt ?? "",
+      ].join("\u001f");
+      if (context.workflowMemberFingerprints.get(memberTaskId) === fingerprint) {
+        continue;
+      }
+      context.workflowMemberFingerprints.set(memberTaskId, fingerprint);
       const stamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({
         ...base,
@@ -3099,6 +3129,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             )
           : undefined;
         const owningAgentId = launchingTool?.agentId;
+        // Model/effort: the Agent tool's input carries explicit overrides;
+        // absent ones inherit the session's selection (SDK behavior).
+        // Subagent assistant snapshots later refine model with the
+        // authoritative API id. AgentInput.effort may be a named level or an
+        // integer.
+        const launchInput = launchingTool?.input;
+        const model =
+          trimmedString(launchInput?.model) ?? trimmedString(context.session.model ?? undefined);
+        const rawLaunchEffort = launchInput?.effort;
+        const effort =
+          trimmedString(rawLaunchEffort) ??
+          (typeof rawLaunchEffort === "number" && Number.isFinite(rawLaunchEffort)
+            ? String(rawLaunchEffort)
+            : context.currentEffort);
         // Remember the agent identity so every later task.* payload for this
         // taskId is self-describing (identity must survive activity retention).
         context.taskAgents.set(message.task_id, {
@@ -3111,6 +3155,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           skipTranscript: message.skip_transcript === true,
           runHandles: context.taskAgents.get(message.task_id)?.runHandles,
           owningAgentId,
+          model,
+          effort,
         });
         context.liveTaskIds.add(message.task_id);
         yield* offerRuntimeEvent({
@@ -3123,6 +3169,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(owningAgentId ? { agentId: owningAgentId } : {}),
             ...(message.description ? { title: message.description } : {}),
             ...(message.subagent_type ? { role: message.subagent_type } : {}),
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
             ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),
             ...(message.workflow_name ? { workflowName: message.workflow_name } : {}),
           },
@@ -3140,6 +3188,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         );
         const linkage = taskLinkageFor(context.taskAgents, message.task_id);
         const typedUsage = normalizeTaskUsage(message.usage);
+        // Phases ride on the coordinator's ONE progress row per tick. A
+        // separate phases-only row shared the stable ingestion activity id
+        // with this full row, and the thinner upsert overwrote usage and
+        // progress text (review finding).
+        const workflowPhases = parseWorkflowProgress(
+          (message as unknown as Record<string, unknown>).workflow_progress,
+        )?.phases;
         yield* offerRuntimeEvent({
           ...base,
           type: "task.progress",
@@ -3150,6 +3205,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(message.usage ? { usage: message.usage } : {}),
             ...(typedUsage ? { typedUsage } : {}),
             ...(message.last_tool_name ? { lastToolName: message.last_tool_name } : {}),
+            ...(workflowPhases && workflowPhases.length > 0 ? { phases: workflowPhases } : {}),
             ...linkage,
             ...(message.subagent_type ? { role: message.subagent_type } : {}),
           },
@@ -3674,6 +3730,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const inFlightTools = new Map<number, ToolInFlight>();
       const claudeTasks = new Map<string, ClaudeTaskState>();
       const taskAgents = new Map<string, ClaudeTaskAgentState>();
+      const workflowMemberFingerprints = new Map<string, string>();
       const liveTaskIds = new Set<string>();
 
       const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
@@ -4111,6 +4168,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         startedAt,
         basePermissionMode: permissionMode,
         currentApiModelId: apiModelId,
+        currentEffort: effectiveEffort ?? undefined,
         resumeSessionId: sessionId,
         pendingApprovals,
         pendingUserInputs,
@@ -4118,6 +4176,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         inFlightTools,
         claudeTasks,
         taskAgents,
+        workflowMemberFingerprints,
         liveTaskIds,
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
@@ -4235,6 +4294,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...context.session,
         model: modelSelection.model,
       };
+      const turnCaps = getClaudeModelCapabilities(modelSelection.model);
+      const turnEffort = resolveClaudeEffort(
+        turnCaps,
+        getModelSelectionStringOptionValue(modelSelection, "effort"),
+      );
+      context.currentEffort =
+        getEffectiveClaudeAgentEffort(turnEffort ?? null, modelSelection.model) ?? undefined;
     }
 
     // Apply interaction mode by switching the SDK's permission mode.
@@ -4317,6 +4383,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // not strand the rest or block the turn interrupt), then interrupt.
       if (context.query.stopTask && context.liveTaskIds.size > 0) {
         const liveIds = Array.from(context.liveTaskIds);
+        // Bounded: a wedged child's stopTask promise may never settle
+        // (Effect.ignore handles rejection, not non-resolution), and the
+        // parent interrupt below MUST still run — Stop matters most during
+        // runaway fleets (review finding). Per-task timeout keeps one hung
+        // child from consuming the whole budget.
         yield* Effect.forEach(
           liveIds,
           (taskId) =>
@@ -4324,9 +4395,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               // Invoke through the query object: SDK methods rely on `this`.
               try: () => context.query.stopTask!(taskId),
               catch: () => undefined,
-            }).pipe(Effect.ignore),
+            }).pipe(Effect.timeoutOption("3 seconds"), Effect.ignore),
           { concurrency: 8, discard: true },
-        );
+        ).pipe(Effect.timeoutOption("10 seconds"), Effect.ignore);
       }
       yield* Effect.tryPromise({
         try: () => context.query.interrupt(),

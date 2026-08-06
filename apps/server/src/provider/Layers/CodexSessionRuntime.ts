@@ -624,6 +624,13 @@ interface CollabChildAgentState {
   readonly agentPath: string | undefined;
   readonly depth: number | undefined;
   readonly parentThreadId: string | undefined;
+  /**
+   * Parent canonical turn active when the child registered. Stamped on every
+   * synthetic collabAgent/* event so clients can batch a fleet by its spawn
+   * turn — without it, separate fleets in one thread collapsed into a single
+   * "direct:no-turn" CTA (review finding).
+   */
+  readonly spawnTurnId: TurnId | undefined;
 }
 
 function readThreadSpawnSource(thread: { readonly source: unknown }):
@@ -697,6 +704,72 @@ function shouldSuppressChildConversationNotification(
     method === "turn/plan/updated" ||
     method === "item/plan/delta"
   );
+}
+
+/**
+ * How a notification addressed to a REGISTERED child thread is handled.
+ *
+ * Exported and pure so the routing table can be asserted against captured
+ * wire traces (see codexMultiAgentWire.json) rather than only read.
+ *
+ * - "agent-event": map to a synthetic collabAgent/* event (Agents surface).
+ * - "parent": pass through to the parent path — it carries state the parent
+ *   still owns (approval correlation cleanup).
+ * - "drop": genuine child chatter with no parent meaning (deltas, name and
+ *   plan updates).
+ *
+ * Default is "drop" ONLY for the enumerated chatter; anything unrecognized
+ * routes to "parent" so new wire methods surface instead of vanishing
+ * (two shipped bugs came from a catch-all that swallowed everything).
+ */
+export type CodexChildNotificationRoute = "agent-event" | "parent" | "drop";
+
+const CHILD_AGENT_EVENT_METHODS: ReadonlySet<string> = new Set([
+  "turn/started",
+  "turn/completed",
+  "thread/status/changed",
+  "thread/tokenUsage/updated",
+  "item/started",
+  "item/completed",
+  "thread/closed",
+  "error",
+]);
+
+const CHILD_CHATTER_METHODS: ReadonlySet<string> = new Set([
+  "item/agentMessage/delta",
+  "item/reasoning/textDelta",
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/summaryPartAdded",
+  "item/commandExecution/outputDelta",
+  "item/fileChange/outputDelta",
+  "item/fileChange/patchUpdated",
+  "item/plan/delta",
+  "turn/plan/updated",
+  "turn/diff/updated",
+  "thread/name/updated",
+  "thread/settings/updated",
+  "rawResponseItem/completed",
+  // Child-owned thread lifecycle: the parent adapter maps these onto the
+  // PARENT thread (archived/compacted state), so a child compacting would
+  // rewrite the parent. Mirrors the v1 suppressor list — dropping them is
+  // the pre-existing behavior for collab children (review finding).
+  "thread/archived",
+  "thread/unarchived",
+  "thread/compacted",
+  // Registration path 1 handles a child's first thread/started; a repeat
+  // must not reach the parent (it would restart the parent's thread state).
+  "thread/started",
+]);
+
+export function routeCodexChildNotification(method: string): CodexChildNotificationRoute {
+  if (CHILD_AGENT_EVENT_METHODS.has(method)) {
+    return "agent-event";
+  }
+  if (CHILD_CHATTER_METHODS.has(method)) {
+    return "drop";
+  }
+  // Unknown or parent-owned (serverRequest/resolved, approvals, …).
+  return "parent";
 }
 
 function toCodexUserInputAnswer(
@@ -916,13 +989,26 @@ export const makeCodexSessionRuntime = (
           if (!spawn) {
             return false;
           }
+          // Merge with any subAgentActivity registration that got here
+          // first. spawnTurnId is REGISTRATION-time-only on both paths: for
+          // an already-known child we keep its value (set or unset) — a
+          // later thread/started during an unrelated parent turn must not
+          // backfill that turn as the spawn batch, which would stamp an old
+          // child onto a new fleet's CTA (review finding). Only a genuinely
+          // new registration captures the current turn.
+          const existingChild = (yield* Ref.get(collabChildAgentsRef)).get(thread.id);
+          const spawnTurnId = existingChild
+            ? existingChild.spawnTurnId
+            : ((yield* Ref.get(sessionRef)).activeTurnId ?? undefined);
           const state: CollabChildAgentState = {
             agentThreadId: thread.id,
-            nickname: spawn.nickname ?? thread.agentNickname ?? undefined,
-            role: spawn.role ?? thread.agentRole ?? undefined,
-            agentPath: spawn.agentPath,
-            depth: spawn.depth,
-            parentThreadId: spawn.parentThreadId ?? thread.parentThreadId ?? undefined,
+            nickname: spawn.nickname ?? thread.agentNickname ?? existingChild?.nickname,
+            role: spawn.role ?? thread.agentRole ?? existingChild?.role,
+            agentPath: spawn.agentPath ?? existingChild?.agentPath,
+            depth: spawn.depth ?? existingChild?.depth,
+            parentThreadId:
+              spawn.parentThreadId ?? thread.parentThreadId ?? existingChild?.parentThreadId,
+            spawnTurnId,
           };
           yield* Ref.update(collabChildAgentsRef, (current) => {
             const next = new Map(current);
@@ -933,6 +1019,7 @@ export const makeCodexSessionRuntime = (
             kind: "notification",
             threadId: options.threadId,
             method: "collabAgent/started",
+            ...(state.spawnTurnId ? { turnId: state.spawnTurnId } : {}),
             payload: {
               agentThreadId: state.agentThreadId,
               ...(state.nickname ? { nickname: state.nickname } : {}),
@@ -966,25 +1053,36 @@ export const makeCodexSessionRuntime = (
           ) {
             return false;
           }
+          const activitySpawnTurnId = (yield* Ref.get(sessionRef)).activeTurnId ?? undefined;
           yield* Ref.update(collabChildAgentsRef, (current) => {
-            if (current.has(item.agentThreadId)) {
-              return current;
-            }
+            const existing = current.get(item.agentThreadId);
             const next = new Map(current);
+            // Merge-late semantics: when thread/started registered first, a
+            // later subAgentActivity still carries the real agentPath (and a
+            // derived nickname) — fill missing fields, never clobber known
+            // ones. spawnTurnId is registration-time-only: for an already
+            // registered child, a later activity during an UNRELATED turn
+            // must not backfill that turn as the spawn batch (review
+            // finding); an unset spawn turn stays unset.
             next.set(item.agentThreadId, {
               agentThreadId: item.agentThreadId,
-              nickname: item.agentPath.split("/").findLast((segment) => segment.length > 0),
-              role: undefined,
-              agentPath: item.agentPath,
-              depth: undefined,
-              parentThreadId: undefined,
+              nickname:
+                existing?.nickname ??
+                item.agentPath.split("/").findLast((segment) => segment.length > 0),
+              role: existing?.role,
+              agentPath: existing?.agentPath ?? item.agentPath,
+              depth: existing?.depth,
+              parentThreadId: existing?.parentThreadId,
+              spawnTurnId: existing ? existing.spawnTurnId : activitySpawnTurnId,
             });
             return next;
           });
+          const registeredChild = (yield* Ref.get(collabChildAgentsRef)).get(item.agentThreadId);
           yield* emitEvent({
             kind: "notification",
             threadId: options.threadId,
             method: "collabAgent/activity",
+            ...(registeredChild?.spawnTurnId ? { turnId: registeredChild.spawnTurnId } : {}),
             payload: {
               agentThreadId: item.agentThreadId,
               agentPath: item.agentPath,
@@ -1033,6 +1131,7 @@ export const makeCodexSessionRuntime = (
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/turnStarted",
               payload: childIdentity,
             });
@@ -1047,6 +1146,7 @@ export const makeCodexSessionRuntime = (
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/turnCompleted",
               payload: {
                 ...childIdentity,
@@ -1058,6 +1158,7 @@ export const makeCodexSessionRuntime = (
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/statusChanged",
               payload: {
                 ...childIdentity,
@@ -1069,6 +1170,7 @@ export const makeCodexSessionRuntime = (
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/tokenUsage",
               payload: {
                 ...childIdentity,
@@ -1081,6 +1183,7 @@ export const makeCodexSessionRuntime = (
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/item",
               payload: {
                 ...childIdentity,
@@ -1089,17 +1192,58 @@ export const makeCodexSessionRuntime = (
             });
             return true;
           case "thread/closed":
+            // The child is gone: drop its live-turn entry so a later Stop
+            // doesn't waste a turn/interrupt RPC on a closed thread before
+            // reaching the parent (review finding).
+            yield* Ref.update(collabChildLiveTurnsRef, (current) => {
+              const next = new Map(current);
+              next.delete(child.agentThreadId);
+              return next;
+            });
             yield* emitEvent({
               kind: "notification",
               threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/closed",
               payload: childIdentity,
             });
             return true;
-          default:
-            // Remaining child chatter (name updates, deltas, plan updates)
-            // stays out of the parent timeline and has no agent mapping yet.
+          case "error": {
+            // A child error must surface as a failed agent, not vanish into
+            // the default swallow (review finding: the child stayed
+            // "running" forever). Retryable errors (willRetry) keep the
+            // child RUNNING and interruptible — mirroring the root error
+            // handler; settling it would orphan a still-live child from
+            // Stop (review finding). Terminal errors clean up the live turn
+            // like thread/closed and reuse the statusChanged systemError
+            // path.
+            const willRetry = (notification.params as { willRetry?: boolean }).willRetry === true;
+            if (willRetry) {
+              return true;
+            }
+            yield* Ref.update(collabChildLiveTurnsRef, (current) => {
+              const next = new Map(current);
+              next.delete(child.agentThreadId);
+              return next;
+            });
+            yield* emitEvent({
+              kind: "notification",
+              threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
+              method: "collabAgent/statusChanged",
+              payload: {
+                ...childIdentity,
+                status: { type: "systemError" },
+              },
+            });
             return true;
+          }
+          default:
+            // Routing table decides (single source of truth, asserted
+            // against captured wire traces): enumerated chatter is dropped,
+            // everything else — including methods this build has never seen
+            // — falls through to the parent path rather than vanishing.
+            return routeCodexChildNotification(notification.method) === "drop";
         }
       });
 
@@ -1116,12 +1260,68 @@ export const makeCodexSessionRuntime = (
         })();
 
         rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
-        if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
+        // Interception FIRST: a registered v2 child is usually also in the
+        // receiver-turn map (collabAgentToolCall.receiverThreadIds), and the
+        // legacy suppressor below would drop its lifecycle before it could
+        // become synthetic collabAgent events (review finding). The
+        // suppressor still covers UNREGISTERED children.
+        if (yield* interceptCollabChildNotification(notification)) {
           yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
           return;
         }
 
-        if (yield* interceptCollabChildNotification(notification)) {
+        // Suppression applies to receiver-map children (v1) AND to any
+        // conversation that is not the root thread. The live capture
+        // (codexMultiAgentWire.json) shows a child's thread/status/changed
+        // arriving BEFORE anything registers the child — pre-registration
+        // lifecycle must not reach the parent path, where the adapter maps
+        // thread/* onto parent session state. Root-id-known guard keeps the
+        // root's own early notifications flowing during session open.
+        const suppressRootId = currentProviderThreadId(yield* Ref.get(sessionRef));
+        const foreignConversation = (() => {
+          const providerConversationId = readNotificationThreadId(notification);
+          return (
+            providerConversationId !== undefined &&
+            suppressRootId !== undefined &&
+            providerConversationId !== suppressRootId
+          );
+        })();
+        if (
+          (childParentTurnId !== undefined || foreignConversation) &&
+          shouldSuppressChildConversationNotification(notification.method)
+        ) {
+          // Stop-everything must not depend on registration timing: a
+          // child's turn/started can arrive before the subAgentActivity that
+          // registers it (captured ordering), and suppressing it without
+          // remembering the live turn would leave that child running after
+          // Stop (review finding). Track live turns for ANY foreign
+          // conversation; interrupts are best-effort per child, so a
+          // false-positive entry costs one ignored RPC at worst.
+          const foreignThreadId = readNotificationThreadId(notification);
+          if (foreignThreadId !== undefined) {
+            if (notification.method === "turn/started") {
+              const foreignTurnId =
+                typeof (notification.params as { turn?: { id?: unknown } }).turn?.id === "string"
+                  ? (notification.params as { turn: { id: string } }).turn.id
+                  : undefined;
+              if (foreignTurnId) {
+                yield* Ref.update(collabChildLiveTurnsRef, (current) => {
+                  const next = new Map(current);
+                  next.set(foreignThreadId, foreignTurnId);
+                  return next;
+                });
+              }
+            } else if (
+              notification.method === "turn/completed" ||
+              notification.method === "thread/closed"
+            ) {
+              yield* Ref.update(collabChildLiveTurnsRef, (current) => {
+                const next = new Map(current);
+                next.delete(foreignThreadId);
+                return next;
+              });
+            }
+          }
           yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
           return;
         }
@@ -1602,7 +1802,12 @@ export const makeCodexSessionRuntime = (
           const session = yield* Ref.get(sessionRef);
           // Stop-everything: children are full threads with their own turns;
           // interrupting only the parent leaves the fleet running. Interrupt
-          // each live child turn first, best-effort per child.
+          // each live child turn first, best-effort per child, BOUNDED: the
+          // transport awaits an unbounded Deferred per request, so a wedged
+          // child would otherwise block the parent interrupt forever —
+          // exactly during the runaway fleet where Stop matters most
+          // (review finding). Per-child and overall deadlines guarantee the
+          // parent interrupt below always runs.
           const liveChildTurns = yield* Ref.get(collabChildLiveTurnsRef);
           yield* Effect.forEach(
             Array.from(liveChildTurns.entries()),
@@ -1612,9 +1817,9 @@ export const makeCodexSessionRuntime = (
                   threadId: childThreadId,
                   turnId: childTurnId,
                 })
-                .pipe(Effect.ignore),
+                .pipe(Effect.timeoutOption("3 seconds"), Effect.ignore),
             { concurrency: 8, discard: true },
-          );
+          ).pipe(Effect.timeoutOption("10 seconds"), Effect.ignore);
           const effectiveTurnId = turnId ?? session.activeTurnId;
           if (!effectiveTurnId) {
             return;
