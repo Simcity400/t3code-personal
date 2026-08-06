@@ -237,11 +237,38 @@ function resolvePendingUserInputAnswer(
   return normalizeDraftAnswer(draft?.selectedOptionLabel);
 }
 
+/** Codex children settle via task.updated (idle/failed/interrupted), never
+ * task.completed — these rows are mobile's only terminal signal for them. */
+const MOBILE_TERMINAL_UPDATE_STATUSES: ReadonlySet<string> = new Set([
+  "idle",
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+
+function isTerminalBypassUpdate(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind !== "task.updated") {
+    return false;
+  }
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  return (
+    payload?.timelineBypass === true &&
+    typeof payload.status === "string" &&
+    MOBILE_TERMINAL_UPDATE_STATUSES.has(payload.status)
+  );
+}
+
 /**
  * Quiet-timeline guarantee (mirrors web's session-logic): agent-internal
- * activity lives in the Agents sheet, not the work log. task.completed rows
- * are kept — with no workflow card on mobile they are the terminal signal
- * (a surface that hides rows must keep its own terminal signal).
+ * activity lives in the Agents sheet, not the work log. Terminal rows are
+ * kept — with no Agents surface on mobile they are the terminal signal
+ * (a surface that hides rows must keep its own terminal signal). That means
+ * task.completed (Claude) AND terminal bypassed task.updated (Codex, whose
+ * children never emit task.completed — review finding).
  */
 function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
   const payload =
@@ -251,10 +278,20 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
   if (!payload) {
     return false;
   }
-  if (payload.timelineBypass === true && activity.kind !== "task.completed") {
+  const isTerminalTaskRow = activity.kind === "task.completed" || isTerminalBypassUpdate(activity);
+  if (payload.timelineBypass === true && !isTerminalTaskRow) {
     return true;
   }
-  return typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
+  // agentId marks ownership, not "hide me": a NESTED AGENT's terminal row is
+  // the only signal mobile gets (no Agents sheet), so it stays. Only an
+  // agent's own background work (stamped "background") is internal — same
+  // rule as web (review finding: hiding on agentId alone dropped nested
+  // completions with no replacement UI).
+  const ownedByAgent = typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
+  if (!ownedByAgent) {
+    return false;
+  }
+  return !(isTerminalTaskRow && payload.agentKind === "agent");
 }
 
 function deriveWorkLogEntries(
@@ -265,7 +302,8 @@ function deriveWorkLogEntries(
   for (const activity of ordered) {
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
-    if (activity.kind === "task.updated") continue;
+    // Terminal bypassed updates pass: Codex children's only terminal signal.
+    if (activity.kind === "task.updated" && !isTerminalBypassUpdate(activity)) continue;
     if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
@@ -296,7 +334,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
   const title = extractToolTitle(payload);
-  const isTaskActivity = activity.kind === "task.progress" || activity.kind === "task.completed";
+  // task.updated included: terminal bypassed updates (Codex children's only
+  // terminal signal) must carry task identity so they collapse per child
+  // instead of stacking anonymous "Task idle" rows.
+  const isTaskActivity =
+    activity.kind === "task.progress" ||
+    activity.kind === "task.completed" ||
+    activity.kind === "task.updated";
   const taskSummary =
     isTaskActivity && typeof payload?.summary === "string" && payload.summary.length > 0
       ? payload.summary
@@ -388,7 +432,9 @@ function collapseDerivedWorkLogEntries(
   for (const entry of entries) {
     const isTaskRow =
       entry.taskId !== undefined &&
-      (entry.activityKind === "task.progress" || entry.activityKind === "task.completed");
+      (entry.activityKind === "task.progress" ||
+        entry.activityKind === "task.completed" ||
+        entry.activityKind === "task.updated");
     if (isTaskRow && entry.taskId !== undefined) {
       const existingIndex = taskRowIndex.get(entry.taskId);
       if (existingIndex !== undefined) {

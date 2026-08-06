@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { OrchestrationThreadActivity } from "@t3tools/contracts";
+import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tools/contracts";
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
+  formatSubagentModelLabel,
   formatSubagentTokenCount,
   isAgentAttributedToolActivity,
   isSubagentActivityKind,
@@ -11,10 +12,42 @@ import {
 } from "./subagentRuntime.ts";
 
 let sequence = 0;
+/**
+ * Fixtures model POST-INGESTION rows: ingestion stamps agentKind on every
+ * task.* payload, so the helper stamps too (same classifier). Pass an
+ * explicit agentKind (or agentKind: undefined via legacy()) to override.
+ */
 function activity(
   kind: string,
   payload: Record<string, unknown>,
   at = `2026-08-01T10:00:${String(sequence).padStart(2, "0")}.000Z`,
+): OrchestrationThreadActivity {
+  sequence += 1;
+  const stamped =
+    kind.startsWith("task.") && !("agentKind" in payload)
+      ? {
+          ...payload,
+          agentKind: classifyTaskAgentKind({
+            taskType: typeof payload.taskType === "string" ? payload.taskType : undefined,
+            agentId: typeof payload.agentId === "string" ? payload.agentId : undefined,
+          }),
+        }
+      : payload;
+  return {
+    id: `activity-${sequence}`,
+    tone: "info",
+    kind,
+    summary: kind,
+    payload: stamped,
+    turnId: null,
+    createdAt: at,
+  } as unknown as OrchestrationThreadActivity;
+}
+
+/** A pre-stamp row (legacy thread / old server): no agentKind at all. */
+function legacyActivity(
+  kind: string,
+  payload: Record<string, unknown>,
 ): OrchestrationThreadActivity {
   sequence += 1;
   return {
@@ -24,7 +57,7 @@ function activity(
     summary: kind,
     payload,
     turnId: null,
-    createdAt: at,
+    createdAt: `2026-08-01T10:00:${String(sequence).padStart(2, "0")}.000Z`,
   } as unknown as OrchestrationThreadActivity;
 }
 
@@ -79,7 +112,12 @@ describe("foldSubagentActivities", () => {
 
   it("completion before start stays terminal; a late start only fills metadata", () => {
     const agents = fold([
-      activity("task.completed", { taskId: "task-2", status: "failed", summary: "boom" }),
+      activity("task.completed", {
+        taskId: "task-2",
+        status: "failed",
+        summary: "boom",
+        role: "fixer",
+      }),
       activity("task.started", { taskId: "task-2", title: "Late metadata", role: "fixer" }),
     ]);
     expect(agents).toHaveLength(1);
@@ -93,7 +131,7 @@ describe("foldSubagentActivities", () => {
 
   it("duplicate terminal events are idempotent (timestamps do not slide)", () => {
     const agents = fold([
-      activity("task.started", { taskId: "task-3" }),
+      activity("task.started", { taskId: "task-3", taskType: "local_agent" }),
       activity(
         "task.completed",
         { taskId: "task-3", status: "completed" },
@@ -110,7 +148,7 @@ describe("foldSubagentActivities", () => {
 
   it("reactivation increments the run count and clears result/error", () => {
     const agents = fold([
-      activity("task.started", { taskId: "task-4" }),
+      activity("task.started", { taskId: "task-4", taskType: "local_agent" }),
       activity("task.completed", { taskId: "task-4", status: "completed", summary: "run 1 done" }),
       activity("task.updated", { taskId: "task-4", status: "running" }),
     ]);
@@ -134,7 +172,7 @@ describe("foldSubagentActivities", () => {
 
   it("cumulative usage max-merges: duplicate and late frames never shrink or double-count", () => {
     const agents = fold([
-      activity("task.started", { taskId: "task-5" }),
+      activity("task.started", { taskId: "task-5", taskType: "local_agent" }),
       activity("task.progress", {
         taskId: "task-5",
         typedUsage: { totalTokens: 900, inputTokens: 700 },
@@ -150,7 +188,7 @@ describe("foldSubagentActivities", () => {
 
   it("partial terminal usage preserves known breakdown fields", () => {
     const agents = fold([
-      activity("task.started", { taskId: "task-6" }),
+      activity("task.started", { taskId: "task-6", taskType: "local_agent" }),
       activity("task.progress", {
         taskId: "task-6",
         typedUsage: { totalTokens: 800, inputTokens: 600, outputTokens: 150 },
@@ -166,7 +204,7 @@ describe("foldSubagentActivities", () => {
 
   it("skips malformed rows individually without failing the fold", () => {
     const agents = fold([
-      activity("task.started", { taskId: "task-7", title: "Good" }),
+      activity("task.started", { taskId: "task-7", title: "Good", taskType: "local_agent" }),
       activity("task.progress", { bogus: true }),
       activity("task.progress", { taskId: 42 }),
     ]);
@@ -176,7 +214,7 @@ describe("foldSubagentActivities", () => {
 
   it("bounds repeated strings at 180 chars and the activity ring at 6 deduped entries", () => {
     const long = "x".repeat(500);
-    const rows = [activity("task.started", { taskId: "task-8" })];
+    const rows = [activity("task.started", { taskId: "task-8", taskType: "local_agent" })];
     for (let i = 0; i < 10; i += 1) {
       rows.push(activity("task.progress", { taskId: "task-8", summary: `${long}-${i}` }));
     }
@@ -440,6 +478,32 @@ describe("formatSubagentTokenCount", () => {
   });
 });
 
+describe("model and effort attribution", () => {
+  it("carries model/effort from start rows and refines model from later rows", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "task-m",
+        title: "Verify math",
+        model: "sonnet",
+        effort: "high",
+      }),
+      // Later row refines with the authoritative API model id; effort absent
+      // must not clear the known value.
+      activity("task.progress", { taskId: "task-m", model: "claude-sonnet-5[1m]" }),
+    ]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.model).toBe("claude-sonnet-5[1m]");
+    expect(agents[0]!.effort).toBe("high");
+  });
+
+  it("formatSubagentModelLabel compacts ids and appends effort", () => {
+    expect(formatSubagentModelLabel("claude-sonnet-5[1m]", "high")).toBe("sonnet-5[1m] · high");
+    expect(formatSubagentModelLabel("claude-opus-4-20250514", null)).toBe("opus-4");
+    expect(formatSubagentModelLabel("gpt-5.6-sol", "low")).toBe("gpt-5.6-sol · low");
+    expect(formatSubagentModelLabel(null, "high")).toBeNull();
+  });
+});
+
 describe("background task exclusion", () => {
   it("shells and monitors never join the roster (from any lifecycle row)", () => {
     const agents = fold([
@@ -456,6 +520,183 @@ describe("background task exclusion", () => {
       activity("task.progress", { taskId: "wf-1:wf:0", status: "running", parentAgentId: "wf-1" }),
     ]);
     expect(agents).toHaveLength(1);
+  });
+
+  it("the server stamp is the only classifier: no stamp means no roster row", () => {
+    const agents = fold([
+      // Stamped background: agent-looking fields don't matter.
+      activity("task.started", {
+        taskId: "bg-1",
+        agentKind: "background",
+        role: "watcher",
+        model: "sonnet",
+      }),
+      // Stamped agent: plain row still joins the roster.
+      activity("task.started", { taskId: "ag-1", agentKind: "agent", detail: "plain row" }),
+      // Legacy pre-stamp rows (old threads/servers) stay in the work log —
+      // exactly their pre-upgrade behavior.
+      legacyActivity("task.started", { taskId: "old-task", detail: "tailing logs" }),
+      legacyActivity("task.progress", { taskId: "old-task", summary: "still tailing" }),
+    ]);
+    expect(agents.map((agent) => agent.id)).toEqual(["ag-1"]);
+  });
+
+  it("membership is sticky: a stampless later row still reaches a known agent", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "a1", taskType: "local_agent", title: "Agent" }),
+      // Terminal row missing the stamp (defensive: adapters synthesize some
+      // rows) — sticky membership still routes it to the agent.
+      legacyActivity("task.completed", { taskId: "a1", status: "completed", summary: "done" }),
+    ]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.status).toBe("completed");
+    expect(agents[0]!.result).toBe("done");
+  });
+});
+
+describe("session-derived interruption", () => {
+  it("dead session interrupts live agents but preserves idle and settled", () => {
+    const rows = [
+      activity("task.started", { taskId: "live-1", taskType: "local_agent" }),
+      activity("task.started", { taskId: "idle-1", taskType: "local_agent" }),
+      activity("task.updated", { taskId: "idle-1", status: "idle" }),
+      activity("task.started", { taskId: "done-1", taskType: "local_agent" }),
+      activity("task.completed", { taskId: "done-1", status: "completed" }),
+    ];
+    const dead = foldSubagentActivities(rows, { sessionLive: false });
+    expect(dead.find((agent) => agent.id === "live-1")?.status).toBe("interrupted");
+    expect(dead.find((agent) => agent.id === "idle-1")?.status).toBe("idle");
+    expect(dead.find((agent) => agent.id === "done-1")?.status).toBe("completed");
+    const alive = foldSubagentActivities(rows, { sessionLive: true });
+    expect(alive.find((agent) => agent.id === "live-1")?.status).toBe("running");
+  });
+});
+
+describe("terminal robustness", () => {
+  it("task.updated creating an agent (start row aged out) counts one activation", () => {
+    const agents = fold([
+      activity("task.updated", { taskId: "orphan-u", status: "running", role: "worker" }),
+    ]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.activationCount).toBe(1);
+    expect(agents[0]!.status).toBe("running");
+  });
+
+  it("a late start after a terminal task.updated does not reopen the run", () => {
+    const agents = fold([
+      activity("task.updated", { taskId: "t1", status: "failed", role: "worker" }),
+      activity("task.started", { taskId: "t1", taskType: "local_agent", title: "Late" }),
+    ]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.status).toBe("failed");
+    expect(agents[0]!.title).toBe("Late");
+  });
+
+  it("a completion after a terminal task.updated still enriches result and usage", () => {
+    // Claude commonly emits terminal task.updated before task.completed;
+    // the completion carries the summary and final usage the update lacked.
+    const agents = fold([
+      activity("task.started", { taskId: "te-1", taskType: "local_agent" }),
+      activity(
+        "task.updated",
+        { taskId: "te-1", status: "completed", endedAt: "2026-08-01T10:59:00.000Z" },
+        "2026-08-01T11:00:00.000Z",
+      ),
+      activity(
+        "task.completed",
+        {
+          taskId: "te-1",
+          status: "completed",
+          summary: "final answer",
+          typedUsage: { totalTokens: 4200, toolUses: 7 },
+        },
+        "2026-08-01T11:00:01.000Z",
+      ),
+    ]);
+    const agent = agents[0]!;
+    expect(agent.status).toBe("completed");
+    expect(agent.result).toBe("final answer");
+    expect(agent.usage?.totalTokens).toBe(4200);
+    // Timestamps stay pinned to the transition that settled the run.
+    expect(agent.completedAt).toBe("2026-08-01T10:59:00.000Z");
+  });
+
+  it("duplicate completions keep the FIRST result, not the last", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "t2", taskType: "local_agent" }),
+      activity("task.completed", { taskId: "t2", status: "completed", summary: "first result" }),
+      activity("task.completed", { taskId: "t2", status: "completed", summary: "second result" }),
+    ]);
+    expect(agents[0]!.result).toBe("first result");
+  });
+
+  it("provider endedAt wins over ingestion time on the settling transition", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "t3", taskType: "local_agent" }),
+      activity(
+        "task.updated",
+        { taskId: "t3", status: "failed", endedAt: "2026-08-01T09:59:59.000Z" },
+        "2026-08-01T10:00:30.000Z",
+      ),
+    ]);
+    expect(agents[0]!.completedAt).toBe("2026-08-01T09:59:59.000Z");
+  });
+
+  it("workflow retries count each attempt once", () => {
+    const agents = fold([
+      activity("task.progress", {
+        taskId: "wf-r:wf:0",
+        parentAgentId: "wf-r",
+        status: "running",
+        attempt: 1,
+      }),
+      activity("task.progress", {
+        taskId: "wf-r:wf:0",
+        parentAgentId: "wf-r",
+        status: "failed",
+        attempt: 1,
+      }),
+      activity("task.progress", {
+        taskId: "wf-r:wf:0",
+        parentAgentId: "wf-r",
+        status: "running",
+        attempt: 2,
+      }),
+    ]);
+    expect(agents[0]!.activationCount).toBe(2);
+  });
+});
+
+describe("phase membership", () => {
+  it("members with unknown phase indices land in unphasedMembers, never vanish", () => {
+    const model = deriveAgentPanelModel({
+      agents: fold([
+        activity("task.started", {
+          taskId: "wf-p",
+          taskType: "local_workflow",
+          phases: [{ index: 0, title: "Only phase" }],
+        }),
+        activity("task.progress", {
+          taskId: "wf-p:wf:0",
+          parentAgentId: "wf-p",
+          status: "running",
+          phaseIndex: 0,
+        }),
+        activity("task.progress", {
+          taskId: "wf-p:wf:9",
+          parentAgentId: "wf-p",
+          status: "running",
+          phaseIndex: 9,
+        }),
+      ]),
+    });
+    const group = model.workflows[0]!;
+    const visible = [
+      ...group.phases.flatMap((phase) => phase.members),
+      ...group.unphasedMembers,
+    ].map((member) => member.id);
+    expect(visible).toContain("wf-p:wf:0");
+    expect(visible).toContain("wf-p:wf:9");
   });
 });
 
