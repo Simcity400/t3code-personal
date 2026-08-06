@@ -227,3 +227,12 @@
   --sidebar-border: rgb(160 190 220 / 16%);
   --sidebar-stage-fade: var(--sidebar);
 }
+
+/* ── Fork tweak: full-brightness chat text ─────────────────────────────
+   ChatMarkdown's root class dims assistant messages to text-foreground/80;
+   this unlayered rule outranks the Tailwind utility layer and renders chat
+   markdown at 100% foreground in every theme. */
+
+.chat-markdown {
+  color: var(--foreground);
+}
