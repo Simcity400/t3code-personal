@@ -125,17 +125,17 @@
   --background: #211e19;
   --app-chrome-background: var(--background);
   --surface-raised: var(--secondary);
-  --foreground: #ece5d7;
+  --foreground: #f5efe3;
   --card: #2a2620;
-  --card-foreground: #ece5d7;
+  --card-foreground: #f5efe3;
   --popover: #2f2b24;
-  --popover-foreground: #ece5d7;
+  --popover-foreground: #f5efe3;
   --primary: oklch(0.75 0.11 80);
   --primary-foreground: #211e19;
   --secondary: #322d26;
-  --secondary-foreground: #ece5d7;
+  --secondary-foreground: #f5efe3;
   --muted: #322d26;
-  --muted-foreground: #b5aa94;
+  --muted-foreground: #c9bfa9;
   --accent: #3a352c;
   --accent-foreground: #f2ecdf;
   --destructive: #ef4444;
@@ -145,7 +145,7 @@
   --ring: oklch(0.75 0.11 80);
   --sidebar: #26221c;
   --sidebar-foreground: var(--foreground);
-  --sidebar-muted-foreground: #b5aa94;
+  --sidebar-muted-foreground: #c9bfa9;
   --sidebar-control-surface: var(--muted);
   --sidebar-row-hover: rgb(236 229 215 / 6%);
   --sidebar-row-active: rgb(236 229 215 / 11%);
@@ -199,17 +199,17 @@
   --background: #0e1621;
   --app-chrome-background: var(--background);
   --surface-raised: var(--secondary);
-  --foreground: #e6edf5;
+  --foreground: #f2f6fb;
   --card: #16202d;
-  --card-foreground: #e6edf5;
+  --card-foreground: #f2f6fb;
   --popover: #1a2534;
-  --popover-foreground: #e6edf5;
+  --popover-foreground: #f2f6fb;
   --primary: oklch(0.7 0.13 235);
   --primary-foreground: #0e1621;
   --secondary: #1c2836;
-  --secondary-foreground: #e6edf5;
+  --secondary-foreground: #f2f6fb;
   --muted: #1c2836;
-  --muted-foreground: #9fb2c7;
+  --muted-foreground: #b6c6d9;
   --accent: #243244;
   --accent-foreground: #eef4fa;
   --destructive: #ef4444;
@@ -219,7 +219,7 @@
   --ring: oklch(0.7 0.13 235);
   --sidebar: #121b28;
   --sidebar-foreground: var(--foreground);
-  --sidebar-muted-foreground: #9fb2c7;
+  --sidebar-muted-foreground: #b6c6d9;
   --sidebar-control-surface: var(--muted);
   --sidebar-row-hover: rgb(160 190 220 / 7%);
   --sidebar-row-active: rgb(160 190 220 / 12%);
@@ -235,4 +235,29 @@
 
 .chat-markdown {
   color: var(--foreground);
+}
+
+/* ── Fork tweak: brighter dark-mode text ──────────────────────────────
+   Raises the default dark palette's text one step across the board while
+   keeping the primary/secondary hierarchy: foreground goes to white and
+   muted-foreground to a lighter gray; every opacity-derived shade scales
+   with them. Scoped to the default theme — the custom themes above carry
+   their own brightened values. */
+
+:root.dark:not([data-app-theme]) {
+  --foreground: #ffffff;
+  --card-foreground: #ffffff;
+  --popover-foreground: #ffffff;
+  --secondary-foreground: #ffffff;
+  --accent-foreground: #ffffff;
+  --muted-foreground: #b8babf;
+}
+
+:root.dark:not([data-app-theme]) :is([data-sidebar-version="v1"], [data-sidebar-version="v2"]) {
+  --foreground: #ffffff;
+  --card-foreground: var(--foreground);
+  --accent-foreground: #ffffff;
+  --muted-foreground: #bfc1c6;
+  --sidebar-foreground: var(--foreground);
+  --sidebar-muted-foreground: var(--muted-foreground);
 }
