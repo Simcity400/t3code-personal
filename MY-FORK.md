@@ -53,6 +53,14 @@ machine.
   `data-app-theme` attribute set by `apps/web/src/hooks/useTheme.ts`.
 - **Full-brightness chat text** (2026-08-06): the official app dims assistant messages
   to 80% foreground; a rule at the end of `themes.css` restores 100% in every theme.
+- **Custom color picker** (2026-08-07, Settings → Appearance → Custom colors): eight
+  color swatches (background, panels, text layers, accent, highlight, borders) that
+  override the active theme live, stored per theme + light/dark mode in localStorage
+  (`t3code:custom-colors`). Implemented in `apps/web/src/hooks/customThemeColors.ts` +
+  `apps/web/src/components/settings/CustomColorControls.tsx`; applied via a
+  `!important` style tag injected by `useTheme.ts`, so it outranks every stylesheet.
+- **One-line composer + brighter dark text + readable placeholder** (2026-08-06/07):
+  rules at the end of `themes.css`.
 - **Text size**: retired 2026-08-05 — the official app gained its own font size
   controls (Settings → Appearance), which replaced the fork's 13–20px `uiFontSize`
   slider. A previously customized text size resets to the default once; re-set it
