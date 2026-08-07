@@ -3,6 +3,8 @@ import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 
+import { applyCustomThemeColors, setCustomColorsAppliedCallback } from "./customThemeColors";
+
 const ThemePreference = Schema.Literals(["light", "dark", "system"]);
 type Theme = typeof ThemePreference.Type;
 
@@ -238,6 +240,7 @@ function applyTheme(theme: Theme, colorTheme: ColorTheme, suppressTransitions = 
     }
   }
   lastAppliedTheme = { theme, systemDark, colorTheme };
+  applyCustomThemeColors(colorTheme);
   syncBrowserChromeTheme();
   syncDesktopTheme(theme);
   if (suppressTransitions) {
@@ -285,6 +288,7 @@ export function syncDesktopTheme(theme: Theme) {
 
 // Apply immediately on module load to prevent flash
 if (typeof document !== "undefined" && typeof window !== "undefined") {
+  setCustomColorsAppliedCallback(syncBrowserChromeTheme);
   applyTheme(getStored(), readColorThemePreference());
 }
 

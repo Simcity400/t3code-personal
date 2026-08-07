@@ -48,9 +48,8 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/appearance",
   },
   {
-    // Distinct from the slider control's `ui-font-size` id.
-    id: "text-size",
-    title: "Text size",
+    id: "custom-colors",
+    title: "Custom colors",
     to: "/settings/appearance",
   },
   {

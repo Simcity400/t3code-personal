@@ -73,6 +73,8 @@ import {
 import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
 import { type ColorTheme, DEFAULT_COLOR_THEME, useTheme } from "../../hooks/useTheme";
+import { useCustomThemeColors } from "../../hooks/customThemeColors";
+import { CustomColorControls } from "./CustomColorControls";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -1002,7 +1004,8 @@ function BackgroundActivityAdvancedDialog({
 }
 
 export function AppearanceSettingsPanel() {
-  const { theme, setTheme, colorTheme, setColorTheme } = useTheme();
+  const { theme, setTheme, colorTheme, setColorTheme, resolvedTheme } = useTheme();
+  const customColors = useCustomThemeColors(colorTheme, resolvedTheme);
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const environmentStageLabel = useEnvironmentStageLabel();
@@ -1087,6 +1090,17 @@ export function AppearanceSettingsPanel() {
               </SelectPopup>
             </Select>
           }
+        />
+
+        <SettingsRow
+          {...searchableSetting("custom-colors")}
+          description={`Fine-tune individual interface colors. Edits apply to the active color theme's ${resolvedTheme} mode and take effect instantly.`}
+          resetAction={
+            Object.keys(customColors.overrides).length > 0 ? (
+              <SettingResetButton label="custom colors" onClick={customColors.resetAll} />
+            ) : null
+          }
+          control={<CustomColorControls colors={customColors} />}
         />
 
         <SettingsRow
