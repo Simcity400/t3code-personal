@@ -67,7 +67,10 @@ export const CUSTOM_COLOR_TOKENS: readonly CustomColorToken[] = [
   {
     key: "borders",
     label: "Borders & outlines",
-    cssVars: ["--border", "--sidebar-border", "--input"],
+    // --chat-composer-outline is the composer bubble's private border var;
+    // it's (re)defined on .chat-composer-glass-shell, which is why that
+    // element is part of the override selector below.
+    cssVars: ["--border", "--sidebar-border", "--input", "--chat-composer-outline"],
   },
 ];
 
@@ -136,7 +139,10 @@ function buildBlock(selectorPrefix: string, overrides: ModeOverrides): string {
     }
   }
   if (declarations.length === 0) return "";
-  const shells = `:is([data-sidebar-version="v1"], [data-sidebar-version="v2"])`;
+  // Descendant surfaces that (re)define palette vars locally must be listed
+  // here: a var set on the element itself beats anything inherited from
+  // :root, no matter the specificity or !important on the root declaration.
+  const shells = `:is([data-sidebar-version="v1"], [data-sidebar-version="v2"], .chat-composer-glass-shell)`;
   return `${selectorPrefix}, ${selectorPrefix} ${shells} {\n${declarations.join("\n")}\n}\n`;
 }
 
