@@ -65,6 +65,11 @@ export const CUSTOM_COLOR_TOKENS: readonly CustomColorToken[] = [
     cssVars: ["--accent", "--sidebar-row-hover", "--sidebar-row-active", "--sidebar-row-selected"],
   },
   {
+    key: "scrollbars",
+    label: "Scrollbars",
+    cssVars: ["--app-scrollbar-thumb", "--app-scrollbar-thumb-hover"],
+  },
+  {
     key: "borders",
     label: "Borders & outlines",
     // --chat-composer-outline is the composer bubble's private border var;
