@@ -6,11 +6,13 @@ name: Fork Sync
 # so every machine only ever pulls a ready-made main — no machine merges or
 # pins locally, and machines can never invent conflicting history.
 #
-# When the upstream merge conflicts with fork customizations, the job pushes a
-# marker branch `needs-merge-help`; the in-app fork updater shows a pill
-# telling Alex to open Claude Code (on any machine) and say "finish the
-# upstream merge". After the resolved merge is pushed to main, the next sync
-# run deletes the marker automatically.
+# Conflicts confined to the four version-pinned package.json files are
+# resolved automatically (upstream's side wins; the pin step re-stamps them —
+# they conflict on every sync by construction). Only when other files
+# conflict does the job push a marker branch `needs-merge-help`; the in-app
+# fork updater then shows a pill telling Alex to open Claude Code (on any
+# machine) and say "finish the upstream merge". After the resolved merge is
+# pushed to main, the next sync run deletes the marker automatically.
 #
 # Costs almost nothing: the gate job is seconds without a checkout, and the
 # full sync only runs when a new nightly is actually out (~once a day).
@@ -79,16 +81,38 @@ jobs:
           git fetch upstream main
 
           if ! git merge --no-edit upstream/main; then
-            git merge --abort || true
-            # Leave a marker branch the in-app updater can see; the pill then
-            # asks Alex to have Claude Code resolve the merge from any machine.
-            # Push our own HEAD, not upstream/main: the updater only checks that
-            # the branch exists, and pushing upstream's ref is rejected whenever
-            # it touches .github/workflows (GITHUB_TOKEN lacks the `workflows`
-            # permission) — which silently suppressed the pill.
-            git push origin HEAD:refs/heads/needs-merge-help --force
-            echo "::error::Official changes conflict with fork customizations. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge. Once the resolved merge is pushed to main, this workflow cleans up on its next run."
-            exit 1
+            # The four version-pinned manifests conflict on every sync (upstream
+            # bumps the same version line the fork pins). The pin step below
+            # rewrites them anyway, so when they are the ONLY conflicts, take
+            # upstream's side and finish the merge; the marker is reserved for
+            # genuine code conflicts. Any hiccup in the auto-resolution (e.g. a
+            # modify/delete conflict where no "theirs" blob exists) falls
+            # through to the marker path instead of killing the job silently.
+            resolved=false
+            pin_files="$(printf '%s\n' apps/desktop/package.json apps/server/package.json apps/web/package.json packages/contracts/package.json)"
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ -n "$conflicts" ] && ! grep -vxFf <(echo "$pin_files") <(echo "$conflicts") >/dev/null; then
+              echo "Only version-pin conflicts; taking upstream's side (the pin step re-stamps them)."
+              checkout_failed=false
+              while IFS= read -r f; do
+                git checkout --theirs "$f" && git add "$f" || { checkout_failed=true; break; }
+              done <<< "$conflicts"
+              if [ "$checkout_failed" = false ] && git commit --no-edit; then
+                resolved=true
+              fi
+            fi
+            if [ "$resolved" != true ]; then
+              git merge --abort || true
+              # Leave a marker branch the in-app updater can see; the pill then
+              # asks Alex to have Claude Code resolve the merge from any machine.
+              # Push our own HEAD, not upstream/main: the updater only checks that
+              # the branch exists, and pushing upstream's ref is rejected whenever
+              # it touches .github/workflows (GITHUB_TOKEN lacks the `workflows`
+              # permission) — which silently suppressed the pill.
+              git push origin HEAD:refs/heads/needs-merge-help --force
+              echo "::error::Official changes conflict with fork customizations. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge. Once the resolved merge is pushed to main, this workflow cleans up on its next run."
+              exit 1
+            fi
           fi
 
       - name: Pin package versions to the official nightly
