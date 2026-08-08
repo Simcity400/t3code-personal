@@ -70,6 +70,18 @@ describe("theme failure handling", () => {
     }
   });
 
+  it("reads the persisted T3 Chat theme preference", async () => {
+    vi.stubGlobal("window", {
+      localStorage: createStorage({
+        getItem: () => "t3-chat",
+      }),
+    });
+
+    const { readThemePreference } = await import("./useTheme");
+
+    expect(readThemePreference()).toBe("t3-chat");
+  });
+
   it("falls back during initial theme application and logs only safe attributes", async () => {
     const cause = new Error("private browsing storage failure");
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -84,7 +96,6 @@ describe("theme failure handling", () => {
     vi.stubGlobal("document", {
       documentElement: {
         classList: { toggle: vi.fn() },
-        dataset: {},
       },
     });
 
@@ -105,9 +116,10 @@ describe("theme failure handling", () => {
 
   it("retries a failed storage read only after a relevant storage event", async () => {
     const cause = new Error("persistent storage failure");
-    const getItem = vi.fn(() => {
+    const themeGetItem = vi.fn((): string | null => {
       throw cause;
     });
+    const getItem = vi.fn((key: string) => (key === "t3code:theme" ? themeGetItem() : null));
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     let readSnapshot: (() => unknown) | undefined;
     let subscribeToTheme: ((listener: () => void) => () => void) | undefined;
@@ -142,16 +154,14 @@ describe("theme failure handling", () => {
     readSnapshot?.();
     readSnapshot?.();
 
-    // Two reads per attempt: the theme key and the color-theme key. Both
-    // cache their failure until a relevant storage event arrives.
-    expect(getItem).toHaveBeenCalledTimes(2);
+    expect(themeGetItem).toHaveBeenCalledTimes(1);
     expect(errorLog).toHaveBeenCalledTimes(1);
 
     const unsubscribe = subscribeToTheme?.(() => undefined);
     storageHandler?.({ key: "t3code:theme" } as StorageEvent);
     readSnapshot?.();
 
-    expect(getItem).toHaveBeenCalledTimes(4);
+    expect(themeGetItem).toHaveBeenCalledTimes(2);
     expect(errorLog).toHaveBeenCalledTimes(2);
     unsubscribe?.();
   });
