@@ -105,8 +105,10 @@ machine.
   same window. Upstream commits not yet in a nightly don't prompt — run the Update cmd
   to apply them early. To re-pin manually:
   `node scripts/update-release-package-versions.ts $(npm view t3 dist-tags.nightly)`
-  then rebuild. Upstream version bumps may conflict with this pin during merges —
-  resolve by re-running that command.
+  then rebuild. Upstream version bumps conflict with this pin on every sync by
+  construction; since 2026-08-08 `fork-sync.yml` resolves that class automatically
+  (upstream's side wins, then the pin re-stamps), so the `needs-merge-help` pill
+  only appears for genuine code conflicts.
 
 ## Repo layout
 
