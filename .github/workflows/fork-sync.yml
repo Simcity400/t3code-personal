@@ -82,7 +82,11 @@ jobs:
             git merge --abort || true
             # Leave a marker branch the in-app updater can see; the pill then
             # asks Alex to have Claude Code resolve the merge from any machine.
-            git push origin refs/remotes/upstream/main:refs/heads/needs-merge-help --force
+            # Push our own HEAD, not upstream/main: the updater only checks that
+            # the branch exists, and pushing upstream's ref is rejected whenever
+            # it touches .github/workflows (GITHUB_TOKEN lacks the `workflows`
+            # permission) — which silently suppressed the pill.
+            git push origin HEAD:refs/heads/needs-merge-help --force
             echo "::error::Official changes conflict with fork customizations. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge. Once the resolved merge is pushed to main, this workflow cleans up on its next run."
             exit 1
           fi

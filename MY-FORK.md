@@ -48,17 +48,17 @@ machine.
 
 ## Customizations so far
 
-- **Color themes** (Settings → Appearance): Default, High contrast, Paper, Ocean — each
-  with light and dark variants. Implemented in `apps/web/src/themes.css` via a
-  `data-app-theme` attribute set by `apps/web/src/hooks/useTheme.ts`.
+- **Color themes & custom color picker**: retired 2026-08-08 — the official app gained
+  its own theme library (built-in palettes plus a custom theme editor with per-role
+  colors, Settings → Appearance), which replaced the fork's Contrast/Paper/Ocean
+  themes (`data-app-theme`) and the eight-swatch custom color picker
+  (`customThemeColors.ts` / `CustomColorControls.tsx`, localStorage
+  `t3code:custom-colors`). Previously saved fork themes/custom colors don't carry
+  over — re-create them in the official theme editor. The fork presentation tweaks
+  below live on in `themes.css`, with the dark-text rule rescoped to
+  `:not([data-theme-id])` so official themes keep their own palettes.
 - **Full-brightness chat text** (2026-08-06): the official app dims assistant messages
   to 80% foreground; a rule at the end of `themes.css` restores 100% in every theme.
-- **Custom color picker** (2026-08-07, Settings → Appearance → Custom colors): eight
-  color swatches (background, panels, text layers, accent, highlight, borders) that
-  override the active theme live, stored per theme + light/dark mode in localStorage
-  (`t3code:custom-colors`). Implemented in `apps/web/src/hooks/customThemeColors.ts` +
-  `apps/web/src/components/settings/CustomColorControls.tsx`; applied via a
-  `!important` style tag injected by `useTheme.ts`, so it outranks every stylesheet.
 - **One-line composer + brighter dark text + readable placeholder** (2026-08-06/07):
   rules at the end of `themes.css`.
 - **Text size**: retired 2026-08-05 — the official app gained its own font size
