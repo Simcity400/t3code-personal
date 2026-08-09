@@ -163,7 +163,13 @@ import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./u
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
-import { useComposerDraftStore } from "../composerDraftStore";
+import {
+  composerDraftHasUserContent,
+  DraftId,
+  useComposerDraftStore,
+  type ComposerThreadDraftState,
+  type DraftSessionState,
+} from "../composerDraftStore";
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more.
@@ -230,6 +236,7 @@ function SidebarThreadTooltip({
   thread,
   projectTitle,
   projectCwd,
+  projectFaviconPath,
   environmentLabel,
   driverKind,
   modelInstanceId,
@@ -241,6 +248,7 @@ function SidebarThreadTooltip({
   thread: SidebarThreadSummary;
   projectTitle: string | null;
   projectCwd: string | null;
+  projectFaviconPath: string | null;
   environmentLabel: string | null;
   driverKind: ProviderInstanceEntry["driverKind"] | null;
   modelInstanceId: string;
@@ -270,6 +278,7 @@ function SidebarThreadTooltip({
               <ProjectFavicon
                 environmentId={thread.environmentId}
                 cwd={projectCwd ?? ""}
+                faviconPath={projectFaviconPath}
                 className="size-3 shrink-0 stroke-muted-foreground"
               />
               <div className="min-w-0 truncate text-foreground/75">{projectTitle}</div>
@@ -404,6 +413,233 @@ function SortablePinnedThreadRow(props: {
   return props.children({ listeners, setNodeRef, transform, transition, isDragging });
 }
 
+// One unsent draft session the user has invested content in. Two lines,
+// nothing else: project name, then the typed prompt. All the draft's
+// settings (model, env mode, branch, worktree) still travel with it —
+// clicking is a plain navigation to /draft/$draftId, which touches nothing.
+// While the draft is open the row renders a frozen snapshot (see
+// SidebarDraftBlock); memoized so per-keystroke block re-renders skip it
+// entirely.
+const SidebarDraftRow = memo(function SidebarDraftRow(props: {
+  draftId: DraftId;
+  session: DraftSessionState;
+  composer: ComposerThreadDraftState;
+  projectTitle: string | null;
+  projectCwd: string | null;
+  projectFaviconPath: string | null;
+  isActive: boolean;
+  onNavigate: (draftId: DraftId) => void;
+  onDiscard: (draftId: DraftId) => void;
+}) {
+  const { composer, draftId, onDiscard, onNavigate, session } = props;
+  const promptPreview = composer.prompt.trim().split("\n", 1)[0] ?? "";
+  // images mirrors persistedAttachments once rehydration finishes; before
+  // that only the persisted list is populated, hence max not sum.
+  const attachmentCount =
+    Math.max(composer.images.length, composer.persistedAttachments.length) +
+    composer.terminalContexts.length +
+    composer.elementContexts.length +
+    composer.previewAnnotations.length +
+    composer.reviewComments.length;
+  const preview =
+    promptPreview.length > 0
+      ? promptPreview
+      : `${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}`;
+  const handleActivate = useCallback(() => onNavigate(draftId), [draftId, onNavigate]);
+  const handleKeyDown = useCallback(
+    (event: ReactKeyboardEvent) => {
+      // Keys targeting the nested discard button belong to the button:
+      // preventDefault here would swallow Space's synthesized click and
+      // navigate instead of discarding.
+      if ((event.target as HTMLElement).closest("button")) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onNavigate(draftId);
+      }
+    },
+    [draftId, onNavigate],
+  );
+  const handleDiscard = useCallback(
+    (event: ReactMouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onDiscard(draftId);
+    },
+    [draftId, onDiscard],
+  );
+  return (
+    <li className="list-none py-0.5">
+      <div
+        role="button"
+        tabIndex={0}
+        data-testid="sidebar-draft-row"
+        className={cn(
+          "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left text-sidebar-foreground outline-none select-none",
+          props.isActive
+            ? "bg-sidebar-row-active"
+            : "bg-amber-400/[0.04] hover:bg-amber-400/[0.08]",
+        )}
+        onClick={handleActivate}
+        onKeyDown={handleKeyDown}
+      >
+        <div className="relative z-10 px-[var(--sidebar-row-content-inset)] py-[var(--sidebar-content-inset)]">
+          <div className="flex h-5 min-w-0 items-center gap-1.5">
+            <SquarePenIcon
+              aria-hidden
+              className="size-3 shrink-0 text-amber-600 dark:text-amber-300/80"
+            />
+            <ProjectFavicon
+              environmentId={session.environmentId}
+              cwd={props.projectCwd ?? ""}
+              faviconPath={props.projectFaviconPath}
+              className="size-4 shrink-0"
+            />
+            <span className="min-w-0 flex-1 truncate text-xs font-medium text-secondary-label">
+              {props.projectTitle}
+            </span>
+            <span className="ml-auto flex h-5 min-w-5 shrink-0 items-center justify-end">
+              <button
+                type="button"
+                aria-label="Discard draft"
+                title="Discard draft"
+                onClick={handleDiscard}
+                className="pointer-events-none inline-flex cursor-pointer items-center rounded-md bg-transparent px-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/sidebar-row:pointer-events-auto group-hover/sidebar-row:opacity-100"
+              >
+                <XIcon className="size-3" />
+              </button>
+            </span>
+          </div>
+          <div className="mt-0.5 truncate text-sm font-medium text-foreground/90">{preview}</div>
+        </div>
+      </div>
+    </li>
+  );
+});
+
+interface SidebarDraftRowData {
+  draftId: DraftId;
+  session: DraftSessionState;
+  composer: ComposerThreadDraftState;
+}
+
+// Draft sessions with user content, surfaced above the pinned block so an
+// interrupted "new thread" stays one click away. Self-contained (own store
+// subscription + closing divider) so per-keystroke composer updates
+// re-render only this block, never the whole sidebar. Vanishes at count 0.
+const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
+  projectDisplayNameByKey: ReadonlyMap<string, string>;
+  projectCwdByKey: ReadonlyMap<string, string>;
+  projectFaviconPathByKey: ReadonlyMap<string, string | null | undefined>;
+  scopedProjectKeys: ReadonlySet<string> | null;
+  routeDraftId: string | null;
+  onNavigateToDraft: (draftId: DraftId) => void;
+}) {
+  const draftThreadsByThreadKey = useComposerDraftStore((store) => store.draftThreadsByThreadKey);
+  const draftsByThreadKey = useComposerDraftStore((store) => store.draftsByThreadKey);
+  const clearDraftThread = useComposerDraftStore((store) => store.clearDraftThread);
+  // The open draft's row is FROZEN at the moment the draft became the route:
+  // it stays visible (like a thread row) but never repaints while the user
+  // types. A draft that was never navigated away from has no snapshot to
+  // freeze, so a fresh typing session shows no row at all. Captured
+  // synchronously on route change (setState-during-render derived state) so
+  // the row never flickers out for a frame between route change and capture.
+  const [frozenActive, setFrozenActive] = useState<{
+    routeDraftId: string | null;
+    row: SidebarDraftRowData | null;
+  }>({ routeDraftId: null, row: null });
+  if (frozenActive.routeDraftId !== props.routeDraftId) {
+    let row: SidebarDraftRowData | null = null;
+    if (props.routeDraftId !== null) {
+      const draftId = DraftId.make(props.routeDraftId);
+      const store = useComposerDraftStore.getState();
+      const session = store.getDraftSession(draftId);
+      const composer = store.getComposerDraft(draftId);
+      row =
+        session && session.promotedTo == null && composer && composerDraftHasUserContent(composer)
+          ? { draftId, session, composer }
+          : null;
+    }
+    setFrozenActive({ routeDraftId: props.routeDraftId, row });
+  }
+  const drafts = useMemo(() => {
+    const rows: SidebarDraftRowData[] = [];
+    // Every non-promoted session with content gets a row, mapped or not:
+    // new-thread surfaces mint fresh drafts and leave invested ones behind
+    // unmapped, so the mapping only knows about the latest per project.
+    for (const [draftKey, session] of Object.entries(draftThreadsByThreadKey)) {
+      if (session.promotedTo != null) {
+        continue;
+      }
+      if (
+        props.scopedProjectKeys !== null &&
+        !props.scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
+      ) {
+        continue;
+      }
+      if (draftKey === props.routeDraftId) {
+        // Open draft: render the frozen entry snapshot, or nothing for a
+        // draft that has never been left. Gated on the LIVE session above so
+        // send/discard still removes the row immediately.
+        if (frozenActive.routeDraftId === draftKey && frozenActive.row !== null) {
+          rows.push(frozenActive.row);
+        }
+        continue;
+      }
+      const composer = draftsByThreadKey[draftKey];
+      if (!composer || !composerDraftHasUserContent(composer)) {
+        continue;
+      }
+      rows.push({ draftId: DraftId.make(draftKey), session, composer });
+    }
+    rows.sort((left, right) => right.session.createdAt.localeCompare(left.session.createdAt));
+    return rows;
+  }, [
+    draftThreadsByThreadKey,
+    draftsByThreadKey,
+    frozenActive,
+    props.routeDraftId,
+    props.scopedProjectKeys,
+  ]);
+  const handleDiscard = useCallback(
+    (draftId: DraftId) => {
+      // The /draft/$draftId route redirects home on its own when the draft
+      // it renders disappears, so discarding the open draft needs no
+      // special-casing here.
+      clearDraftThread(draftId);
+    },
+    [clearDraftThread],
+  );
+  if (drafts.length === 0) {
+    return null;
+  }
+  return (
+    <>
+      {drafts.map(({ composer, draftId, session }) => {
+        const projectKey = `${session.environmentId}:${session.projectId}`;
+        return (
+          <SidebarDraftRow
+            key={draftId}
+            draftId={draftId}
+            session={session}
+            composer={composer}
+            projectTitle={props.projectDisplayNameByKey.get(projectKey) ?? null}
+            projectCwd={props.projectCwdByKey.get(projectKey) ?? null}
+            projectFaviconPath={props.projectFaviconPathByKey.get(projectKey) ?? null}
+            isActive={draftId === props.routeDraftId}
+            onNavigate={props.onNavigateToDraft}
+            onDiscard={handleDiscard}
+          />
+        );
+      })}
+      <li
+        aria-hidden
+        data-testid="sidebar-draft-divider"
+        className="mx-2.5 my-1.5 h-px list-none bg-sidebar-border/60"
+      />
+    </>
+  );
+});
+
 const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   thread: SidebarThreadSummary;
   variant: "card" | "slim";
@@ -438,6 +674,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   currentEnvironmentId: string | null;
   environmentLabel: string | null;
   projectCwd: string | null;
+  projectFaviconPath: string | null;
   projectTitle: string | null;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
   timestampFormat: TimestampFormat;
@@ -628,6 +865,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       thread={thread}
       projectTitle={props.projectTitle}
       projectCwd={props.projectCwd}
+      projectFaviconPath={props.projectFaviconPath}
       environmentLabel={props.environmentLabel}
       driverKind={driverKind}
       modelInstanceId={modelInstanceId}
@@ -893,6 +1131,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               <ProjectFavicon
                 environmentId={thread.environmentId}
                 cwd={props.projectCwd ?? ""}
+                faviconPath={props.projectFaviconPath}
                 className="size-4"
                 fallbackIcon={MessageSquareIcon}
               />
@@ -1032,6 +1271,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               <ProjectFavicon
                 environmentId={thread.environmentId}
                 cwd={props.projectCwd ?? ""}
+                faviconPath={props.projectFaviconPath}
                 className="size-4 shrink-0"
               />
               {props.projectTitle ? (
@@ -1168,18 +1408,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               ) : null}
             </div>
             <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
-              {/* While working, the current plan step outranks the branch:
-                  it's the one line that says what the thread is doing. */}
-              {status === "working" && thread.planProgress ? (
-                <span className="min-w-0 flex-1 truncate whitespace-nowrap">
-                  {thread.planProgress.step}
-                  {/* Completed count, matching the transcript chip's n/m. */}
-                  <span className="text-icon-muted tabular-nums">
-                    {" "}
-                    {thread.planProgress.completedSteps}/{thread.planProgress.totalSteps}
-                  </span>
-                </span>
-              ) : thread.branch ? (
+              {/* Always the branch. The plan step used to take this slot while
+                  working, but it truncated to a half-sentence and dropped the
+                  branch, so the row lost its most stable identifier. */}
+              {thread.branch ? (
                 <span className="min-w-0 flex-1 truncate whitespace-nowrap">{thread.branch}</span>
               ) : (
                 <span className="flex-1" />
@@ -1233,6 +1465,7 @@ function latestTurnDiff(
 const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
   thread: SidebarThreadSummary;
   projectCwd: string | null;
+  projectFaviconPath: string | null;
   projectTitle: string | null;
   environmentLabel: string | null;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
@@ -1305,6 +1538,7 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
           <ProjectFavicon
             environmentId={thread.environmentId}
             cwd={props.projectCwd ?? ""}
+            faviconPath={props.projectFaviconPath}
             className="size-4 shrink-0"
             fallbackIcon={MessageSquareIcon}
           />
@@ -1317,6 +1551,7 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
           thread={thread}
           projectTitle={props.projectTitle}
           projectCwd={props.projectCwd}
+          projectFaviconPath={props.projectFaviconPath}
           environmentLabel={props.environmentLabel}
           driverKind={driverKind}
           modelInstanceId={modelInstanceId}
@@ -1493,6 +1728,13 @@ export default function Sidebar() {
       ),
     [projects],
   );
+  const projectFaviconPathByKey = useMemo(
+    () =>
+      new Map(
+        projects.map((project) => [`${project.environmentId}:${project.id}`, project.faviconPath]),
+      ),
+    [projects],
+  );
   const projectDisplayNameByKey = useMemo(
     () =>
       new Map(
@@ -1562,6 +1804,32 @@ export default function Sidebar() {
       setProjectScopeKey(null);
     }
   }, [projectScopeKey, scopedProjectGroup]);
+  // Count-only subscription: the parent needs "are there draft rows" for the
+  // empty state, while SidebarDraftBlock owns the per-keystroke content
+  // subscription. Selecting a number keeps typing in a draft composer from
+  // re-rendering the whole sidebar. Approximates the block's row filter
+  // (every non-promoted session with content); it can overcount by one for
+  // an open never-left draft, which only softens the empty state.
+  const routeDraftIdForRows = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
+  const visibleDraftSessionCount = useComposerDraftStore((store) => {
+    let count = 0;
+    for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
+      if (session.promotedTo != null) {
+        continue;
+      }
+      if (!composerDraftHasUserContent(store.draftsByThreadKey[draftKey])) {
+        continue;
+      }
+      if (
+        scopedProjectKeys !== null &&
+        !scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
+      ) {
+        continue;
+      }
+      count += 1;
+    }
+    return count;
+  });
   // Scope flips drop the selection: rows selected under the old scope may be
   // hidden now, and bulk actions must never count or touch invisible rows.
   useEffect(() => {
@@ -1882,6 +2150,21 @@ export default function Sidebar() {
       });
     },
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
+  );
+
+  const navigateToDraft = useCallback(
+    (draftId: DraftId) => {
+      // Unconditional: also drops a stale selection anchor left by
+      // plain-click navigation, so a later shift-click starts fresh
+      // instead of ranging from a row that is no longer the context.
+      // (clearSelection no-ops when there is nothing to clear.)
+      clearSelection();
+      if (isMobile) {
+        setOpenMobile(false);
+      }
+      void router.navigate({ to: "/draft/$draftId", params: { draftId } });
+    },
+    [clearSelection, isMobile, router, setOpenMobile],
   );
 
   const clearThreadSearch = useCallback(() => {
@@ -2968,6 +3251,7 @@ export default function Sidebar() {
                       <ProjectFavicon
                         environmentId={scopedProjectGroup.environmentId}
                         cwd={scopedProjectGroup.workspaceRoot}
+                        faviconPath={scopedProjectGroup.faviconPath}
                         className="size-4 shrink-0"
                       />
                     ) : (
@@ -3005,6 +3289,7 @@ export default function Sidebar() {
                             <ProjectFavicon
                               environmentId={project.environmentId}
                               cwd={project.workspaceRoot}
+                              faviconPath={project.faviconPath}
                               className="size-4 shrink-0"
                             />
                             <span className="min-w-0 truncate text-sm">{project.displayName}</span>
@@ -3076,6 +3361,11 @@ export default function Sidebar() {
                         thread={thread}
                         projectCwd={
                           projectCwdByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null
+                        }
+                        projectFaviconPath={
+                          projectFaviconPathByKey.get(
+                            `${thread.environmentId}:${thread.projectId}`,
+                          ) ?? null
                         }
                         projectTitle={
                           projectDisplayNameByKey.get(
@@ -3180,6 +3470,11 @@ export default function Sidebar() {
                         projectCwd={
                           projectCwdByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null
                         }
+                        projectFaviconPath={
+                          projectFaviconPathByKey.get(
+                            `${thread.environmentId}:${thread.projectId}`,
+                          ) ?? null
+                        }
                         projectTitle={
                           projectDisplayNameByKey.get(
                             `${thread.environmentId}:${thread.projectId}`,
@@ -3206,13 +3501,23 @@ export default function Sidebar() {
                       />
                     );
                   };
-                  // Pinned block: full cards above the inbox, closed by a
-                  // thin divider (the pin glyphs carry the meaning, so no
-                  // header text). Vanishes entirely at count 0.
-                  // Rows render in the one shared pinned order; only
+                  // Draft block above everything, then the pinned block:
+                  // full cards above the inbox, closed by a thin divider (the
+                  // pin glyphs carry the meaning, so no header text). Both
+                  // vanish entirely at count 0.
+                  // Pinned rows render in the one shared pinned order; only
                   // reorder-capable rows register as sortable (legacy-server
                   // pins render in place as plain rows).
                   const items: ReactNode[] = [
+                    <SidebarDraftBlock
+                      key="draft-sessions"
+                      projectDisplayNameByKey={projectDisplayNameByKey}
+                      projectCwdByKey={projectCwdByKey}
+                      projectFaviconPathByKey={projectFaviconPathByKey}
+                      scopedProjectKeys={scopedProjectKeys}
+                      routeDraftId={routeDraftIdForRows}
+                      onNavigateToDraft={navigateToDraft}
+                    />,
                     <DndContext
                       key="pinned-dnd"
                       sensors={pinnedDndSensors}
@@ -3348,6 +3653,7 @@ export default function Sidebar() {
             </TooltipProvider>
           ) : null}
           {!isSearchingThreads &&
+          visibleDraftSessionCount === 0 &&
           pinnedThreads.length +
             activeThreads.length +
             snoozedThreads.length +
