@@ -113,7 +113,7 @@ export function resourceMonitorPlatformKey(
 export function resourceMonitorRustTarget(
   platform: NodeJS.Platform,
   architecture: NodeJS.Architecture,
-  linuxLibc: ResourceMonitorLinuxLibc,
+  linuxLibc?: ResourceMonitorLinuxLibc,
 ): string | undefined {
   if (platform === "darwin") {
     return architecture === "arm64"
@@ -149,7 +149,7 @@ export const make = Effect.fn("resourceTelemetry.resourceMonitorBinary.make")(fu
   const platform = yield* HostProcessPlatform;
   const architecture = yield* HostProcessArchitecture;
   const environment = yield* HostProcessEnvironment;
-  const linuxLibc = yield* ResourceMonitorHostLinuxLibc;
+  const linuxLibc = platform === "linux" ? yield* ResourceMonitorHostLinuxLibc : undefined;
   const executableName = binaryName(platform);
   const platformKey = resourceMonitorPlatformKey(platform, architecture);
   const rustTarget = resourceMonitorRustTarget(platform, architecture, linuxLibc);
