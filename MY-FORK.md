@@ -65,6 +65,11 @@ machine.
   controls (Settings → Appearance), which replaced the fork's 13–20px `uiFontSize`
   slider. A previously customized text size resets to the default once; re-set it
   in the official controls.
+- **Test runs ignore the root `.env`** (2026-08-12): `apps/web/vite.config.ts` skips
+  `loadRepoEnv()` when vitest is running, so tests see the same empty public config
+  as upstream CI. Without this, the `.env` below leaked the Clerk CLI OAuth client
+  id into `import.meta.env` and permanently failed the two "not configured" cases
+  in `connectCliAuth.test.ts` on every fork machine.
 - **Shared profile with the installed app**: `apps/desktop/src/main.ts` pins the
   Electron userData profile (`%APPDATA%\t3code`) synchronously at startup, so this
   from-source build uses the same Windows encryption key as the installed T3 Code and
