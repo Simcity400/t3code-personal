@@ -66,6 +66,7 @@ import * as PreviewManager from "./preview/Manager.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
+import * as DesktopWslServerTree from "./wsl/DesktopWslServerTree.ts";
 
 // Fork customization: pin the Electron userData profile synchronously, before
 // Chromium initializes the safeStorage encryption key. The regular startup
@@ -199,6 +200,7 @@ const desktopBackendLayer = DesktopBackendPool.layer.pipe(
   Layer.provideMerge(DesktopAppIdentity.layer),
   Layer.provideMerge(DesktopBackendConfiguration.layer),
   Layer.provideMerge(DesktopWslEnvironment.layer),
+  Layer.provideMerge(DesktopWslServerTree.layer),
   Layer.provideMerge(DesktopTelemetryPublisher.layer),
   Layer.provideMerge(desktopWindowLayer),
 );
