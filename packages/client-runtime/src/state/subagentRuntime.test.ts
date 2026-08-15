@@ -15,6 +15,7 @@ import {
   isSubagentActivityKind,
   isTimelineBypassActivity,
   selectSubagentTranscriptActivities,
+  selectSubagentTranscriptMessages,
   workflowCardMembers,
 } from "./subagentRuntime.ts";
 
@@ -186,6 +187,123 @@ describe("deriveSubagentTranscript", () => {
     });
 
     expect(transcript).toEqual([]);
+  });
+});
+
+describe("selectSubagentTranscriptMessages", () => {
+  it("recovers Claude's original launch prompt through the task tool id", () => {
+    const messages = [
+      {
+        id: "message-child",
+        role: "assistant",
+        text: "Review complete",
+        agentId: "agent-1",
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-08-01T10:00:03.000Z",
+        updatedAt: "2026-08-01T10:00:03.000Z",
+      },
+    ] as unknown as ReadonlyArray<OrchestrationMessage>;
+    const activities = [
+      activity(
+        "tool.started",
+        {
+          itemId: "tool-agent-1",
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolName: "Agent",
+            input: {
+              description: "Review the database layer",
+              prompt: "Audit every SQL change and report exact file evidence.",
+            },
+          },
+        },
+        "2026-08-01T10:00:01.000Z",
+      ),
+      activity(
+        "task.started",
+        { taskId: "agent-1", toolUseId: "tool-agent-1", title: "Database reviewer" },
+        "2026-08-01T10:00:02.000Z",
+      ),
+    ];
+
+    const selected = selectSubagentTranscriptMessages(messages, activities, "agent-1");
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      {
+        role: "user",
+        text: "Audit every SQL change and report exact file evidence.",
+      },
+      { role: "assistant", text: "Review complete" },
+    ]);
+  });
+
+  it("coalesces Codex spawn lifecycle and includes later parent instructions", () => {
+    const activities = [
+      activity(
+        "tool.started",
+        {
+          itemId: "spawn-1",
+          itemType: "collab_agent_tool_call",
+          data: {
+            item: {
+              type: "collabAgentToolCall",
+              tool: "spawnAgent",
+              prompt: "Inspect the mobile transcript.",
+              receiverThreadIds: [],
+            },
+          },
+        },
+        "2026-08-01T10:00:01.000Z",
+      ),
+      activity(
+        "tool.completed",
+        {
+          itemId: "spawn-1",
+          itemType: "collab_agent_tool_call",
+          data: {
+            item: {
+              type: "collabAgentToolCall",
+              tool: "spawnAgent",
+              prompt: "Inspect the mobile transcript.",
+              receiverThreadIds: ["agent-1"],
+            },
+          },
+        },
+        "2026-08-01T10:00:02.000Z",
+      ),
+      activity(
+        "tool.completed",
+        {
+          itemId: "send-1",
+          itemType: "collab_agent_tool_call",
+          data: {
+            item: {
+              type: "collabAgentToolCall",
+              tool: "sendInput",
+              prompt: "Also check old threads.",
+              receiverThreadIds: ["agent-1"],
+            },
+          },
+        },
+        "2026-08-01T10:00:03.000Z",
+      ),
+    ];
+
+    const selected = selectSubagentTranscriptMessages([], activities, "agent-1");
+
+    expect(selected.map(({ role, text, createdAt }) => ({ role, text, createdAt }))).toEqual([
+      {
+        role: "user",
+        text: "Inspect the mobile transcript.",
+        createdAt: "2026-08-01T10:00:01.000Z",
+      },
+      {
+        role: "user",
+        text: "Also check old threads.",
+        createdAt: "2026-08-01T10:00:03.000Z",
+      },
+    ]);
   });
 });
 

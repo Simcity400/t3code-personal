@@ -17,7 +17,11 @@
  * folding (completion can create an agent; a late start only fills
  * metadata).
  */
-import type { OrchestrationMessage, OrchestrationThreadActivity } from "@t3tools/contracts";
+import {
+  MessageId,
+  type OrchestrationMessage,
+  type OrchestrationThreadActivity,
+} from "@t3tools/contracts";
 
 export type RuntimeSubagentStatus =
   | "pending"
@@ -997,9 +1001,177 @@ export function selectSubagentTranscriptActivities(
   });
 }
 
+interface SubagentPromptCandidate {
+  readonly key: string;
+  readonly text: string;
+  readonly createdAt: string;
+  readonly turnId: OrchestrationMessage["turnId"];
+  readonly activityId: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function asPrompt(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/**
+ * Recovers every instruction the parent sent to one agent from persisted
+ * provider tool rows. Claude links its launching Agent/Task tool through
+ * task.*.toolUseId; Codex records the receiving child thread directly on its
+ * collabAgentToolCall. Tool lifecycle rows are coalesced by item id so a
+ * streamed start/update/completion contributes one prompt, not three.
+ */
+function deriveSubagentPromptCandidates(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  agentId: string,
+): ReadonlyArray<SubagentPromptCandidate> {
+  const launchingToolIds = new Set<string>();
+  const directCandidates: SubagentPromptCandidate[] = [];
+
+  for (const activity of activities) {
+    if (!activity.kind.startsWith("task.")) continue;
+    const payload = asRecord(activity.payload);
+    if (!payload || asString(payload.taskId) !== agentId) continue;
+    const toolUseId = asString(payload.toolUseId);
+    if (toolUseId) launchingToolIds.add(toolUseId);
+    const prompt = asPrompt(payload.prompt);
+    if (prompt) {
+      directCandidates.push({
+        key: `task:${activity.id}`,
+        text: prompt,
+        createdAt: activity.createdAt,
+        turnId: activity.turnId,
+        activityId: activity.id,
+      });
+    }
+  }
+
+  const tools = new Map<
+    string,
+    {
+      prompt: string | undefined;
+      receiverThreadIds: Set<string>;
+      createdAt: string;
+      turnId: OrchestrationMessage["turnId"];
+      activityId: string;
+    }
+  >();
+
+  for (const activity of activities) {
+    if (
+      activity.kind !== "tool.started" &&
+      activity.kind !== "tool.updated" &&
+      activity.kind !== "tool.completed"
+    ) {
+      continue;
+    }
+    const payload = asRecord(activity.payload);
+    if (!payload) continue;
+    const itemId = asString(payload.itemId) ?? activity.id;
+    const existing = tools.get(itemId);
+    const data = asRecord(payload.data);
+    const item = asRecord(data?.item);
+    const input = asRecord(data?.input);
+    const receiverThreadIds = new Set(existing?.receiverThreadIds ?? []);
+    if (Array.isArray(item?.receiverThreadIds)) {
+      for (const receiverThreadId of item.receiverThreadIds) {
+        const receiver = asString(receiverThreadId);
+        if (receiver) receiverThreadIds.add(receiver);
+      }
+    }
+    tools.set(itemId, {
+      prompt:
+        existing?.prompt ??
+        asPrompt(input?.prompt) ??
+        asPrompt(item?.prompt) ??
+        asPrompt(payload.prompt),
+      receiverThreadIds,
+      createdAt:
+        existing && existing.createdAt.localeCompare(activity.createdAt) <= 0
+          ? existing.createdAt
+          : activity.createdAt,
+      turnId: existing?.turnId ?? activity.turnId,
+      activityId: existing?.activityId ?? activity.id,
+    });
+  }
+
+  const toolCandidates = Array.from(tools.entries()).flatMap<SubagentPromptCandidate>(
+    ([itemId, tool]) => {
+      if (!tool.prompt || (!launchingToolIds.has(itemId) && !tool.receiverThreadIds.has(agentId))) {
+        return [];
+      }
+      return [
+        {
+          key: `tool:${itemId}`,
+          text: tool.prompt,
+          createdAt: tool.createdAt,
+          turnId: tool.turnId,
+          activityId: tool.activityId,
+        },
+      ];
+    },
+  );
+
+  const seen = new Set<string>();
+  return [...directCandidates, ...toolCandidates]
+    .toSorted(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.key.localeCompare(right.key),
+    )
+    .filter((candidate) => {
+      const fingerprint = `${candidate.createdAt}\u0000${candidate.text}`;
+      if (seen.has(fingerprint)) return false;
+      seen.add(fingerprint);
+      return true;
+    });
+}
+
+/**
+ * Selects one agent's persisted messages and inserts the parent's original
+ * instructions as user-style messages. This keeps provider-specific linkage
+ * in one shared place so web and mobile render identical transcripts, and it
+ * also recovers prompts from historic rows written before prompt messages
+ * were a first-class projection.
+ */
+export function selectSubagentTranscriptMessages(
+  messages: ReadonlyArray<OrchestrationMessage>,
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  agentId: string,
+): ReadonlyArray<OrchestrationMessage> {
+  const selectedMessages = messages.filter((message) => message.agentId === agentId);
+  const promptMessages = deriveSubagentPromptCandidates(activities, agentId)
+    .filter(
+      (candidate) =>
+        !selectedMessages.some(
+          (message) => message.role === "user" && message.text === candidate.text,
+        ),
+    )
+    .map<OrchestrationMessage>((candidate) => ({
+      id: MessageId.make(`subagent-prompt:${agentId}:${candidate.activityId}`),
+      role: "user",
+      text: candidate.text,
+      agentId,
+      turnId: candidate.turnId,
+      streaming: false,
+      createdAt: candidate.createdAt,
+      updatedAt: candidate.createdAt,
+    }));
+
+  return [...promptMessages, ...selectedMessages].toSorted(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+  );
+}
+
 export interface SubagentTranscriptMessageEntry {
   readonly kind: "message";
   readonly id: string;
+  readonly role: "user" | "assistant" | "system";
   readonly text: string;
   readonly streaming: boolean;
   readonly createdAt: string;
@@ -1050,16 +1222,19 @@ export function deriveSubagentTranscript({
   readonly messages: ReadonlyArray<OrchestrationMessage>;
   readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
 }): ReadonlyArray<SubagentTranscriptEntry> {
-  const entries: SubagentTranscriptEntry[] = messages
-    .filter((message) => message.agentId === agentId && message.role === "assistant")
-    .map((message) => ({
-      kind: "message" as const,
-      id: message.id,
-      text: message.text,
-      streaming: message.streaming,
-      createdAt: message.createdAt,
-      updatedAt: message.updatedAt,
-    }));
+  const entries: SubagentTranscriptEntry[] = selectSubagentTranscriptMessages(
+    messages,
+    activities,
+    agentId,
+  ).map((message) => ({
+    kind: "message" as const,
+    id: message.id,
+    role: message.role,
+    text: message.text,
+    streaming: message.streaming,
+    createdAt: message.createdAt,
+    updatedAt: message.updatedAt,
+  }));
   const tools = new Map<string, SubagentTranscriptToolEntry>();
 
   for (const activity of activities) {
