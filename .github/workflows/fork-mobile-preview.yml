@@ -1,0 +1,109 @@
+name: Personal iPhone Preview
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - apps/mobile/**
+      - packages/client-runtime/**
+      - packages/contracts/**
+      - packages/shared/**
+      - assets/**
+      - scripts/**
+      - patches/**
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/workflows/fork-mobile-preview.yml
+
+# Keep updates in commit order. If several pushes arrive while an iOS build is
+# running, GitHub retains the newest queued run after the build finishes.
+concurrency:
+  group: personal-iphone-preview
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build if needed, then publish
+    if: github.repository == 'Simcity400/t3code-personal'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      APP_VARIANT: preview
+      MOBILE_VERSION_POLICY: fingerprint
+      NODE_OPTIONS: --max-old-space-size=8192
+    steps:
+      - name: Check Expo credentials
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "The EXPO_TOKEN repository secret is missing." >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/mobile...
+
+      - name: Expose pnpm
+        run: |
+          pnpm_version="$(node --print "require('./package.json').packageManager.split('@').pop()")"
+          vp_pnpm_bin="$HOME/.vite-plus/package_manager/pnpm/$pnpm_version/pnpm/bin"
+          echo "$vp_pnpm_bin" >> "$GITHUB_PATH"
+          "$vp_pnpm_bin/pnpm" --version
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: npm
+
+      - name: Pull preview environment variables
+        working-directory: apps/mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: eas env:pull preview --non-interactive
+
+      - name: Ensure a compatible iPhone build exists
+        working-directory: apps/mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          fingerprint="$(eas fingerprint:generate --platform ios --environment preview --json --non-interactive | sed -n '/^{/,$p' | jq -er '.hash | select(type == "string" and length > 0)')"
+          matching="$(eas build:list --platform ios --build-profile preview --status finished --fingerprint-hash "$fingerprint" --limit 1 --json --non-interactive | jq 'length')"
+
+          echo "Current iOS fingerprint: $fingerprint"
+          if [ "$matching" -eq 0 ]; then
+            echo "No compatible iPhone build exists. Building one now."
+            eas build --platform ios --profile preview --non-interactive
+            echo ":building_construction: Built a new iPhone app for native fingerprint \`$fingerprint\`. Install this build once before expecting over-the-air updates." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo ":white_check_mark: A compatible iPhone build already exists for fingerprint \`$fingerprint\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publish iPhone update
+        working-directory: apps/mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          message="$(git log -1 --pretty=%s | head -c 120) ($(git rev-parse --short=9 HEAD))"
+          eas update \
+            --channel preview \
+            --environment preview \
+            --platform ios \
+            --message "$message" \
+            --non-interactive
+          echo ":white_check_mark: Published the iPhone update to the preview channel." >> "$GITHUB_STEP_SUMMARY"
