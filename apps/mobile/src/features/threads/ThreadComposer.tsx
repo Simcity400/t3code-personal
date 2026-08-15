@@ -291,10 +291,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   // while focus moves between its native editor and the settings picker.
   const isExpanded = isFocused || settingsSheetPresentation.isActive;
   const canSend = hasContent;
-  const editorHeight = Math.min(
-    COMPOSER_EDITOR_MAX_HEIGHT,
-    Math.max(bodyText.lineHeight, Math.ceil(editorContentHeight)),
+  const explicitLineHeight = props.draftMessage.split("\n").length * bodyText.lineHeight;
+  const desiredEditorHeight = Math.max(
+    bodyText.lineHeight,
+    explicitLineHeight,
+    Math.ceil(editorContentHeight),
   );
+  const editorHeight = Math.min(COMPOSER_EDITOR_MAX_HEIGHT, desiredEditorHeight);
 
   // Notify the parent from the derived value, not focus events: the parent
   // sizes the feed inset from this, and blur-during-sheet would otherwise
@@ -746,7 +749,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             isExpanded
               ? {
                   borderRadius: 26,
-                  minHeight: 140,
                   overflow: "hidden" as const,
                   paddingBottom: 6,
                   paddingHorizontal: 14,
@@ -793,7 +795,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               onFocus={handleFocus}
               onBlur={handleBlur}
               onSubmit={handleSend}
-              scrollEnabled={isExpanded && editorContentHeight > COMPOSER_EDITOR_MAX_HEIGHT}
+              scrollEnabled={isExpanded && desiredEditorHeight > COMPOSER_EDITOR_MAX_HEIGHT}
               // Android: collapsed single line centers natively (gravity) in
               // a pill-height box matching the send button; iOS keeps insets.
               singleLineCentered={!isExpanded}
