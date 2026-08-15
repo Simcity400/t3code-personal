@@ -111,4 +111,42 @@ layer("ProjectionThreadMessageRepository", (it) => {
       assert.deepEqual(rows[0]?.attachments, []);
     }),
   );
+
+  it.effect("persists agent attribution across streaming message upserts", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-agent-message");
+      const messageId = MessageId.make("message-agent-message");
+      const createdAt = "2026-08-15T10:00:00.000Z";
+
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "Checking",
+        agentId: "agent-1",
+        isStreaming: true,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "Checking complete",
+        isStreaming: false,
+        createdAt,
+        updatedAt: "2026-08-15T10:00:01.000Z",
+      });
+
+      const row = yield* repository.getByMessageId({ messageId });
+      assert.equal(row._tag, "Some");
+      if (row._tag === "Some") {
+        assert.equal(row.value.agentId, "agent-1");
+        assert.equal(row.value.text, "Checking complete");
+      }
+    }),
+  );
 });

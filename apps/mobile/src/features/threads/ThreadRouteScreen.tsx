@@ -637,6 +637,26 @@ function ThreadRouteContent(
   };
   const threadCenterHeaderItems = useThreadGitCenterHeaderItems(threadGitControlProps);
   const compactRightHeaderItems = useThreadGitRightHeaderItems(threadGitControlProps);
+  const handleOpenAgents = useCallback(() => {
+    if (!selectedThread) {
+      return;
+    }
+    navigation.navigate("ThreadAgents", {
+      environmentId: String(selectedThread.environmentId),
+      threadId: String(selectedThread.id),
+    });
+  }, [navigation, selectedThread]);
+  const agentsHeaderItem = useMemo(
+    () =>
+      withNativeGlassHeaderItem({
+        accessibilityLabel: "Open agents",
+        icon: { name: "person.2", type: "sfSymbol" as const },
+        identifier: "thread-right-agents",
+        onPress: handleOpenAgents,
+        type: "button" as const,
+      }),
+    [handleOpenAgents],
+  );
   const splitLeftHeaderItems = useMemo<NativeHeaderItems>(
     () => [
       {
@@ -704,6 +724,11 @@ function ThreadRouteContent(
       });
     }
     actions.push({
+      accessibilityLabel: "Open agents",
+      icon: "person.2",
+      onPress: handleOpenAgents,
+    });
+    actions.push({
       accessibilityLabel: "Open git controls",
       icon: "point.topleft.down.curvedto.point.bottomright.up",
       onPress: handleOpenGitInspector,
@@ -719,6 +744,7 @@ function ThreadRouteContent(
   }, [
     fileInspector.supported,
     handleOpenFilesInspector,
+    handleOpenAgents,
     handleOpenTerminal,
     handleOpenGitInspector,
     handleToggleInspector,
@@ -845,7 +871,10 @@ function ThreadRouteContent(
           // reserved for future breadcrumbs/status).
           unstable_headerRightItems:
             Platform.OS === "ios"
-              ? () => (layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems)
+              ? () => [
+                  agentsHeaderItem,
+                  ...(layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems),
+                ]
               : undefined,
           unstable_headerSubtitle: usesNativeHeaderGlass ? headerSubtitle : undefined,
         }}

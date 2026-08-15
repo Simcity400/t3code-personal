@@ -12,6 +12,7 @@
  * - Static status dots, DOM-write elapsed timers, plain token counters.
  */
 import { useAtomValue } from "@effect/atom-react";
+import type { LegendListRef } from "@legendapp/list/react";
 import type {
   AgentPanelModel,
   AgentPanelWorkflowGroup,
@@ -19,15 +20,31 @@ import type {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   formatSubagentModelLabel,
+  formatSubagentTitle,
   formatSubagentTokenCount,
+  isActiveSubagentStatus,
+  selectSubagentTranscriptActivities,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type {
+  EnvironmentId,
+  MessageId,
+  OrchestrationMessage,
+  OrchestrationThreadActivity,
+  ScopedThreadRef,
+  ServerProviderSkill,
+  ThreadId,
+  TimestampFormat,
+} from "@t3tools/contracts";
+import { ArrowLeft, Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { deriveTimelineEntries, deriveWorkLogEntries } from "~/session-logic";
+import type { TurnDiffSummary } from "~/types";
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import { MessagesTimeline } from "~/components/chat/MessagesTimeline";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -136,11 +153,11 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
   );
 }
 
-/** Flat, non-interactive agent status line. No unfold. */
-function AgentRow({ agent }: { agent: RuntimeSubagent }) {
+function AgentRow({ agent, onOpen }: { agent: RuntimeSubagent; onOpen: () => void }) {
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
+  const title = formatSubagentTitle(agent.title);
   const role =
     agent.role?.trim().toLocaleLowerCase() === agent.title.trim().toLocaleLowerCase()
       ? null
@@ -153,12 +170,17 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
   ].filter((value): value is string => value !== null);
 
   return (
-    <div className="grid h-[3.875rem] grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
+    <button
+      type="button"
+      onClick={onOpen}
+      className="grid h-[3.875rem] w-full grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/40"
+      aria-label={`Open ${title} transcript`}
+    >
       <span className="col-start-1 row-start-1 flex items-center">
         <StatusDot status={agent.status} />
       </span>
       <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
-        <span className="min-w-0 truncate text-sm font-medium">{agent.title}</span>
+        <span className="min-w-0 truncate text-sm font-medium">{title}</span>
         {role ? (
           <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
             {role}
@@ -185,7 +207,7 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
         {metadata.join(" · ")}
       </span>
       <span className="sr-only">{visuals.label}</span>
-    </div>
+    </button>
   );
 }
 
@@ -315,9 +337,11 @@ function WorkflowScriptView({
 function PhaseSection({
   phase,
   defaultOpen = false,
+  onOpenAgent,
 }: {
   phase: AgentPanelWorkflowGroup["phases"][number];
   defaultOpen?: boolean;
+  onOpenAgent: (agent: RuntimeSubagent) => void;
 }) {
   const [open, setOpen] = useState(defaultOpen || phase.state === "running");
   const previousState = useRef(phase.state);
@@ -366,7 +390,11 @@ function PhaseSection({
           </span>
         ) : null}
       </button>
-      {open ? phase.members.map((member) => <AgentRow key={member.id} agent={member} />) : null}
+      {open
+        ? phase.members.map((member) => (
+            <AgentRow key={member.id} agent={member} onOpen={() => onOpenAgent(member)} />
+          ))
+        : null}
     </div>
   );
 }
@@ -377,11 +405,13 @@ function ExpandedWorkflowSection({
   environmentId,
   threadId,
   onCollapse,
+  onOpenAgent,
 }: {
   group: AgentPanelWorkflowGroup;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
   onCollapse: () => void;
+  onOpenAgent: (agent: RuntimeSubagent) => void;
 }) {
   const [scriptOpen, setScriptOpen] = useState(false);
   const members = workflowMembers(group);
@@ -436,13 +466,18 @@ function ExpandedWorkflowSection({
         />
       ) : null}
       {group.phases.map((phase) => (
-        <PhaseSection key={phase.index} phase={phase} defaultOpen={!workflowIsLive(group)} />
+        <PhaseSection
+          key={phase.index}
+          phase={phase}
+          defaultOpen={!workflowIsLive(group)}
+          onOpenAgent={onOpenAgent}
+        />
       ))}
       {group.unphasedMembers.map((member) => (
-        <AgentRow key={member.id} agent={member} />
+        <AgentRow key={member.id} agent={member} onOpen={() => onOpenAgent(member)} />
       ))}
       {group.phases.length === 0 && group.unphasedMembers.length === 0 ? (
-        <AgentRow agent={group.workflow} />
+        <AgentRow agent={group.workflow} onOpen={() => onOpenAgent(group.workflow)} />
       ) : null}
     </section>
   );
@@ -500,10 +535,12 @@ function WorkflowSection({
   group,
   environmentId,
   threadId,
+  onOpenAgent,
 }: {
   group: AgentPanelWorkflowGroup;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
+  onOpenAgent: (agent: RuntimeSubagent) => void;
 }) {
   const [open, setOpen] = useState(() => workflowIsLive(group));
   return open ? (
@@ -512,9 +549,149 @@ function WorkflowSection({
       environmentId={environmentId}
       threadId={threadId}
       onCollapse={() => setOpen(false)}
+      onOpenAgent={onOpenAgent}
     />
   ) : (
     <CollapsedWorkflowSection group={group} onExpand={() => setOpen(true)} />
+  );
+}
+
+const EMPTY_TURN_DIFFS = new Map<MessageId, TurnDiffSummary>();
+const EMPTY_REVERT_COUNTS = new Map<MessageId, number>();
+const NOOP_MESSAGE_ANCHOR = () => {};
+const NOOP_TURN_DIFF = () => {};
+const NOOP_REVERT = () => {};
+const NOOP_IMAGE_EXPAND = () => {};
+
+function AgentTranscript({
+  agent,
+  messages,
+  activities,
+  cwd,
+  threadRef,
+  skills,
+  resolvedTheme,
+  timestampFormat,
+  onBack,
+}: {
+  agent: RuntimeSubagent;
+  messages: ReadonlyArray<OrchestrationMessage>;
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
+  cwd?: string | undefined;
+  threadRef: ScopedThreadRef;
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  resolvedTheme: "light" | "dark";
+  timestampFormat: TimestampFormat;
+  onBack: () => void;
+}) {
+  const title = formatSubagentTitle(agent.title);
+  const listRef = useRef<LegendListRef | null>(null);
+  const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
+  const transcriptMessages = useMemo(
+    () => messages.filter((message) => message.agentId === agent.id),
+    [agent.id, messages],
+  );
+  const transcriptActivities = useMemo(
+    () => selectSubagentTranscriptActivities(activities, agent.id),
+    [activities, agent.id],
+  );
+  const workLogEntries = useMemo(
+    () => deriveWorkLogEntries(transcriptActivities),
+    [transcriptActivities],
+  );
+  const timelineEntries = useMemo(
+    () => deriveTimelineEntries(transcriptMessages, [], workLogEntries),
+    [transcriptMessages, workLogEntries],
+  );
+  const turnId =
+    transcriptMessages.find((message) => message.turnId !== null)?.turnId ??
+    transcriptActivities.find((activity) => activity.turnId !== null)?.turnId ??
+    null;
+  const isWorking = isActiveSubagentStatus(agent.status);
+  const latestTurn =
+    turnId === null
+      ? null
+      : {
+          turnId,
+          state: isWorking
+            ? ("running" as const)
+            : agent.status === "failed"
+              ? ("error" as const)
+              : agent.status === "cancelled" || agent.status === "interrupted"
+                ? ("interrupted" as const)
+                : ("completed" as const),
+          startedAt: agent.startedAt,
+          completedAt: isWorking ? null : (agent.completedAt ?? agent.updatedAt),
+        };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex items-center gap-2 border-b border-border/60 px-2 py-1.5">
+        <button
+          type="button"
+          onClick={onBack}
+          aria-label="Back to agents"
+          className="rounded-sm p-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+        >
+          <ArrowLeft aria-hidden className="size-3.5" />
+        </button>
+        <StatusDot status={agent.status} />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{title}</span>
+        <span className="text-[.65rem] text-muted-foreground">
+          {STATUS_VISUALS[agent.status].label}
+        </span>
+      </header>
+      <div className="relative min-h-0 flex-1">
+        <MessagesTimeline
+          key={agent.id}
+          isWorking={isWorking}
+          activeTurnInProgress={isWorking}
+          activeTurnStartedAt={isWorking ? (agent.startedAt ?? agent.firstSeenAt) : null}
+          listRef={listRef}
+          timelineEntries={timelineEntries}
+          latestTurn={latestTurn}
+          runningTurnId={isWorking ? turnId : null}
+          turnDiffSummaryByAssistantMessageId={EMPTY_TURN_DIFFS}
+          routeThreadKey={scopedThreadKey(threadRef)}
+          onOpenTurnDiff={NOOP_TURN_DIFF}
+          revertTurnCountByUserMessageId={EMPTY_REVERT_COUNTS}
+          onRevertUserMessage={NOOP_REVERT}
+          isRevertingCheckpoint={false}
+          onImageExpand={NOOP_IMAGE_EXPAND}
+          activeThreadEnvironmentId={threadRef.environmentId}
+          markdownCwd={cwd}
+          resolvedTheme={resolvedTheme}
+          timestampFormat={timestampFormat}
+          workspaceRoot={cwd}
+          skills={skills}
+          anchorMessageId={null}
+          onAnchorReady={NOOP_MESSAGE_ANCHOR}
+          contentInsetEndAdjustment={0}
+          liveFollowEnabled={liveFollowEnabled}
+          onIsAtEndChange={(atEnd) => {
+            if (atEnd) setLiveFollowEnabled(true);
+          }}
+          onManualNavigation={() => setLiveFollowEnabled(false)}
+        />
+        {!liveFollowEnabled ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-2 z-30 flex justify-center">
+            <button
+              type="button"
+              aria-label="Scroll to end"
+              title="Scroll to end"
+              onClick={() => {
+                setLiveFollowEnabled(true);
+                void listRef.current?.scrollToEnd?.({ animated: true });
+              }}
+              className="chat-composer-glass pointer-events-auto flex items-center gap-1.5 rounded-full border border-border/60 px-3 py-1 text-muted-foreground text-xs shadow-sm transition-colors hover:border-border hover:text-foreground"
+            >
+              <ChevronDown className="size-3.5" />
+              Scroll to end
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -522,11 +699,51 @@ export function AgentsPanel({
   model,
   environmentId = null,
   threadId = null,
+  messages = [],
+  activities = [],
+  cwd,
+  threadRef,
+  skills = [],
+  resolvedTheme = "light",
+  timestampFormat = "locale",
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
+  messages?: ReadonlyArray<OrchestrationMessage>;
+  activities?: ReadonlyArray<OrchestrationThreadActivity>;
+  cwd?: string | undefined;
+  threadRef?: ScopedThreadRef | undefined;
+  skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  resolvedTheme?: "light" | "dark";
+  timestampFormat?: TimestampFormat;
 }) {
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const allAgents = useMemo(
+    () => [
+      ...model.directAgents,
+      ...model.workflows.flatMap((group) => [group.workflow, ...workflowMembers(group)]),
+    ],
+    [model],
+  );
+  const selectedAgent = allAgents.find((agent) => agent.id === selectedAgentId) ?? null;
+
+  if (selectedAgent && threadRef) {
+    return (
+      <AgentTranscript
+        agent={selectedAgent}
+        messages={messages}
+        activities={activities}
+        cwd={cwd}
+        threadRef={threadRef}
+        skills={skills}
+        resolvedTheme={resolvedTheme}
+        timestampFormat={timestampFormat}
+        onBack={() => setSelectedAgentId(null)}
+      />
+    );
+  }
+
   if (!model.hasAgents) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -550,6 +767,7 @@ export function AgentsPanel({
               group={group}
               environmentId={environmentId}
               threadId={threadId}
+              onOpenAgent={(agent) => setSelectedAgentId(agent.id)}
             />
           ))}
           {model.directAgents.length > 0 ? (
@@ -558,7 +776,11 @@ export function AgentsPanel({
                 Direct spawns
               </div>
               {model.directAgents.map((agent) => (
-                <AgentRow key={agent.id} agent={agent} />
+                <AgentRow
+                  key={agent.id}
+                  agent={agent}
+                  onOpen={() => setSelectedAgentId(agent.id)}
+                />
               ))}
             </section>
           ) : null}

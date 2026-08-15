@@ -512,6 +512,77 @@ function startLifecycleRuntime() {
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("maps child-agent text deltas into agent-attributed assistant content", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-child-text"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "collabAgent/contentDelta",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("child-message-1"),
+        textDelta: "Checking the implementation",
+        payload: {
+          agentThreadId: "child-thread-1",
+          delta: "Checking the implementation",
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "content.delta") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.itemId, "child-message-1");
+      NodeAssert.equal(firstEvent.value.payload.streamKind, "assistant_text");
+      NodeAssert.equal(firstEvent.value.payload.delta, "Checking the implementation");
+      NodeAssert.equal(firstEvent.value.payload.agentId, "child-thread-1");
+    }),
+  );
+
+  it.effect("maps child-agent tools into agent-attributed lifecycle events", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 2)).pipe(
+        Effect.forkChild,
+      );
+
+      yield* runtime.emit({
+        id: asEventId("evt-child-tool"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "collabAgent/item",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("child-command-1"),
+        payload: {
+          agentThreadId: "child-thread-1",
+          lifecycle: "completed",
+          item: {
+            type: "commandExecution",
+            id: "child-command-1",
+            command: "vp test run",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      NodeAssert.equal(events[0]?.type, "task.progress");
+      NodeAssert.equal(events[1]?.type, "item.completed");
+      if (events[1]?.type === "item.completed") {
+        NodeAssert.equal(events[1].itemId, "child-command-1");
+        NodeAssert.equal(events[1].payload.itemType, "command_execution");
+        NodeAssert.equal(events[1].payload.agentId, "child-thread-1");
+      }
+    }),
+  );
+
   it.effect("maps completed agent message items to canonical item.completed events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

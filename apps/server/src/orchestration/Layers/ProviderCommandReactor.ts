@@ -102,6 +102,7 @@ type ThreadTitleMessage = {
   readonly role: "user" | "assistant" | "system";
   readonly text: string;
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  readonly agentId?: string | undefined;
 };
 
 function formatThreadTitleSection(message: ThreadTitleMessage): string | undefined {
@@ -168,7 +169,8 @@ function formatThreadTitleContext(messages: ReadonlyArray<ThreadTitleMessage>): 
   readonly message: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
 } {
-  const recent = collectRecentThreadTitleContext(messages, MAX_THREAD_TITLE_CONTEXT_CHARS);
+  const parentMessages = messages.filter((message) => message.agentId === undefined);
+  const recent = collectRecentThreadTitleContext(parentMessages, MAX_THREAD_TITLE_CONTEXT_CHARS);
   if (!recent.truncated) {
     return {
       message: recent.context,
@@ -176,7 +178,7 @@ function formatThreadTitleContext(messages: ReadonlyArray<ThreadTitleMessage>): 
     };
   }
 
-  const firstUserMessage = messages.find(
+  const firstUserMessage = parentMessages.find(
     (message) => message.role === "user" && formatThreadTitleSection(message),
   );
   const firstUserSection = firstUserMessage

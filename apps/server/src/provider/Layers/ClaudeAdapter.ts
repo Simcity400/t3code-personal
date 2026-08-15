@@ -2366,12 +2366,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const { event } = message;
 
     // Subagent-owned stream traffic (parent_tool_use_id set) must not write
-    // into the parent transcript: with forwardSubagentText off the SDK still
-    // forwards subagent tool_use/tool_result blocks and their wrapping
-    // text/thinking deltas, and emitting them interleaved N subagents'
-    // narration into the chat (live-test finding). Their results reach the
-    // UI via the task.* lifecycle; their tool blocks are attributed and
-    // re-homed by the quiet-timeline filter.
+    // into the parent transcript. Tool blocks keep flowing with agent
+    // attribution; assistant text is persisted from the authoritative
+    // assistant snapshot below, re-homed into that agent's transcript.
     const streamParentToolUseId = (message as { parent_tool_use_id?: string | null })
       .parent_tool_use_id;
     if (streamParentToolUseId !== null && streamParentToolUseId !== undefined) {
@@ -2833,10 +2830,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    // Subagent-owned assistant snapshots (parent_tool_use_id set) are the
-    // subagent's own conversation, not the parent's. Emitting them created
-    // interleaved "Agent N done"-adjacent leak messages and spawned synthetic
-    // turns per subagent completion (which also reset the Working timer).
+    // Subagent-owned assistant snapshots (parent_tool_use_id set) belong in
+    // the agent transcript, never the parent chat. Tagging the lifecycle item
+    // with agentId lets ingestion reuse the ordinary assistant-message path
+    // without creating a synthetic parent turn or resetting its timer.
     const assistantParentToolUseId = (message as { parent_tool_use_id?: string | null })
       .parent_tool_use_id;
     if (assistantParentToolUseId !== null && assistantParentToolUseId !== undefined) {
@@ -2847,6 +2844,34 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const owningAgent = owningTaskId ? context.taskAgents.get(owningTaskId) : undefined;
       if (owningAgent && snapshotModel) {
         owningAgent.model = snapshotModel;
+      }
+      const transcriptText = extractAssistantTextBlocks(message).join("\n\n").trim();
+      const nativeItemId = sdkNativeItemId(message) ?? message.uuid;
+      if (owningTaskId && !owningAgent?.skipTranscript && transcriptText.length > 0) {
+        const stamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "item.completed",
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+          itemId: asRuntimeItemId(nativeItemId),
+          payload: {
+            itemType: "assistant_message",
+            status: "completed",
+            title: "Assistant message",
+            detail: transcriptText,
+            agentId: RuntimeTaskId.make(owningTaskId),
+            data: message.message,
+          },
+          providerRefs: nativeProviderRefs(context, { providerItemId: nativeItemId }),
+          raw: {
+            source: "claude.sdk.message",
+            method: "claude/assistant/subagent",
+            payload: message,
+          },
+        });
       }
       context.lastAssistantUuid = message.uuid;
       yield* updateResumeCursor(context);

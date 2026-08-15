@@ -21,6 +21,7 @@ import { useAgentNotificationNavigation } from "./features/agent-awareness/notif
 import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboardingRouteScreen";
 import { useConnectOnboardingNavigation } from "./features/cloud/connectOnboardingNavigation";
 import { ThreadFilesTreeScreen, ThreadFileScreen } from "./features/files/ThreadFilesRouteScreen";
+import { ThreadAgentsRouteScreen } from "./features/agents/ThreadAgentsRouteScreen";
 import { AdaptiveWorkspaceLayout } from "./features/layout/AdaptiveWorkspaceLayout";
 import { HardwareKeyboardCommandProvider } from "./features/keyboard/HardwareKeyboardCommandProvider";
 import { ReviewCommentComposerSheet } from "./features/review/ReviewCommentComposerSheet";
@@ -483,6 +484,14 @@ export const RootStack = createNativeStackNavigator({
       screen: ThreadTerminalRouteScreen,
       linking: `${THREAD_LINKING_PREFIX}/terminal`,
       options: SOLID_HEADER_OPTIONS,
+    }),
+    ThreadAgents: createNativeStackScreen({
+      screen: ThreadAgentsRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/agents`,
+      options: {
+        ...SOLID_HEADER_OPTIONS,
+        title: "Agents",
+      },
     }),
     ThreadReview: createNativeStackScreen({
       screen: ReviewSheet,

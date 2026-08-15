@@ -17,7 +17,7 @@
  * folding (completion can create an agent; a late start only fills
  * metadata).
  */
-import type { OrchestrationThreadActivity } from "@t3tools/contracts";
+import type { OrchestrationMessage, OrchestrationThreadActivity } from "@t3tools/contracts";
 
 export type RuntimeSubagentStatus =
   | "pending"
@@ -102,6 +102,67 @@ export function isTerminalSubagentStatus(status: RuntimeSubagentStatus): boolean
  * but resumable; waiting counts as active because it needs the user. */
 export function isActiveSubagentStatus(status: RuntimeSubagentStatus): boolean {
   return status === "pending" || status === "running" || status === "waiting";
+}
+
+const SUBAGENT_TITLE_TERMS: Readonly<Record<string, string>> = {
+  ai: "AI",
+  api: "API",
+  claude: "Claude",
+  cli: "CLI",
+  codex: "Codex",
+  css: "CSS",
+  e2e: "E2E",
+  expo: "Expo",
+  git: "Git",
+  github: "GitHub",
+  html: "HTML",
+  http: "HTTP",
+  https: "HTTPS",
+  ios: "iOS",
+  ipad: "iPad",
+  iphone: "iPhone",
+  js: "JS",
+  json: "JSON",
+  macos: "macOS",
+  mcp: "MCP",
+  pr: "PR",
+  qa: "QA",
+  sdk: "SDK",
+  sql: "SQL",
+  ssh: "SSH",
+  t3: "T3",
+  ts: "TS",
+  ui: "UI",
+  url: "URL",
+  ux: "UX",
+  ws: "WS",
+  xcode: "Xcode",
+  xml: "XML",
+};
+
+/**
+ * Makes provider task keys pleasant to read without changing the stable key
+ * used for transcript attribution. Explicit human-written titles are kept as
+ * provided; only lowercase identifier-shaped titles are humanized.
+ */
+export function formatSubagentTitle(title: string): string {
+  const trimmed = title.trim();
+  if (
+    trimmed.length === 0 ||
+    !/^[a-z0-9]+(?:[_-][a-z0-9]+)*$/.test(trimmed) ||
+    /^[0-9a-f]{8}-[0-9a-f-]{27,}$/.test(trimmed)
+  ) {
+    return trimmed;
+  }
+
+  return trimmed
+    .split(/[_-]+/)
+    .map((part, index) => {
+      const knownTerm = SUBAGENT_TITLE_TERMS[part];
+      if (knownTerm) return knownTerm;
+      return index === 0 ? `${part.charAt(0).toUpperCase()}${part.slice(1)}` : part;
+    })
+    .join(" ");
 }
 
 const RECENT_ACTIVITY_LIMIT = 6;
@@ -899,6 +960,148 @@ export function isAgentAttributedToolActivity(activity: OrchestrationThreadActiv
   }
   const payload = activity.payload as Record<string, unknown>;
   return typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
+}
+
+/**
+ * Selects one agent's tool lifecycle for replay through the ordinary chat
+ * timeline renderers. Attribution is removed from the returned copies so the
+ * parent-timeline quieting rule does not discard rows after they have already
+ * been explicitly scoped to the selected agent.
+ */
+export function selectSubagentTranscriptActivities(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  agentId: string,
+): ReadonlyArray<OrchestrationThreadActivity> {
+  return activities.flatMap((activity) => {
+    if (
+      activity.kind !== "tool.started" &&
+      activity.kind !== "tool.updated" &&
+      activity.kind !== "tool.completed"
+    ) {
+      return [];
+    }
+    if (typeof activity.payload !== "object" || activity.payload === null) {
+      return [];
+    }
+    const payload = activity.payload as Record<string, unknown>;
+    if (asString(payload.agentId) !== agentId || payload.itemType === "assistant_message") {
+      return [];
+    }
+    const { agentId: _agentId, timelineBypass: _timelineBypass, ...transcriptPayload } = payload;
+    return [
+      {
+        ...activity,
+        payload: transcriptPayload,
+      },
+    ];
+  });
+}
+
+export interface SubagentTranscriptMessageEntry {
+  readonly kind: "message";
+  readonly id: string;
+  readonly text: string;
+  readonly streaming: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface SubagentTranscriptToolEntry {
+  readonly kind: "tool";
+  readonly id: string;
+  readonly itemId: string;
+  readonly title: string;
+  readonly detail: string | null;
+  readonly status: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export type SubagentTranscriptEntry = SubagentTranscriptMessageEntry | SubagentTranscriptToolEntry;
+
+function transcriptToolTitle(
+  payload: Readonly<Record<string, unknown>>,
+  existingTitle?: string,
+): string {
+  const title = asString(payload.title) ?? asString(payload.toolName);
+  if (title) {
+    return title;
+  }
+  if (existingTitle) {
+    return existingTitle;
+  }
+  return (asString(payload.itemType) ?? "Tool").replaceAll("_", " ");
+}
+
+/**
+ * Builds one agent's durable, live transcript from the same persisted message
+ * and activity projections used by the parent timeline. Tool lifecycle rows
+ * collapse by provider item id so streaming updates never grow duplicate
+ * cards; assistant lifecycle rows are omitted because their text is already
+ * represented by the agent-attributed message projection.
+ */
+export function deriveSubagentTranscript({
+  agentId,
+  messages,
+  activities,
+}: {
+  readonly agentId: string;
+  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+}): ReadonlyArray<SubagentTranscriptEntry> {
+  const entries: SubagentTranscriptEntry[] = messages
+    .filter((message) => message.agentId === agentId && message.role === "assistant")
+    .map((message) => ({
+      kind: "message" as const,
+      id: message.id,
+      text: message.text,
+      streaming: message.streaming,
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt,
+    }));
+  const tools = new Map<string, SubagentTranscriptToolEntry>();
+
+  for (const activity of activities) {
+    if (
+      activity.kind !== "tool.started" &&
+      activity.kind !== "tool.updated" &&
+      activity.kind !== "tool.completed"
+    ) {
+      continue;
+    }
+    if (typeof activity.payload !== "object" || activity.payload === null) {
+      continue;
+    }
+    const payload = activity.payload as Record<string, unknown>;
+    if (asString(payload.agentId) !== agentId || payload.itemType === "assistant_message") {
+      continue;
+    }
+    const itemId = asString(payload.itemId) ?? activity.id;
+    const existing = tools.get(itemId);
+    const status =
+      asString(payload.status) ??
+      (activity.kind === "tool.completed" ? "completed" : (existing?.status ?? "inProgress"));
+    tools.set(itemId, {
+      kind: "tool",
+      id: existing?.id ?? `tool:${itemId}`,
+      itemId,
+      title: transcriptToolTitle(payload, existing?.title),
+      detail: asString(payload.detail) ?? existing?.detail ?? null,
+      status,
+      payload,
+      createdAt: existing?.createdAt ?? activity.createdAt,
+      updatedAt: activity.createdAt,
+    });
+  }
+
+  entries.push(...tools.values());
+  return entries.sort(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) ||
+      left.updatedAt.localeCompare(right.updatedAt) ||
+      left.id.localeCompare(right.id),
+  );
 }
 
 /** Timeline-bypassing synthesized rows (Codex children, workflow members). */

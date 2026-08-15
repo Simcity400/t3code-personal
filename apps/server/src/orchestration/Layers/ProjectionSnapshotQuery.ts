@@ -25,6 +25,7 @@ import {
   ModelSelection,
   ProjectId,
   ThreadId,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -79,6 +80,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
+    agentId: Schema.NullOr(TrimmedNonEmptyString),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
@@ -527,6 +529,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           turn_id AS "turnId",
           role,
           text,
+          agent_id AS "agentId",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -970,6 +973,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           turn_id AS "turnId",
           role,
           text,
+          agent_id AS "agentId",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -1196,6 +1200,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           turn_id AS "turnId",
           role,
           text,
+          agent_id AS "agentId",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -1432,6 +1437,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   id: row.messageId,
                   role: row.role,
                   text: row.text,
+                  ...(row.agentId !== null ? { agentId: row.agentId } : {}),
                   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
                   turnId: row.turnId,
                   streaming: row.isStreaming === 1,
@@ -2472,6 +2478,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             id: row.messageId,
             role: row.role,
             text: row.text,
+            ...(row.agentId !== null ? { agentId: row.agentId } : {}),
             turnId: row.turnId,
             streaming: row.isStreaming === 1,
             createdAt: row.createdAt,

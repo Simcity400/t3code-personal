@@ -121,6 +121,7 @@ describe("routeCodexChildNotification", () => {
       "thread/tokenUsage/updated",
       "item/started",
       "item/completed",
+      "item/agentMessage/delta",
       "thread/closed",
       "error",
     ]) {
@@ -130,7 +131,6 @@ describe("routeCodexChildNotification", () => {
 
   it("drops only enumerated child chatter", () => {
     for (const method of [
-      "item/agentMessage/delta",
       "item/reasoning/textDelta",
       "item/commandExecution/outputDelta",
       "turn/plan/updated",

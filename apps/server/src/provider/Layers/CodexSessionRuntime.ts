@@ -715,8 +715,8 @@ function shouldSuppressChildConversationNotification(
  * - "agent-event": map to a synthetic collabAgent/* event (Agents surface).
  * - "parent": pass through to the parent path — it carries state the parent
  *   still owns (approval correlation cleanup).
- * - "drop": genuine child chatter with no parent meaning (deltas, name and
- *   plan updates).
+ * - "drop": genuine child chatter with no parent meaning (reasoning, name,
+ *   and plan updates).
  *
  * Default is "drop" ONLY for the enumerated chatter; anything unrecognized
  * routes to "parent" so new wire methods surface instead of vanishing
@@ -731,12 +731,12 @@ const CHILD_AGENT_EVENT_METHODS: ReadonlySet<string> = new Set([
   "thread/tokenUsage/updated",
   "item/started",
   "item/completed",
+  "item/agentMessage/delta",
   "thread/closed",
   "error",
 ]);
 
 const CHILD_CHATTER_METHODS: ReadonlySet<string> = new Set([
-  "item/agentMessage/delta",
   "item/reasoning/textDelta",
   "item/reasoning/summaryTextDelta",
   "item/reasoning/summaryPartAdded",
@@ -1116,6 +1116,20 @@ export const makeCodexSessionRuntime = (
           ...(child.agentPath ? { agentPath: child.agentPath } : {}),
         };
         switch (notification.method) {
+          case "item/agentMessage/delta":
+            yield* emitEvent({
+              kind: "notification",
+              threadId: options.threadId,
+              ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
+              itemId: ProviderItemId.make(notification.params.itemId),
+              method: "collabAgent/contentDelta",
+              textDelta: notification.params.delta,
+              payload: {
+                ...childIdentity,
+                delta: notification.params.delta,
+              },
+            });
+            return true;
           case "turn/started": {
             const childTurnId =
               typeof (notification.params as { turn?: { id?: unknown } }).turn?.id === "string"
@@ -1184,10 +1198,12 @@ export const makeCodexSessionRuntime = (
               kind: "notification",
               threadId: options.threadId,
               ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
+              itemId: ProviderItemId.make(notification.params.item.id),
               method: "collabAgent/item",
               payload: {
                 ...childIdentity,
                 item: notification.params.item,
+                lifecycle: notification.method === "item/started" ? "started" : "completed",
               },
             });
             return true;

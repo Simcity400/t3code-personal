@@ -289,6 +289,7 @@ export function applyThreadDetailEvent(
         ...(event.payload.attachments !== undefined
           ? { attachments: event.payload.attachments }
           : {}),
+        ...(event.payload.agentId !== undefined ? { agentId: event.payload.agentId } : {}),
         turnId: event.payload.turnId,
         streaming: event.payload.streaming,
         createdAt: event.payload.createdAt,
@@ -313,6 +314,7 @@ export function applyThreadDetailEvent(
                   ...(message.attachments !== undefined
                     ? { attachments: message.attachments }
                     : {}),
+                  ...(message.agentId !== undefined ? { agentId: message.agentId } : {}),
                 },
           )
         : Arr.append(thread.messages, message);
@@ -328,6 +330,7 @@ export function applyThreadDetailEvent(
       const settlesTurn = !event.payload.streaming && !turnStillRunning;
       const latestTurn: OrchestrationThread["latestTurn"] =
         event.payload.role === "assistant" &&
+        event.payload.agentId === undefined &&
         event.payload.turnId !== null &&
         (thread.latestTurn === null || thread.latestTurn.turnId === event.payload.turnId)
           ? {

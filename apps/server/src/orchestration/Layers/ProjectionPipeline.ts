@@ -262,7 +262,10 @@ function retainProjectionMessagesAfterRevert(
   }
 
   const retainedAssistantCount = messages.filter(
-    (message) => message.role === "assistant" && retainedMessageIds.has(message.messageId),
+    (message) =>
+      message.role === "assistant" &&
+      message.agentId === undefined &&
+      retainedMessageIds.has(message.messageId),
   ).length;
   const missingAssistantCount = Math.max(0, turnCount - retainedAssistantCount);
   if (missingAssistantCount > 0) {
@@ -270,6 +273,7 @@ function retainProjectionMessagesAfterRevert(
       .filter(
         (message) =>
           message.role === "assistant" &&
+          message.agentId === undefined &&
           !retainedMessageIds.has(message.messageId) &&
           (message.turnId === null || retainedTurnIds.has(message.turnId)),
       )
@@ -979,6 +983,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             role: event.payload.role,
             text: nextText,
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
+            ...(event.payload.agentId !== undefined ? { agentId: event.payload.agentId } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -1298,7 +1303,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.message-sent": {
-          if (event.payload.turnId === null || event.payload.role !== "assistant") {
+          if (
+            event.payload.turnId === null ||
+            event.payload.role !== "assistant" ||
+            event.payload.agentId !== undefined
+          ) {
             return;
           }
           // A completed assistant message only settles the turn once the

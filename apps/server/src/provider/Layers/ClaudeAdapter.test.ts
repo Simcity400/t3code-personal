@@ -1758,9 +1758,14 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const taskEventsFiber = yield* adapter.streamEvents.pipe(
-        Stream.filter((event) => event.type.startsWith("task.")),
-        Stream.take(2),
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "task.started" ||
+            event.type === "task.progress" ||
+            (event.type === "item.completed" && event.payload.itemType === "assistant_message"),
+        ),
+        Stream.take(3),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -1800,7 +1805,8 @@ describe("ClaudeAdapterLive", () => {
         parent_tool_use_id: "toolu_agent_m",
         message: {
           model: "claude-sonnet-5[1m]",
-          content: [],
+          id: "subagent-message-1",
+          content: [{ type: "text", text: "I found the relevant call site." }],
         },
         uuid: "subagent-snapshot-uuid",
         session_id: "sdk-session",
@@ -1815,18 +1821,25 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session",
       } as unknown as SDKMessage);
 
-      const taskEvents = Array.from(yield* Fiber.join(taskEventsFiber));
-      const started = taskEvents[0];
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const started = events.find((event) => event.type === "task.started");
       assert.equal(started?.type, "task.started");
       if (started?.type === "task.started") {
         assert.equal(started.payload.model, "claude-opus-4-6");
         assert.equal(started.payload.effort, "max");
       }
-      const progress = taskEvents[1];
+      const progress = events.find((event) => event.type === "task.progress");
       assert.equal(progress?.type, "task.progress");
       if (progress?.type === "task.progress") {
         assert.equal(progress.payload.model, "claude-sonnet-5[1m]");
         assert.equal(progress.payload.effort, "max");
+      }
+      const transcriptEvent = events.find((event) => event.type === "item.completed");
+      assert.equal(transcriptEvent?.type, "item.completed");
+      if (transcriptEvent?.type === "item.completed") {
+        assert.equal(transcriptEvent.itemId, "subagent-message-1");
+        assert.equal(transcriptEvent.payload.detail, "I found the relevant call site.");
+        assert.equal(transcriptEvent.payload.agentId, "task-model");
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
