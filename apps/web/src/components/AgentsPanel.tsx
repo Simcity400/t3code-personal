@@ -24,6 +24,7 @@ import {
   formatSubagentTokenCount,
   isActiveSubagentStatus,
   selectSubagentTranscriptActivities,
+  selectSubagentTranscriptMessages,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type {
@@ -588,8 +589,8 @@ function AgentTranscript({
   const listRef = useRef<LegendListRef | null>(null);
   const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
   const transcriptMessages = useMemo(
-    () => messages.filter((message) => message.agentId === agent.id),
-    [agent.id, messages],
+    () => selectSubagentTranscriptMessages(messages, activities, agent.id),
+    [activities, agent.id, messages],
   );
   const transcriptActivities = useMemo(
     () => selectSubagentTranscriptActivities(activities, agent.id),

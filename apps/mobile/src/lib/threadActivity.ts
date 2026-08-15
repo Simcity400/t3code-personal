@@ -1,5 +1,8 @@
 import { ApprovalRequestId, isToolLifecycleItemType } from "@t3tools/contracts";
-import { selectSubagentTranscriptActivities } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  selectSubagentTranscriptActivities,
+  selectSubagentTranscriptMessages,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import type {
   OrchestrationLatestTurn,
   OrchestrationThread,
@@ -1513,11 +1516,11 @@ export function buildThreadFeed(
   // them out of the parent feed mirrors web and prevents child narration from
   // being interleaved with the main conversation on older mobile clients.
   const transcriptAgentId = options?.agentId;
-  const loadedMessages = (options?.loadedMessages ?? thread.messages).filter((message) =>
+  const sourceMessages = options?.loadedMessages ?? thread.messages;
+  const loadedMessages =
     transcriptAgentId === undefined
-      ? message.agentId === undefined
-      : message.agentId === transcriptAgentId,
-  );
+      ? sourceMessages.filter((message) => message.agentId === undefined)
+      : selectSubagentTranscriptMessages(sourceMessages, thread.activities, transcriptAgentId);
   const oldestLoadedMessageCreatedAt =
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
   const workLogEntries = deriveWorkLogEntries(

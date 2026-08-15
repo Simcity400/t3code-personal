@@ -258,6 +258,67 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it("renders the parent's original agent prompt before the agent response", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-agent-prompt"),
+      projectId: ProjectId.make("project-1"),
+      title: "Agent prompt",
+      messages: [
+        {
+          id: MessageId.make("child-message"),
+          role: "assistant",
+          text: "I found the issue.",
+          agentId: "agent-1",
+          turnId: TurnId.make("turn-1"),
+          streaming: false,
+          createdAt: "2026-04-01T00:00:03.000Z",
+          updatedAt: "2026-04-01T00:00:03.000Z",
+        },
+      ],
+      activities: [
+        makeActivity({
+          id: EventId.make("launch-tool"),
+          kind: "tool.started",
+          tone: "tool",
+          summary: "Subagent task started",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          turnId: TurnId.make("turn-1"),
+          payload: {
+            itemId: "tool-agent-1",
+            itemType: "collab_agent_tool_call",
+            data: {
+              toolName: "Agent",
+              input: { prompt: "Find why wrapped lines are hidden on iPhone." },
+            },
+          },
+        }),
+        makeActivity({
+          id: EventId.make("agent-start"),
+          kind: "task.started",
+          tone: "info",
+          summary: "Agent started",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId: TurnId.make("turn-1"),
+          payload: {
+            taskId: "agent-1",
+            toolUseId: "tool-agent-1",
+            agentKind: "agent",
+          },
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread, { agentId: "agent-1" });
+    const messages = feed.flatMap((entry) =>
+      entry.type === "message" ? [{ role: entry.message.role, text: entry.message.text }] : [],
+    );
+
+    expect(messages).toEqual([
+      { role: "user", text: "Find why wrapped lines are hidden on iPhone." },
+      { role: "assistant", text: "I found the issue." },
+    ]);
+  });
+
   it("keeps historic work entries attributed to their turns", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-1"),

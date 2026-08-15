@@ -98,6 +98,69 @@ describe("projectActivityPayload agent-field survival", () => {
     expect(JSON.stringify(projected.payload).length).toBeLessThan(500);
   });
 
+  it("preserves only Claude's exact subagent prompt linkage", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "collab_agent_tool_call",
+        itemId: "toolu_agent_1",
+        data: {
+          toolName: "Agent",
+          input: {
+            description: "Review the database layer",
+            prompt: "Audit every SQL change and report exact file evidence.",
+            subagent_type: "code-reviewer",
+          },
+          result: { huge: "x".repeat(5000) },
+        },
+      }),
+    );
+
+    expect(projected.payload).toEqual({
+      itemType: "collab_agent_tool_call",
+      itemId: "toolu_agent_1",
+      data: {
+        toolName: "Agent",
+        input: { prompt: "Audit every SQL change and report exact file evidence." },
+      },
+    });
+  });
+
+  it("preserves only Codex's exact prompt and receiving child linkage", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "collab_agent_tool_call",
+        itemId: "call_spawn_1",
+        data: {
+          item: {
+            type: "collabAgentToolCall",
+            id: "call_spawn_1",
+            tool: "spawnAgent",
+            prompt: "Inspect the mobile transcript.",
+            receiverThreadIds: ["child-thread-1"],
+            agentsStates: { "child-thread-1": { status: "completed" } },
+            model: "gpt-5.6-sol",
+          },
+          turnId: "turn-1",
+          rawProviderBlob: "y".repeat(5000),
+        },
+      }),
+    );
+
+    expect(projected.payload).toEqual({
+      itemType: "collab_agent_tool_call",
+      itemId: "call_spawn_1",
+      data: {
+        item: {
+          type: "collabAgentToolCall",
+          id: "call_spawn_1",
+          tool: "spawnAgent",
+          prompt: "Inspect the mobile transcript.",
+          receiverThreadIds: ["child-thread-1"],
+        },
+      },
+    });
+  });
+
   it("passes task lifecycle payloads (no data field) through untouched", () => {
     const source = activity({
       taskId: "task-9",

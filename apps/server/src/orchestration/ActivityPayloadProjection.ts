@@ -231,6 +231,45 @@ function projectMcpToolCallData(data: Record<string, unknown>): Record<string, u
   return projectedData;
 }
 
+/**
+ * Parent-to-agent instructions are transcript content, not disposable tool
+ * metadata. Keep only the fields required to associate the exact prompt with
+ * its child while continuing to drop the rest of the provider payload.
+ *
+ * Claude shape: `{ toolName, input: { prompt } }`, linked by the activity's
+ * top-level itemId to task.*.toolUseId.
+ * Codex shape: `{ item: { ..., prompt, receiverThreadIds } }`, linked directly
+ * to the child provider thread id.
+ */
+function projectCollabAgentToolCallData(data: Record<string, unknown>): Record<string, unknown> {
+  const projectedData: Record<string, unknown> = {};
+  const item = asRecord(data.item);
+  if (item) {
+    const projectedItem: Record<string, unknown> = {};
+    for (const key of ["type", "id", "tool", "prompt", "receiverThreadIds"] as const) {
+      if (key in item) {
+        projectedItem[key] = item[key];
+      }
+    }
+    if (Object.keys(projectedItem).length > 0) {
+      projectedData.item = projectedItem;
+    }
+  }
+
+  if ("toolName" in data) {
+    projectedData.toolName = data.toolName;
+  }
+  const input = asRecord(data.input);
+  if (input && "prompt" in input) {
+    projectedData.input = { prompt: input.prompt };
+  }
+  if ("toolCallId" in data) {
+    projectedData.toolCallId = data.toolCallId;
+  }
+
+  return projectedData;
+}
+
 function projectRawOutput(value: unknown): Record<string, unknown> | undefined {
   const rawOutput = asRecord(value);
   if (!rawOutput) {
@@ -278,6 +317,16 @@ export function projectActivityPayload(
       payload: {
         ...payload,
         data: projectMcpToolCallData(data),
+      },
+    };
+  }
+
+  if (payload.itemType === "collab_agent_tool_call") {
+    return {
+      ...activity,
+      payload: {
+        ...payload,
+        data: projectCollabAgentToolCallData(data),
       },
     };
   }
