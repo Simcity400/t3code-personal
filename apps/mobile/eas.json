@@ -19,6 +19,7 @@
       "corepack": true,
       "env": {
         "APP_VARIANT": "preview",
+        "MOBILE_VERSION_POLICY": "fingerprint",
         "NODE_OPTIONS": "--max-old-space-size=4096"
       },
       "channel": "preview",
@@ -49,16 +50,6 @@
       "channel": "production",
       "environment": "production",
       "autoIncrement": true
-    }
-  },
-  "submit": {
-    "production": {
-      "ios": {
-        "ascAppId": "6787819824"
-      },
-      "android": {
-        "track": "internal"
-      }
     }
   }
 }
