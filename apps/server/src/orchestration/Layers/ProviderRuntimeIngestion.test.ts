@@ -9,6 +9,7 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  RuntimeTaskId,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -1023,6 +1024,72 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(message?.text).toBe("hello world");
     expect(message?.streaming).toBe(false);
+  });
+
+  it("persists agent assistant messages without settling or replacing the parent turn", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const turnId = asTurnId("turn-agent-transcript");
+    const agentId = RuntimeTaskId.make("agent-transcript-1");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-agent-transcript-turn"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.latestTurn?.turnId === turnId && thread.latestTurn.state === "running",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-agent-transcript-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("agent-message-1"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "child work",
+        agentId,
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-agent-transcript-complete"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("agent-message-1"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        agentId,
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:agent:agent-transcript-1:agent-message-1" && !message.streaming,
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) =>
+        entry.id === "assistant:agent:agent-transcript-1:agent-message-1",
+    );
+    expect(message?.text).toBe("child work");
+    expect(message?.agentId).toBe(agentId);
+    expect(thread.latestTurn?.turnId).toBe(turnId);
+    expect(thread.latestTurn?.state).toBe("running");
+    expect(thread.latestTurn?.assistantMessageId).toBeNull();
   });
 
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {

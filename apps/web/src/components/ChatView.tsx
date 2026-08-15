@@ -2495,7 +2495,7 @@ function ChatViewContent(props: ChatViewProps) {
     };
   }, [attachmentPreviewHandoffByMessageId, clearAttachmentPreviewHandoff, displayServerMessages]);
   const timelineMessages = useMemo(() => {
-    const messages = displayServerMessages;
+    const messages = displayServerMessages.filter((message) => message.agentId === undefined);
     const serverMessagesWithPreviewHandoff =
       Object.keys(attachmentPreviewHandoffByMessageId).length === 0
         ? messages
@@ -6122,6 +6122,13 @@ function ChatViewContent(props: ChatViewProps) {
         model={agentPanelModel}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
+        messages={activeThread?.messages ?? []}
+        activities={threadActivities}
+        cwd={gitCwd ?? undefined}
+        threadRef={activeThreadRef ?? undefined}
+        skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
+        resolvedTheme={resolvedTheme}
+        timestampFormat={timestampFormat}
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&

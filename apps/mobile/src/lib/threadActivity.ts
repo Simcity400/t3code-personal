@@ -1,4 +1,5 @@
 import { ApprovalRequestId, isToolLifecycleItemType } from "@t3tools/contracts";
+import { selectSubagentTranscriptActivities } from "@t3tools/client-runtime/state/subagentRuntime";
 import type {
   OrchestrationLatestTurn,
   OrchestrationThread,
@@ -256,7 +257,7 @@ function resolvePendingUserInputAnswer(
 }
 
 /** Codex children settle via task.updated (idle/failed/interrupted), never
- * task.completed — these rows are mobile's only terminal signal for them. */
+ * task.completed. */
 const MOBILE_TERMINAL_UPDATE_STATUSES: ReadonlySet<string> = new Set([
   "idle",
   "completed",
@@ -282,11 +283,9 @@ function isTerminalBypassUpdate(activity: OrchestrationThreadActivity): boolean 
 
 /**
  * Quiet-timeline guarantee (mirrors web's session-logic): agent-internal
- * activity lives in the Agents sheet, not the work log. Terminal rows are
- * kept — with no Agents surface on mobile they are the terminal signal
- * (a surface that hides rows must keep its own terminal signal). That means
- * task.completed (Claude) AND terminal bypassed task.updated (Codex, whose
- * children never emit task.completed — review finding).
+ * activity lives in the Agents screen, not the work log. This includes
+ * terminal rows: mobile now has the same durable roster and transcript view
+ * as web, so the main chat no longer needs a duplicate terminal signal.
  */
 function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
   const payload =
@@ -296,20 +295,11 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
   if (!payload) {
     return false;
   }
-  const isTerminalTaskRow = activity.kind === "task.completed" || isTerminalBypassUpdate(activity);
-  if (payload.timelineBypass === true && !isTerminalTaskRow) {
+  if (payload.timelineBypass === true) {
     return true;
   }
-  // agentId marks ownership, not "hide me": a NESTED AGENT's terminal row is
-  // the only signal mobile gets (no Agents sheet), so it stays. Only an
-  // agent's own background work (stamped "background") is internal — same
-  // rule as web (review finding: hiding on agentId alone dropped nested
-  // completions with no replacement UI).
   const ownedByAgent = typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
-  if (!ownedByAgent) {
-    return false;
-  }
-  return !(isTerminalTaskRow && payload.agentKind === "agent");
+  return ownedByAgent;
 }
 
 function deriveWorkLogEntries(
@@ -320,7 +310,8 @@ function deriveWorkLogEntries(
   for (const activity of ordered) {
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
-    // Terminal bypassed updates pass: Codex children's only terminal signal.
+    // Terminal bypassed updates reach classification, which re-homes them to
+    // the Agents screen.
     if (activity.kind === "task.updated" && !isTerminalBypassUpdate(activity)) continue;
     if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
@@ -1515,12 +1506,25 @@ export function buildThreadFeed(
   thread: OrchestrationThread,
   options?: {
     readonly loadedMessages?: ReadonlyArray<OrchestrationThread["messages"][number]>;
+    readonly agentId?: string;
   },
 ): ThreadFeedEntry[] {
-  const loadedMessages = options?.loadedMessages ?? thread.messages;
+  // Agent-attributed assistant messages render in the Agents surface. Keeping
+  // them out of the parent feed mirrors web and prevents child narration from
+  // being interleaved with the main conversation on older mobile clients.
+  const transcriptAgentId = options?.agentId;
+  const loadedMessages = (options?.loadedMessages ?? thread.messages).filter((message) =>
+    transcriptAgentId === undefined
+      ? message.agentId === undefined
+      : message.agentId === transcriptAgentId,
+  );
   const oldestLoadedMessageCreatedAt =
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
-  const workLogEntries = deriveWorkLogEntries(thread.activities);
+  const workLogEntries = deriveWorkLogEntries(
+    transcriptAgentId === undefined
+      ? thread.activities
+      : selectSubagentTranscriptActivities(thread.activities, transcriptAgentId),
+  );
   const entries = Arr.sortWith(
     [
       ...loadedMessages.map<RawThreadFeedEntry>((message) => ({

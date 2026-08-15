@@ -139,7 +139,11 @@ function hasAssistantMessageForTurn(
     if (!message) {
       continue;
     }
-    if (message.role !== "assistant" || message.turnId !== turnId) {
+    if (
+      message.role !== "assistant" ||
+      message.agentId !== undefined ||
+      message.turnId !== turnId
+    ) {
       continue;
     }
     if (options?.streamingOnly === true && !message.streaming) {
@@ -237,7 +241,16 @@ function proposedPlanIdFromEvent(event: ProviderRuntimeEvent, threadId: ThreadId
 }
 
 function assistantSegmentBaseKeyFromEvent(event: ProviderRuntimeEvent): string {
-  return String(event.itemId ?? event.turnId ?? event.eventId);
+  const agentId =
+    (event.type === "content.delta" ||
+      event.type === "item.started" ||
+      event.type === "item.updated" ||
+      event.type === "item.completed") &&
+    event.payload.agentId !== undefined
+      ? event.payload.agentId
+      : undefined;
+  const base = String(event.itemId ?? event.turnId ?? event.eventId);
+  return agentId ? `agent:${agentId}:${base}` : base;
 }
 
 function assistantSegmentMessageId(baseKey: string, segmentIndex: number): MessageId {
@@ -794,9 +807,11 @@ export function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool updated",
           payload: {
             itemType: event.payload.itemType,
+            ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(event.itemId ? { itemId: event.itemId } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
               ? { parentToolUseId: event.payload.parentToolUseId }
@@ -821,8 +836,11 @@ export function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool",
           payload: {
             itemType: event.payload.itemType,
+            ...(event.payload.title ? { title: event.payload.title } : {}),
+            ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(event.itemId ? { itemId: event.itemId } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
               ? { parentToolUseId: event.payload.parentToolUseId }
@@ -847,7 +865,11 @@ export function runtimeEventToActivities(
           summary: `${event.payload.title ?? "Tool"} started`,
           payload: {
             itemType: event.payload.itemType,
+            ...(event.payload.title ? { title: event.payload.title } : {}),
+            ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(event.itemId ? { itemId: event.itemId } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
               ? { parentToolUseId: event.payload.parentToolUseId }
@@ -1042,6 +1064,9 @@ const make = Effect.gen(function* () {
     turnId?: TurnId;
   }) =>
     Effect.gen(function* () {
+      if (input.event.type === "content.delta" && input.event.payload.agentId !== undefined) {
+        return assistantSegmentMessageId(assistantSegmentBaseKeyFromEvent(input.event), 0);
+      }
       if (!input.turnId) {
         return assistantSegmentMessageId(assistantSegmentBaseKeyFromEvent(input.event), 0);
       }
@@ -1125,6 +1150,7 @@ const make = Effect.gen(function* () {
     threadId: ThreadId;
     messageId: MessageId;
     turnId?: TurnId;
+    agentId?: string;
     createdAt: string;
     commandTag: string;
   }) =>
@@ -1140,6 +1166,7 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         messageId: input.messageId,
         delta: bufferedText,
+        ...(input.agentId ? { agentId: input.agentId } : {}),
         ...(input.turnId ? { turnId: input.turnId } : {}),
         createdAt: input.createdAt,
       });
@@ -1184,6 +1211,7 @@ const make = Effect.gen(function* () {
     threadId: ThreadId;
     messageId: MessageId;
     turnId?: TurnId;
+    agentId?: string;
     createdAt: string;
     commandTag: string;
     finalDeltaCommandTag: string;
@@ -1207,6 +1235,7 @@ const make = Effect.gen(function* () {
           threadId: input.threadId,
           messageId: input.messageId,
           delta: text,
+          ...(input.agentId ? { agentId: input.agentId } : {}),
           ...(input.turnId ? { turnId: input.turnId } : {}),
           createdAt: input.createdAt,
         });
@@ -1218,6 +1247,7 @@ const make = Effect.gen(function* () {
           commandId: yield* providerCommandId(input.event, input.commandTag),
           threadId: input.threadId,
           messageId: input.messageId,
+          ...(input.agentId ? { agentId: input.agentId } : {}),
           ...(input.turnId ? { turnId: input.turnId } : {}),
           createdAt: input.createdAt,
         });
@@ -1650,12 +1680,13 @@ const make = Effect.gen(function* () {
 
       if (assistantDelta && assistantDelta.length > 0) {
         const turnId = toTurnId(event.turnId);
+        const agentId = event.type === "content.delta" ? event.payload.agentId : undefined;
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
           event,
           ...(turnId ? { turnId } : {}),
         });
-        if (turnId) {
+        if (turnId && agentId === undefined) {
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
         }
 
@@ -1672,6 +1703,7 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               messageId: assistantMessageId,
               delta: spillChunk,
+              ...(agentId ? { agentId } : {}),
               ...(turnId ? { turnId } : {}),
               createdAt: now,
             });
@@ -1683,6 +1715,7 @@ const make = Effect.gen(function* () {
             threadId: thread.id,
             messageId: assistantMessageId,
             delta: assistantDelta,
+            ...(agentId ? { agentId } : {}),
             ...(turnId ? { turnId } : {}),
             createdAt: now,
           });
@@ -1742,10 +1775,9 @@ const make = Effect.gen(function* () {
       const assistantCompletion =
         event.type === "item.completed" && event.payload.itemType === "assistant_message"
           ? {
-              messageId: MessageId.make(
-                `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
-              ),
+              messageId: assistantSegmentMessageId(assistantSegmentBaseKeyFromEvent(event), 0),
               fallbackText: event.payload.detail,
+              agentId: event.payload.agentId,
             }
           : undefined;
       const proposedPlanCompletion =
@@ -1761,11 +1793,14 @@ const make = Effect.gen(function* () {
         const detailedThread = yield* getLoadedThreadDetail();
         const messages = detailedThread?.messages ?? [];
         const turnId = toTurnId(event.turnId);
-        const activeAssistantMessageId = turnId
-          ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
-          : Option.none<MessageId>();
+        const activeAssistantMessageId =
+          turnId && assistantCompletion.agentId === undefined
+            ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
+            : Option.none<MessageId>();
         const hasAssistantMessagesForTurn =
-          turnId !== undefined ? hasAssistantMessageForTurn(messages, turnId) : false;
+          turnId !== undefined && assistantCompletion.agentId === undefined
+            ? hasAssistantMessageForTurn(messages, turnId)
+            : false;
         const assistantMessageId = Option.getOrElse(
           activeAssistantMessageId,
           () => assistantCompletion.messageId,
@@ -1781,7 +1816,11 @@ const make = Effect.gen(function* () {
           (assistantCompletion.fallbackText?.trim().length ?? 0) === 0;
 
         if (!shouldSkipRedundantCompletion) {
-          if (turnId && Option.isNone(activeAssistantMessageId)) {
+          if (
+            turnId &&
+            assistantCompletion.agentId === undefined &&
+            Option.isNone(activeAssistantMessageId)
+          ) {
             yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
           }
 
@@ -1789,6 +1828,7 @@ const make = Effect.gen(function* () {
             event,
             threadId: thread.id,
             messageId: assistantMessageId,
+            ...(assistantCompletion.agentId ? { agentId: assistantCompletion.agentId } : {}),
             ...(turnId ? { turnId } : {}),
             createdAt: now,
             commandTag: "assistant-complete",
@@ -1799,12 +1839,12 @@ const make = Effect.gen(function* () {
               : {}),
           });
 
-          if (turnId) {
+          if (turnId && assistantCompletion.agentId === undefined) {
             yield* forgetAssistantMessageId(thread.id, turnId, assistantMessageId);
           }
         }
 
-        if (turnId) {
+        if (turnId && assistantCompletion.agentId === undefined) {
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
         }
       }

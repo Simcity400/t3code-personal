@@ -424,6 +424,8 @@ const ContentDeltaPayload = Schema.Struct({
   delta: Schema.String,
   contentIndex: Schema.optional(Schema.Int),
   summaryIndex: Schema.optional(Schema.Int),
+  /** Owning subagent when this text belongs to a child conversation. */
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type ContentDeltaPayload = typeof ContentDeltaPayload.Type;
 

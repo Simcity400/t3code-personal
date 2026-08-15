@@ -539,6 +539,23 @@ function mapCollabAgentEvent(
   } as const;
 
   switch (event.method) {
+    case "collabAgent/contentDelta": {
+      const delta = event.textDelta ?? (typeof payload.delta === "string" ? payload.delta : "");
+      if (delta.length === 0) {
+        return [];
+      }
+      return [
+        {
+          ...base,
+          type: "content.delta",
+          payload: {
+            streamKind: "assistant_text",
+            delta,
+            agentId: taskId,
+          },
+        },
+      ];
+    }
     case "collabAgent/started":
       return [
         {
@@ -720,7 +737,7 @@ function mapCollabAgentEvent(
           ? (payload.item as Record<string, unknown>)
           : undefined;
       const itemTypeRaw = typeof item?.type === "string" ? item.type : undefined;
-      if (!itemTypeRaw) {
+      if (!item || !itemTypeRaw) {
         return [];
       }
       // A loose summary from the raw item: the child stream is untyped at
@@ -732,6 +749,19 @@ function mapCollabAgentEvent(
         (typeof item?.query === "string" ? item.query : undefined);
       const canonical = toCanonicalItemType(itemTypeRaw);
       const summary = looseSummary ?? canonical.replaceAll("_", " ");
+      const lifecycle = payload.lifecycle === "started" ? "item.started" : "item.completed";
+      const lifecycleItem = item as CodexLifecycleItem;
+      const detail = itemDetail(canonical, lifecycleItem);
+      const rawStatus =
+        typeof (item as Record<string, unknown>).status === "string"
+          ? ((item as Record<string, unknown>).status as string)
+          : undefined;
+      const lifecycleStatus =
+        lifecycle === "item.started"
+          ? ("inProgress" as const)
+          : rawStatus === "failed" || rawStatus === "declined"
+            ? rawStatus
+            : ("completed" as const);
       return [
         {
           ...base,
@@ -742,6 +772,20 @@ function mapCollabAgentEvent(
             ...(knownName ? { title: knownName } : {}),
             summary,
             timelineBypass: true,
+          },
+        },
+        {
+          ...base,
+          type: lifecycle,
+          payload: {
+            itemType: canonical,
+            status: lifecycleStatus,
+            ...(itemTitle(canonical, lifecycleItem)
+              ? { title: itemTitle(canonical, lifecycleItem) }
+              : {}),
+            ...(detail ? { detail } : {}),
+            data: payload.item,
+            agentId: taskId,
           },
         },
       ];

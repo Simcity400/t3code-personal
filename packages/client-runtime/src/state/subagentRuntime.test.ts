@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vite-plus/test";
-import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tools/contracts";
 import {
+  classifyTaskAgentKind,
+  type OrchestrationMessage,
+  type OrchestrationThreadActivity,
+} from "@t3tools/contracts";
+import {
+  deriveSubagentTranscript,
   deriveAgentPanelModel,
   foldSubagentActivities,
   formatSubagentModelLabel,
+  formatSubagentTitle,
   formatSubagentTokenCount,
   isAgentAttributedToolActivity,
   isSubagentActivityKind,
   isTimelineBypassActivity,
+  selectSubagentTranscriptActivities,
   workflowCardMembers,
 } from "./subagentRuntime.ts";
 
@@ -64,6 +71,161 @@ function legacyActivity(
 function fold(rows: ReadonlyArray<OrchestrationThreadActivity>) {
   return foldSubagentActivities(rows);
 }
+
+describe("formatSubagentTitle", () => {
+  it("humanizes provider task keys and preserves familiar product casing", () => {
+    expect(formatSubagentTitle("verify_iphone_transcript")).toBe("Verify iPhone transcript");
+    expect(formatSubagentTitle("test-t3-mobile")).toBe("Test T3 mobile");
+    expect(formatSubagentTitle("claude_api_review")).toBe("Claude API review");
+  });
+
+  it("preserves explicit titles and opaque identifiers", () => {
+    expect(formatSubagentTitle("Review the mobile transcript")).toBe(
+      "Review the mobile transcript",
+    );
+    expect(formatSubagentTitle("01a00487-efa7-7592-9855-eb10be42717c")).toBe(
+      "01a00487-efa7-7592-9855-eb10be42717c",
+    );
+  });
+});
+
+describe("deriveSubagentTranscript", () => {
+  it("keeps only the selected agent's messages and collapses tool lifecycle rows", () => {
+    const messages = [
+      {
+        id: "message-parent",
+        role: "assistant",
+        text: "parent",
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-08-01T10:00:00.000Z",
+        updatedAt: "2026-08-01T10:00:00.000Z",
+      },
+      {
+        id: "message-child",
+        role: "assistant",
+        text: "child answer",
+        agentId: "agent-1",
+        turnId: null,
+        streaming: true,
+        createdAt: "2026-08-01T10:00:01.000Z",
+        updatedAt: "2026-08-01T10:00:02.000Z",
+      },
+      {
+        id: "message-other-child",
+        role: "assistant",
+        text: "other answer",
+        agentId: "agent-2",
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-08-01T10:00:03.000Z",
+        updatedAt: "2026-08-01T10:00:03.000Z",
+      },
+    ] as unknown as ReadonlyArray<OrchestrationMessage>;
+    const activities = [
+      activity(
+        "tool.started",
+        {
+          agentId: "agent-1",
+          itemId: "tool-1",
+          itemType: "command_execution",
+          title: "Ran command",
+          status: "inProgress",
+        },
+        "2026-08-01T10:00:04.000Z",
+      ),
+      activity(
+        "tool.completed",
+        {
+          agentId: "agent-1",
+          itemId: "tool-1",
+          itemType: "command_execution",
+          title: "Ran command",
+          detail: "vp test run",
+          status: "completed",
+        },
+        "2026-08-01T10:00:05.000Z",
+      ),
+      activity("tool.completed", {
+        agentId: "agent-2",
+        itemId: "tool-2",
+        itemType: "file_change",
+      }),
+    ];
+
+    const transcript = deriveSubagentTranscript({ agentId: "agent-1", messages, activities });
+
+    expect(transcript).toHaveLength(2);
+    expect(transcript[0]).toMatchObject({
+      kind: "message",
+      id: "message-child",
+      text: "child answer",
+      streaming: true,
+    });
+    expect(transcript[1]).toMatchObject({
+      kind: "tool",
+      itemId: "tool-1",
+      title: "Ran command",
+      detail: "vp test run",
+      status: "completed",
+    });
+  });
+
+  it("does not duplicate assistant lifecycle rows already projected as messages", () => {
+    const transcript = deriveSubagentTranscript({
+      agentId: "agent-1",
+      messages: [],
+      activities: [
+        activity("tool.completed", {
+          agentId: "agent-1",
+          itemId: "assistant-1",
+          itemType: "assistant_message",
+          detail: "answer",
+        }),
+      ],
+    });
+
+    expect(transcript).toEqual([]);
+  });
+});
+
+describe("selectSubagentTranscriptActivities", () => {
+  it("returns only the selected agent's ordinary tool lifecycle without attribution", () => {
+    const selected = selectSubagentTranscriptActivities(
+      [
+        activity("task.progress", { agentId: "agent-1", taskId: "agent-1" }),
+        activity("tool.updated", {
+          agentId: "agent-1",
+          timelineBypass: true,
+          itemId: "tool-1",
+          itemType: "command_execution",
+        }),
+        activity("tool.completed", {
+          agentId: "agent-2",
+          itemId: "tool-2",
+          itemType: "file_change",
+        }),
+        activity("tool.completed", {
+          agentId: "agent-1",
+          itemId: "assistant-1",
+          itemType: "assistant_message",
+        }),
+      ],
+      "agent-1",
+    );
+
+    expect(selected).toHaveLength(1);
+    expect(selected[0]).toMatchObject({
+      kind: "tool.updated",
+      payload: {
+        itemId: "tool-1",
+        itemType: "command_execution",
+      },
+    });
+    expect(selected[0]?.payload).not.toHaveProperty("agentId");
+    expect(selected[0]?.payload).not.toHaveProperty("timelineBypass");
+  });
+});
 
 describe("foldSubagentActivities", () => {
   it("builds an agent from start → progress → completion", () => {
