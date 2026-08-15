@@ -275,6 +275,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const inputRef = props.editorRef ?? fallbackInputRef;
   const [isFocused, setIsFocused] = useState(false);
   const [editorContentHeight, setEditorContentHeight] = useState(bodyText.lineHeight);
+  const [editorTextLayoutHeight, setEditorTextLayoutHeight] = useState(bodyText.lineHeight);
   const settingsSheetPresentation = useThreadSettingsSheetPresentation({
     editorRef: inputRef,
     isEditorFocused: isFocused,
@@ -296,6 +297,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     bodyText.lineHeight,
     explicitLineHeight,
     Math.ceil(editorContentHeight),
+    Math.ceil(editorTextLayoutHeight),
   );
   const editorHeight = Math.min(COMPOSER_EDITOR_MAX_HEIGHT, desiredEditorHeight);
 
@@ -781,6 +783,25 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           ) : null}
 
           <View className={isExpanded ? undefined : "min-w-0 flex-1"}>
+            {isExpanded ? (
+              <Text
+                accessible={false}
+                pointerEvents="none"
+                style={[
+                  bodyText,
+                  {
+                    left: 4,
+                    opacity: 0,
+                    position: "absolute",
+                    right: 4,
+                    top: 0,
+                  },
+                ]}
+                onLayout={(event) => setEditorTextLayoutHeight(event.nativeEvent.layout.height)}
+              >
+                {`${props.draftMessage}\u200b`}
+              </Text>
+            ) : null}
             <ComposerEditor
               ref={inputRef}
               multiline
