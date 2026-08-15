@@ -7,6 +7,11 @@ export type ComposerEditorSelection = {
   readonly end: number;
 };
 
+export type ComposerEditorContentSize = {
+  readonly width?: number;
+  readonly height: number;
+};
+
 export interface ComposerEditorHandle {
   focus: () => void;
   blur: () => void;
@@ -33,6 +38,7 @@ export interface ComposerEditorProps {
   readonly style?: StyleProp<ViewStyle>;
   readonly textStyle?: StyleProp<TextStyle>;
   readonly onChangeText: (value: string) => void;
+  readonly onContentSizeChange?: (size: ComposerEditorContentSize) => void;
   readonly onSelectionChange?: (selection: ComposerEditorSelection) => void;
   readonly onPasteImages?: (uris: ReadonlyArray<string>) => void;
   readonly onFocus?: () => void;
