@@ -87,6 +87,8 @@ export const COMPOSER_COLLAPSED_CHROME = 60;
  */
 export const COMPOSER_EXPANDED_CHROME = 156;
 
+const COMPOSER_EDITOR_MAX_HEIGHT = 160;
+
 export interface ThreadComposerProps {
   readonly draftMessage: string;
   readonly draftAttachments: ReadonlyArray<DraftComposerImageAttachment>;
@@ -272,6 +274,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
   const [isFocused, setIsFocused] = useState(false);
+  const [editorContentHeight, setEditorContentHeight] = useState(bodyText.lineHeight);
   const settingsSheetPresentation = useThreadSettingsSheetPresentation({
     editorRef: inputRef,
     isEditorFocused: isFocused,
@@ -288,6 +291,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   // while focus moves between its native editor and the settings picker.
   const isExpanded = isFocused || settingsSheetPresentation.isActive;
   const canSend = hasContent;
+  const editorHeight = Math.min(
+    COMPOSER_EDITOR_MAX_HEIGHT,
+    Math.max(bodyText.lineHeight, Math.ceil(editorContentHeight)),
+  );
 
   // Notify the parent from the derived value, not focus events: the parent
   // sizes the feed inset from this, and blur-during-sheet would otherwise
@@ -779,13 +786,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               skills={selectedProviderStatus?.skills ?? []}
               selection={composerSelection}
               onChangeText={props.onChangeDraftMessage}
+              onContentSizeChange={({ height }) => setEditorContentHeight(height)}
               onSelectionChange={handleSelectionChange}
               onPasteImages={(uris) => void props.onNativePasteImages(uris)}
               placeholder={props.placeholder}
               onFocus={handleFocus}
               onBlur={handleBlur}
               onSubmit={handleSend}
-              scrollEnabled={isExpanded}
+              scrollEnabled={isExpanded && editorContentHeight > COMPOSER_EDITOR_MAX_HEIGHT}
               // Android: collapsed single line centers natively (gravity) in
               // a pill-height box matching the send button; iOS keeps insets.
               singleLineCentered={!isExpanded}
@@ -793,10 +801,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               style={
                 isExpanded
                   ? {
-                      minHeight: 72,
-                      maxHeight: 160,
+                      height: editorHeight,
+                      maxHeight: COMPOSER_EDITOR_MAX_HEIGHT,
                       paddingHorizontal: 4,
-                      paddingVertical: 4,
                     }
                   : {
                       height: 36,

@@ -13,6 +13,7 @@ export function ComposerEditor({
   skills: _skills,
   selection,
   onPasteImages,
+  onContentSizeChange,
   style,
   textStyle,
   contentInsetVertical = 0,
@@ -43,6 +44,7 @@ export function ComposerEditor({
         ref={inputRef}
         {...props}
         selection={selection}
+        onContentSizeChange={(event) => onContentSizeChange?.(event.nativeEvent.contentSize)}
         onSelectionChange={(event) => props.onSelectionChange?.(event.nativeEvent.selection)}
         multiline={props.multiline ?? true}
         placeholderTextColor={placeholderColor}

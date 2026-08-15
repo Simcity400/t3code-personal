@@ -48,6 +48,11 @@ type NativePasteImagesEvent = NativeSyntheticEvent<{
   readonly uris: ReadonlyArray<string>;
 }>;
 
+type NativeContentSizeEvent = NativeSyntheticEvent<{
+  readonly width?: number;
+  readonly height: number;
+}>;
+
 interface NativeComposerEditorRef {
   focus: () => Promise<void>;
   blur: () => Promise<void>;
@@ -70,6 +75,7 @@ interface NativeComposerEditorProps extends ViewProps {
   readonly autoCorrect: boolean;
   readonly spellCheck: boolean;
   readonly onComposerChange: (event: NativeEditorEvent) => void;
+  readonly onComposerContentSizeChange?: (event: NativeContentSizeEvent) => void;
   readonly onComposerSelectionChange?: (event: NativeSelectionEvent) => void;
   readonly onComposerPasteImages?: (event: NativePasteImagesEvent) => void;
   readonly onComposerFocus?: () => void;
@@ -94,6 +100,7 @@ export function ComposerEditor({
   style,
   textStyle,
   onChangeText,
+  onContentSizeChange,
   onSelectionChange,
   onPasteImages,
   onFocus,
@@ -262,6 +269,7 @@ export function ComposerEditor({
         autoCorrect={props.autoCorrect ?? true}
         spellCheck={props.spellCheck ?? true}
         style={{ flex: 1, minHeight: 0 }}
+        onComposerContentSizeChange={(event) => onContentSizeChange?.(event.nativeEvent)}
         onComposerChange={(event) => {
           const acknowledgedEventCount = acceptNativeEvent(
             event.nativeEvent.eventCount,
