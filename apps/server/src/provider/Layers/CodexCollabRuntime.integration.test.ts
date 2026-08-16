@@ -318,7 +318,7 @@ describe("CodexSessionRuntime collab integration", () => {
       const events = Array.from(yield* Fiber.join(eventsFiber));
       const recovered = events.find(
         (event) =>
-          event.method === "collabAgent/prompt" &&
+          event.method === "collabAgent/historicalPrompt" &&
           (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_A,
       );
       assert.equal(

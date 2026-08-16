@@ -1112,6 +1112,36 @@ describe("session-derived interruption", () => {
 });
 
 describe("terminal robustness", () => {
+  it("keeps reopened prompt metadata idle without reviving settled agents", () => {
+    const promptOnly = fold([
+      activity("task.progress", {
+        taskId: "historical-idle",
+        status: "idle",
+        prompt: "Original launch prompt",
+        role: "reviewer",
+      }),
+    ]);
+    expect(promptOnly[0]?.status).toBe("idle");
+
+    const settled = fold([
+      activity("task.started", { taskId: "historical-settled", taskType: "local_agent" }),
+      activity("task.completed", { taskId: "historical-settled", status: "completed" }),
+      activity("task.progress", {
+        taskId: "historical-settled",
+        status: "idle",
+        prompt: "Original launch prompt",
+      }),
+    ]);
+    expect(settled[0]?.status).toBe("completed");
+
+    const resumedWaiting = fold([
+      activity("task.started", { taskId: "historical-waiting", taskType: "local_agent" }),
+      activity("task.completed", { taskId: "historical-waiting", status: "failed" }),
+      activity("task.updated", { taskId: "historical-waiting", status: "waiting" }),
+    ]);
+    expect(resumedWaiting[0]?.status).toBe("waiting");
+  });
+
   it("task.updated creating an agent (start row aged out) counts one activation", () => {
     const agents = fold([
       activity("task.updated", { taskId: "orphan-u", status: "running", role: "worker" }),

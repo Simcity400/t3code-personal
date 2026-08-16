@@ -573,6 +573,34 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("marks reopened child-agent prompt metadata idle", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-child-historical-prompt"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "collabAgent/historicalPrompt",
+        threadId: asThreadId("thread-1"),
+        payload: {
+          agentThreadId: "child-thread-1",
+          prompt: "Review the old diff.",
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "task.progress") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.payload.prompt, "Review the old diff.");
+      NodeAssert.equal(firstEvent.value.payload.status, "idle");
+    }),
+  );
+
   it.effect("maps child-agent text deltas into agent-attributed assistant content", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
