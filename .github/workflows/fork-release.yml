@@ -220,6 +220,17 @@ jobs:
               cp "$asset" release-publish/
             done
           done
+
+          # electron-updater's private GitHub provider always requests
+          # latest.yml, even when the app's selected channel is nightly.
+          # Publish the same signed metadata under both names so installed
+          # personal builds can discover the newest prerelease.
+          if [[ ! -f release-publish/nightly.yml ]]; then
+            echo "Missing release-publish/nightly.yml" >&2
+            exit 1
+          fi
+          cp release-publish/nightly.yml release-publish/latest.yml
+
           ls -la release-publish
 
       - name: Publish release
