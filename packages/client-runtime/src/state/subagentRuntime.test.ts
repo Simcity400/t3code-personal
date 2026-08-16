@@ -191,6 +191,60 @@ describe("deriveSubagentTranscript", () => {
 });
 
 describe("selectSubagentTranscriptMessages", () => {
+  it("runs without Array.prototype.toSorted for mobile Hermes", () => {
+    const toSortedDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, "toSorted");
+    Object.defineProperty(Array.prototype, "toSorted", {
+      configurable: true,
+      value: undefined,
+      writable: true,
+    });
+
+    try {
+      const selected = selectSubagentTranscriptMessages(
+        [
+          {
+            id: "message-child",
+            role: "assistant",
+            text: "Review complete",
+            agentId: "agent-1",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-08-01T10:00:03.000Z",
+            updatedAt: "2026-08-01T10:00:03.000Z",
+          },
+        ] as unknown as ReadonlyArray<OrchestrationMessage>,
+        [
+          activity(
+            "tool.completed",
+            {
+              itemId: "spawn-1",
+              itemType: "collab_agent_tool_call",
+              data: {
+                item: {
+                  prompt: "Inspect the mobile transcript.",
+                  receiverThreadIds: ["agent-1"],
+                },
+              },
+            },
+            "2026-08-01T10:00:01.000Z",
+          ),
+        ],
+        "agent-1",
+      );
+
+      expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+        { role: "user", text: "Inspect the mobile transcript." },
+        { role: "assistant", text: "Review complete" },
+      ]);
+    } finally {
+      if (toSortedDescriptor) {
+        Object.defineProperty(Array.prototype, "toSorted", toSortedDescriptor);
+      } else {
+        Reflect.deleteProperty(Array.prototype, "toSorted");
+      }
+    }
+  });
+
   it("recovers Claude's original launch prompt through the task tool id", () => {
     const messages = [
       {
