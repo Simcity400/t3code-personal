@@ -6,9 +6,11 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as References from "effect/References";
 import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
@@ -31,6 +33,9 @@ interface UpdatesHarnessOptions {
   readonly setDisableDifferentialDownload?: Effect.Effect<void>;
   readonly stopBackend?: Effect.Effect<void>;
   readonly env?: Record<string, string | undefined>;
+  readonly resourcesPath?: string;
+  readonly mockUpdates?: boolean;
+  readonly githubToken?: string;
 }
 
 const flushCallbacks = Effect.yieldNow;
@@ -42,6 +47,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
   const sentStates: DesktopUpdateState[] = [];
+  const resourcesPath = options.resourcesPath ?? "/missing/resources";
 
   const addListener = (eventName: string, listener: (...args: readonly unknown[]) => void) => {
     const eventListeners = listeners.get(eventName) ?? new Set();
@@ -96,6 +102,12 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
       ).pipe(Effect.asVoid),
   } satisfies ElectronUpdater.ElectronUpdater["Service"]);
 
+  const credentialsLayer = Layer.succeed(DesktopUpdates.DesktopUpdateCredentials, {
+    resolvePrivateGitHubToken: Effect.succeed(
+      options.githubToken ? Option.some(options.githubToken.trim()) : Option.none(),
+    ),
+  });
+
   const windowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
     create: () => Effect.die("unexpected BrowserWindow creation"),
     main: Effect.succeed(Option.none()),
@@ -137,7 +149,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
     appVersion: "1.2.3",
     appPath: "/repo",
     isPackaged: true,
-    resourcesPath: "/missing/resources",
+    resourcesPath,
     runningUnderArm64Translation: false,
   }).pipe(
     Layer.provide(
@@ -145,7 +157,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
         NodeServices.layer,
         DesktopConfig.layerTest({
           T3CODE_HOME: `/tmp/t3-desktop-updates-test-${process.pid}`,
-          T3CODE_DESKTOP_MOCK_UPDATES: "true",
+          T3CODE_DESKTOP_MOCK_UPDATES: options.mockUpdates === false ? "false" : "true",
           T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
           ...options.env,
         }),
@@ -179,13 +191,14 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
     Layer.provideMerge(
       DesktopConfig.layerTest({
         T3CODE_HOME: `/tmp/t3-desktop-updates-test-${process.pid}`,
-        T3CODE_DESKTOP_MOCK_UPDATES: "true",
+        T3CODE_DESKTOP_MOCK_UPDATES: options.mockUpdates === false ? "false" : "true",
         T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
         ...options.env,
       }),
     ),
     Layer.provideMerge(environmentLayer),
     Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(credentialsLayer),
   );
 
   return {
@@ -272,6 +285,46 @@ describe("DesktopUpdates", () => {
 
       assert.equal(harness.listenerCount(), 0);
     }).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("keeps private GitHub credentials inside the updater", () => {
+    const tokenBeforeConfigure = process.env.GH_TOKEN;
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const resourcesPath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-desktop-updates-",
+        });
+        yield* fileSystem.writeFileString(
+          path.join(resourcesPath, "app-update.yml"),
+          "provider: github\nowner: Simcity400\nrepo: t3code-personal\nprivate: true\n",
+        );
+        const harness = makeHarness({
+          resourcesPath,
+          mockUpdates: false,
+          githubToken: "test-private-token\n",
+        });
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const updates = yield* DesktopUpdates.DesktopUpdates;
+            yield* updates.configure;
+
+            assert.deepEqual(harness.feedUrls(), [
+              {
+                provider: "github",
+                owner: "Simcity400",
+                repo: "t3code-personal",
+                private: true,
+                token: "test-private-token",
+              },
+            ]);
+            assert.equal(process.env.GH_TOKEN, tokenBeforeConfigure);
+          }),
+        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer));
   });
 
   it.effect("updates and broadcasts state from updater events", () => {

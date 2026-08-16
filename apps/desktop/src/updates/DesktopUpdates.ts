@@ -17,6 +17,8 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as ChildProcess from "effect/unstable/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
@@ -47,6 +49,11 @@ const AUTO_UPDATE_POLL_INTERVAL = "4 minutes";
 
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
 type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
+
+interface PrivateGitHubUpdateFeed {
+  readonly owner: string;
+  readonly repo: string;
+}
 
 const UpdateInfo = Schema.Struct({
   version: Schema.String,
@@ -162,6 +169,38 @@ export class DesktopUpdates extends Context.Service<
   }
 >()("@t3tools/desktop/updates/DesktopUpdates") {}
 
+export class DesktopUpdateCredentials extends Context.Service<
+  DesktopUpdateCredentials,
+  {
+    readonly resolvePrivateGitHubToken: Effect.Effect<Option.Option<string>>;
+  }
+>()("@t3tools/desktop/updates/DesktopUpdates/DesktopUpdateCredentials") {}
+
+const makeDesktopUpdateCredentials = Effect.gen(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const resolvePrivateGitHubToken = spawner
+    .string(
+      ChildProcess.make("gh", ["auth", "token"], {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "ignore",
+        killSignal: "SIGTERM",
+        forceKillAfter: Duration.seconds(5),
+      }),
+    )
+    .pipe(
+      Effect.map((output) => output.trim()),
+      Effect.map((token) => (token.length > 0 ? Option.some(token) : Option.none<string>())),
+      Effect.orElseSucceed(() => Option.none<string>()),
+    );
+  return DesktopUpdateCredentials.of({ resolvePrivateGitHubToken });
+});
+
+export const desktopUpdateCredentialsLayer = Layer.effect(
+  DesktopUpdateCredentials,
+  makeDesktopUpdateCredentials,
+);
+
 const {
   logInfo: logUpdaterInfo,
   logWarning: logUpdaterWarning,
@@ -181,6 +220,15 @@ function parseAppUpdateYml(raw: string): Effect.Effect<Option.Option<AppUpdateYm
     Effect.map((config) => (config.provider ? Option.some(config) : Option.none())),
     Effect.orElseSucceed(() => Option.none<AppUpdateYmlConfig>()),
   );
+}
+
+function getPrivateGitHubUpdateFeed(
+  config: AppUpdateYmlConfig,
+): Option.Option<PrivateGitHubUpdateFeed> {
+  if (config.provider !== "github" || config.private !== "true" || !config.owner || !config.repo) {
+    return Option.none();
+  }
+  return Option.some({ owner: config.owner, repo: config.repo });
 }
 
 function createBaseUpdateState(
@@ -224,12 +272,16 @@ function getAutoUpdateDisabledReason(args: {
   appImage?: string | undefined;
   disabledByEnv: boolean;
   hasUpdateFeedConfig: boolean;
+  privateFeedAuthMissing: boolean;
 }): string | null {
   if (!args.hasUpdateFeedConfig) {
     return "Automatic updates are not available because no update feed is configured.";
   }
   if (args.isDevelopment || !args.isPackaged) {
     return "Automatic updates are only available in packaged production builds.";
+  }
+  if (args.privateFeedAuthMissing) {
+    return "Automatic updates need this computer to be signed in to GitHub. Run `gh auth login`, then restart T3 Code.";
   }
   if (args.disabledByEnv) {
     return "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.";
@@ -252,6 +304,7 @@ export const make = Effect.gen(function* () {
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
+  const credentials = yield* DesktopUpdateCredentials;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
 
   const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
@@ -259,6 +312,7 @@ export const make = Effect.gen(function* () {
   const updateDownloadInFlightRef = yield* Ref.make(false);
   const updateInstallInFlightRef = yield* Ref.make(false);
   const updaterConfiguredRef = yield* Ref.make(false);
+  const privateFeedAuthMissingRef = yield* Ref.make(false);
   const lastLoggedDownloadMilestoneRef = yield* Ref.make(-1);
   const updateStateRef = yield* Ref.make<DesktopUpdateState>(
     createInitialDesktopUpdateState(
@@ -301,6 +355,7 @@ export const make = Effect.gen(function* () {
 
   const resolveDisabledReason = Effect.gen(function* () {
     const hasFeedConfig = yield* hasUpdateFeedConfig;
+    const privateFeedAuthMissing = yield* Ref.get(privateFeedAuthMissingRef);
     return Option.fromNullishOr(
       getAutoUpdateDisabledReason({
         isDevelopment: environment.isDevelopment,
@@ -309,6 +364,7 @@ export const make = Effect.gen(function* () {
         appImage: Option.getOrUndefined(config.appImagePath),
         disabledByEnv: config.disableAutoUpdate,
         hasUpdateFeedConfig: hasFeedConfig,
+        privateFeedAuthMissing,
       }),
     );
   });
@@ -721,6 +777,22 @@ export const make = Effect.gen(function* () {
           provider: "generic",
           url: `http://localhost:${config.mockUpdateServerPort}`,
         } as ElectronUpdater.ElectronUpdaterFeedUrl);
+      } else if (environment.isPackaged && Option.isSome(appUpdateYmlConfig)) {
+        const privateGitHubFeed = getPrivateGitHubUpdateFeed(appUpdateYmlConfig.value);
+        if (Option.isSome(privateGitHubFeed)) {
+          const token = yield* credentials.resolvePrivateGitHubToken;
+          if (Option.isNone(token)) {
+            yield* Ref.set(privateFeedAuthMissingRef, true);
+          } else {
+            yield* electronUpdater.setFeedURL({
+              provider: "github",
+              owner: privateGitHubFeed.value.owner,
+              repo: privateGitHubFeed.value.repo,
+              private: true,
+              token: token.value,
+            } as ElectronUpdater.ElectronUpdaterFeedUrl);
+          }
+        }
       }
 
       const settings = yield* desktopSettings.get;
@@ -850,3 +922,4 @@ export const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(DesktopUpdates, make);
+export const liveLayer = layer.pipe(Layer.provide(desktopUpdateCredentialsLayer));
