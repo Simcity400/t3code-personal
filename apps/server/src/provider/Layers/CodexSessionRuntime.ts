@@ -90,7 +90,7 @@ export type CodexTurnStartParamsWithCollaborationMode =
 
 export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
 type CodexServiceTier = NonNullable<EffectCodexSchema.V2ThreadStartParams["serviceTier"]>;
-type CodexThreadItem =
+export type CodexThreadItem =
   | EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number]["items"][number]
   | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number];
 
@@ -698,26 +698,49 @@ interface CollabChildAgentState {
   readonly spawnTurnId: TurnId | undefined;
 }
 
+function readCollabPromptLinksFromItem(
+  item: CodexThreadItem,
+): ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }> {
+  if (item.type !== "collabAgentToolCall") {
+    return [];
+  }
+  if (item.tool !== "spawnAgent") {
+    return [];
+  }
+  const prompt = item.prompt?.trim();
+  if (!prompt) {
+    return [];
+  }
+  return item.receiverThreadIds.map((receiverThreadId) => ({
+    receiverThreadId,
+    prompt,
+  }));
+}
+
+export function readCollabPromptLinksFromItems(
+  items: ReadonlyArray<CodexThreadItem>,
+): ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }> {
+  return items.flatMap(readCollabPromptLinksFromItem);
+}
+
+export function readHistoricalCollabPromptLinks(input: {
+  readonly turns: ReadonlyArray<{ readonly items: ReadonlyArray<CodexThreadItem> }>;
+  readonly resumeThreadId: string | undefined;
+  readonly forkThreadId: string | undefined;
+}): ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }> {
+  if (input.resumeThreadId === undefined || input.forkThreadId !== undefined) {
+    return [];
+  }
+  return input.turns.flatMap((turn) => readCollabPromptLinksFromItems(turn.items));
+}
+
 export function readCollabPromptLinks(
   notification: CodexServerNotification,
 ): ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }> {
   if (notification.method !== "item/started" && notification.method !== "item/completed") {
     return [];
   }
-  if (notification.params.item.type !== "collabAgentToolCall") {
-    return [];
-  }
-  if (notification.params.item.tool !== "spawnAgent") {
-    return [];
-  }
-  const prompt = notification.params.item.prompt?.trim();
-  if (!prompt) {
-    return [];
-  }
-  return notification.params.item.receiverThreadIds.map((receiverThreadId) => ({
-    receiverThreadId,
-    prompt,
-  }));
+  return readCollabPromptLinksFromItem(notification.params.item);
 }
 
 function readThreadSpawnSource(thread: { readonly source: unknown }):
@@ -1843,6 +1866,7 @@ export const makeCodexSessionRuntime = (
 
       const requestedModel = normalizeCodexModelSlug(options.model);
       const forkThreadId = readResumeCursorThreadId(options.forkResumeCursor);
+      const resumeThreadId = readResumeCursorThreadId(options.resumeCursor);
 
       const opened = yield* openCodexThread({
         client,
@@ -1851,7 +1875,7 @@ export const makeCodexSessionRuntime = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
-        resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        resumeThreadId,
         ...(forkThreadId !== undefined ? { forkThreadId } : {}),
       });
 
@@ -1865,6 +1889,34 @@ export const makeCodexSessionRuntime = (
         updatedAt: yield* nowIso,
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
+      const historicalPromptLinks = readHistoricalCollabPromptLinks({
+        turns: opened.thread.turns,
+        resumeThreadId,
+        forkThreadId,
+      });
+      if (historicalPromptLinks.length > 0) {
+        yield* Ref.update(collabPromptsRef, (current) => {
+          const next = new Map(current);
+          for (const link of historicalPromptLinks) {
+            next.set(link.receiverThreadId, link.prompt);
+          }
+          return next;
+        });
+        yield* Effect.forEach(
+          historicalPromptLinks,
+          (link) =>
+            emitEvent({
+              kind: "notification",
+              threadId: options.threadId,
+              method: "collabAgent/prompt",
+              payload: {
+                agentThreadId: link.receiverThreadId,
+                prompt: link.prompt,
+              },
+            }),
+          { discard: true },
+        );
+      }
       yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
       return session;
     });

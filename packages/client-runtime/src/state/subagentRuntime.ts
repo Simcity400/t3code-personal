@@ -1004,6 +1004,7 @@ export function selectSubagentTranscriptActivities(
 
 interface SubagentPromptCandidate {
   readonly key: string;
+  readonly source: "task" | "tool";
   readonly text: string;
   readonly createdAt: string;
   readonly turnId: OrchestrationMessage["turnId"];
@@ -1044,6 +1045,7 @@ function deriveSubagentPromptCandidates(
     if (prompt) {
       directCandidates.push({
         key: `task:${activity.id}`,
+        source: "task",
         text: prompt,
         createdAt: activity.createdAt,
         turnId: activity.turnId,
@@ -1127,6 +1129,7 @@ function deriveSubagentPromptCandidates(
       return [
         {
           key: `tool:${itemId}`,
+          source: "tool",
           text: tool.prompt,
           createdAt: tool.createdAt,
           turnId: tool.turnId,
@@ -1164,6 +1167,13 @@ export function selectSubagentTranscriptMessages(
   agentId: string,
 ): ReadonlyArray<OrchestrationMessage> {
   const selectedMessages = messages.filter((message) => message.agentId === agentId);
+  const firstSelectedCreatedAt = selectedMessages.reduce<string | undefined>(
+    (earliest, message) =>
+      earliest === undefined || message.createdAt.localeCompare(earliest) < 0
+        ? message.createdAt
+        : earliest,
+    undefined,
+  );
   const promptMessages = deriveSubagentPromptCandidates(activities, agentId)
     .filter(
       (candidate) =>
@@ -1171,22 +1181,35 @@ export function selectSubagentTranscriptMessages(
           (message) => message.role === "user" && message.text === candidate.text,
         ),
     )
-    .map<OrchestrationMessage>((candidate) => ({
-      id: MessageId.make(`subagent-prompt:${agentId}:${candidate.activityId}`),
-      role: "user",
-      text: candidate.text,
-      agentId,
-      turnId: candidate.turnId,
-      streaming: false,
-      createdAt: candidate.createdAt,
-      updatedAt: candidate.createdAt,
-    }));
+    .map<OrchestrationMessage>((candidate) => {
+      const createdAt =
+        candidate.source === "task" &&
+        firstSelectedCreatedAt !== undefined &&
+        firstSelectedCreatedAt.localeCompare(candidate.createdAt) < 0
+          ? firstSelectedCreatedAt
+          : candidate.createdAt;
+      return {
+        id: MessageId.make(`subagent-prompt:${agentId}:${candidate.activityId}`),
+        role: "user",
+        text: candidate.text,
+        agentId,
+        turnId: candidate.turnId,
+        streaming: false,
+        createdAt,
+        updatedAt: createdAt,
+      };
+    });
 
   // Keep this shared selector compatible with mobile Hermes.
-  return [...promptMessages, ...selectedMessages].sort(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-  );
+  return [...promptMessages, ...selectedMessages].sort((left, right) => {
+    const byTime = left.createdAt.localeCompare(right.createdAt);
+    if (byTime !== 0) return byTime;
+    if (left.role !== right.role) {
+      if (left.role === "user") return -1;
+      if (right.role === "user") return 1;
+    }
+    return left.id.localeCompare(right.id);
+  });
 }
 
 export interface SubagentTranscriptMessageEntry {

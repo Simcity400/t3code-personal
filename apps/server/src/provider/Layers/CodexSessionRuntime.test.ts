@@ -22,6 +22,8 @@ import {
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
   readCollabPromptLinks,
+  readCollabPromptLinksFromItems,
+  readHistoricalCollabPromptLinks,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
@@ -67,6 +69,67 @@ describe("readCollabPromptLinks", () => {
       { receiverThreadId: "child-1", prompt: "Review the exact diff." },
       { receiverThreadId: "child-2", prompt: "Review the exact diff." },
     ]);
+  });
+
+  it("recovers launch prompts from a resumed thread snapshot", () => {
+    const items = [
+      {
+        type: "collabAgentToolCall",
+        id: "spawn-1",
+        tool: "spawnAgent",
+        status: "completed",
+        senderThreadId: "parent-thread",
+        receiverThreadIds: ["child-1"],
+        prompt: "Review the exact diff.",
+        agentsStates: {},
+      },
+      {
+        type: "collabAgentToolCall",
+        id: "send-1",
+        tool: "sendInput",
+        status: "completed",
+        senderThreadId: "parent-thread",
+        receiverThreadIds: ["child-1"],
+        prompt: "Also inspect the desktop composer.",
+        agentsStates: {},
+      },
+    ] as Parameters<typeof readCollabPromptLinksFromItems>[0];
+
+    NodeAssert.deepStrictEqual(readCollabPromptLinksFromItems(items), [
+      { receiverThreadId: "child-1", prompt: "Review the exact diff." },
+    ]);
+    NodeAssert.deepStrictEqual(
+      readHistoricalCollabPromptLinks({
+        turns: [{ items }],
+        resumeThreadId: "parent-thread",
+        forkThreadId: undefined,
+      }),
+      [{ receiverThreadId: "child-1", prompt: "Review the exact diff." }],
+    );
+  });
+
+  it("does not import inherited agent prompts into a provider fork", () => {
+    const items = [
+      {
+        type: "collabAgentToolCall",
+        id: "spawn-1",
+        tool: "spawnAgent",
+        status: "completed",
+        senderThreadId: "parent-thread",
+        receiverThreadIds: ["child-1"],
+        prompt: "Review the parent thread.",
+        agentsStates: {},
+      },
+    ] as Parameters<typeof readCollabPromptLinksFromItems>[0];
+
+    NodeAssert.deepStrictEqual(
+      readHistoricalCollabPromptLinks({
+        turns: [{ items }],
+        resumeThreadId: undefined,
+        forkThreadId: "parent-thread",
+      }),
+      [],
+    );
   });
 
   it("does not treat later sendInput text as the launch prompt", () => {
