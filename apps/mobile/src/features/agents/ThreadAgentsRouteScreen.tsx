@@ -3,6 +3,7 @@ import {
   foldSubagentActivities,
   formatSubagentTitle,
   isActiveSubagentStatus,
+  subagentPanelSection,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { LegendListRef } from "@legendapp/list/react-native";
@@ -13,7 +14,9 @@ import { Pressable, ScrollView, View } from "react-native";
 import { useSharedValue } from "react-native-reanimated";
 
 import { AppText as Text } from "../../components/AppText";
+import { SymbolView } from "../../components/AppSymbol";
 import { LoadingScreen } from "../../components/LoadingScreen";
+import { useThemeColor } from "../../lib/useThemeColor";
 import { buildThreadFeed } from "../../lib/threadActivity";
 import { useSelectedThreadDetail } from "../../state/use-thread-detail";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
@@ -43,11 +46,40 @@ function agentStatusLabel(agent: RuntimeSubagent): string {
   }
 }
 
+function AgentCard({
+  agent,
+  onOpen,
+}: {
+  readonly agent: RuntimeSubagent;
+  readonly onOpen: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${formatSubagentTitle(agent.title)} transcript`}
+      onPress={onOpen}
+      className="rounded-xl bg-card px-3 py-3 active:opacity-70"
+    >
+      <View className="flex-row items-center justify-between gap-3">
+        <Text className="min-w-0 flex-1 text-sm font-t3-semibold text-foreground" numberOfLines={1}>
+          {formatSubagentTitle(agent.title)}
+        </Text>
+        <Text className="text-xs text-foreground-muted">{agentStatusLabel(agent)}</Text>
+      </View>
+      <Text className="mt-1 text-xs text-foreground-muted" numberOfLines={1}>
+        {agent.progress ?? agent.result ?? agent.error ?? agent.role ?? "No activity yet"}
+      </Text>
+    </Pressable>
+  );
+}
+
 export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
   const thread = useSelectedThreadDetail();
   const { selectedEnvironmentRuntime } = useThreadSelection();
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [idleOpen, setIdleOpen] = useState(true);
+  const chevronColor = useThemeColor("--color-chevron");
   const transcriptListRef = useRef<LegendListRef>(null);
   const freeze = useSharedValue(false);
   const contentInsetEndAdjustment = useSharedValue(0);
@@ -65,6 +97,8 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
     [model],
   );
   const selectedAgent = allAgents.find((agent) => agent.id === selectedAgentId) ?? null;
+  const activeAgents = allAgents.filter((agent) => subagentPanelSection(agent.status) === "active");
+  const idleAgents = allAgents.filter((agent) => subagentPanelSection(agent.status) === "idle");
   const selectedAgentTitle = selectedAgent ? formatSubagentTitle(selectedAgent.title) : null;
   const transcript = useMemo(
     () => (thread && selectedAgent ? buildThreadFeed(thread, { agentId: selectedAgent.id }) : []),
@@ -171,28 +205,58 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
             </Text>
           </View>
         ) : (
-          allAgents.map((agent) => (
-            <Pressable
-              key={agent.id}
-              accessibilityRole="button"
-              accessibilityLabel={`Open ${formatSubagentTitle(agent.title)} transcript`}
-              onPress={() => setSelectedAgentId(agent.id)}
-              className="rounded-xl bg-card px-3 py-3 active:opacity-70"
-            >
-              <View className="flex-row items-center justify-between gap-3">
-                <Text
-                  className="min-w-0 flex-1 text-sm font-t3-semibold text-foreground"
-                  numberOfLines={1}
-                >
-                  {formatSubagentTitle(agent.title)}
-                </Text>
-                <Text className="text-xs text-foreground-muted">{agentStatusLabel(agent)}</Text>
+          <>
+            {activeAgents.length > 0 ? (
+              <View className="gap-2 rounded-2xl border border-primary/25 bg-card/40 p-2">
+                <View className="flex-row items-center gap-2 px-1 py-1">
+                  <Text className="text-xs font-t3-semibold uppercase tracking-wider text-primary">
+                    Active
+                  </Text>
+                  <Text className="text-xs text-foreground-muted">{activeAgents.length}</Text>
+                </View>
+                {activeAgents.map((agent) => (
+                  <AgentCard
+                    key={agent.id}
+                    agent={agent}
+                    onOpen={() => setSelectedAgentId(agent.id)}
+                  />
+                ))}
               </View>
-              <Text className="mt-1 text-xs text-foreground-muted" numberOfLines={1}>
-                {agent.progress ?? agent.result ?? agent.error ?? agent.role ?? "No activity yet"}
-              </Text>
-            </Pressable>
-          ))
+            ) : null}
+            {idleAgents.length > 0 ? (
+              <View className="rounded-2xl border border-border bg-card/20 p-2">
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`${idleOpen ? "Hide" : "Show"} idle agents`}
+                  accessibilityState={{ expanded: idleOpen }}
+                  onPress={() => setIdleOpen((value) => !value)}
+                  className="flex-row items-center gap-2 rounded-lg px-1 py-1 active:opacity-70"
+                >
+                  <SymbolView
+                    name={idleOpen ? "chevron.down" : "chevron.right"}
+                    size={14}
+                    tintColor={chevronColor}
+                    type="monochrome"
+                  />
+                  <Text className="text-xs font-t3-semibold uppercase tracking-wider text-foreground-muted">
+                    Idle
+                  </Text>
+                  <Text className="text-xs text-foreground-muted">{idleAgents.length}</Text>
+                </Pressable>
+                {idleOpen ? (
+                  <View className="mt-1 gap-2">
+                    {idleAgents.map((agent) => (
+                      <AgentCard
+                        key={agent.id}
+                        agent={agent}
+                        onOpen={() => setSelectedAgentId(agent.id)}
+                      />
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+          </>
         )}
       </ScrollView>
     </View>
