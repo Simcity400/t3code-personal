@@ -65,8 +65,50 @@ function buildScript() {
     // parent path (approval correlation cleanup), not be swallowed.
     { method: "serverRequest/resolved", params: { threadId: CHILD_A, requestId: "req-1" } },
   ];
+  const emptyThreadReadResponse = {
+    thread: {
+      ...wireFixture.responses.threadStart.thread,
+      turns: [],
+    },
+  };
+  const populatedThreadReadResponse = {
+    thread: {
+      ...wireFixture.responses.threadStart.thread,
+      turns: [
+        {
+          ...wireFixture.responses.turnStart.turn,
+          id: "parent-history-turn",
+          status: "completed",
+          items: [
+            {
+              type: "collabAgentToolCall",
+              id: "call_fixture_spawn_a",
+              tool: "spawnAgent",
+              status: "completed",
+              senderThreadId: ROOT,
+              receiverThreadIds: [CHILD_A],
+              prompt: "Inspect the native mobile transcript.",
+              agentsStates: {},
+            },
+            {
+              type: "collabAgentToolCall",
+              id: "call_fixture_spawn_b",
+              tool: "spawnAgent",
+              status: "completed",
+              senderThreadId: ROOT,
+              receiverThreadIds: [CHILD_B],
+              prompt: "Inspect the desktop transcript.",
+              agentsStates: {},
+            },
+          ],
+        },
+      ],
+    },
+  };
   return {
     rootThreadId: ROOT,
+    threadReadResponses: [emptyThreadReadResponse, populatedThreadReadResponse],
+    turnCompleteDelayMs: 500,
     notifications: [...captured.filter((entry) => entry.method !== "turn/completed"), ...extras],
   };
 }
@@ -75,7 +117,7 @@ const scriptPath = NodePath.join(import.meta.dirname, "../testFixtures/.collab-s
 const peerPath = NodePath.join(import.meta.dirname, "../testFixtures/codexCollabMockPeer.sh");
 
 describe("CodexSessionRuntime collab integration", () => {
-  it.effect("replays the captured fan-out into synthetic agent events without child leaks", () =>
+  it.live("replays the captured fan-out into synthetic agent events without child leaks", () =>
     Effect.gen(function* () {
       // @effect-diagnostics-next-line preferSchemaOverJson:off
       NodeFS.writeFileSync(scriptPath, JSON.stringify(buildScript()), "utf8");
@@ -109,6 +151,26 @@ describe("CodexSessionRuntime collab integration", () => {
       assert.include(methods, "collabAgent/activity");
       assert.include(methods, "collabAgent/turnCompleted");
       assert.include(methods, "collabAgent/closed");
+      const childPrompt = events.find(
+        (event) =>
+          event.method === "collabAgent/prompt" &&
+          (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_A,
+      );
+      assert.equal(
+        (childPrompt?.payload as { prompt?: string } | undefined)?.prompt,
+        "Inspect the native mobile transcript.",
+        "a delayed parent snapshot recovers the exact launch prompt",
+      );
+      const secondChildPrompt = events.find(
+        (event) =>
+          event.method === "collabAgent/prompt" &&
+          (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_B,
+      );
+      assert.equal(
+        (secondChildPrompt?.payload as { prompt?: string } | undefined)?.prompt,
+        "Inspect the desktop transcript.",
+        "one recovered snapshot caches and emits every child prompt",
+      );
 
       const childTurnCompleted = events.find(
         (event) =>

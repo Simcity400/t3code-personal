@@ -1224,6 +1224,8 @@ function ChatViewContent(props: ChatViewProps) {
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const [promotingSideChatId, setPromotingSideChatId] = useState<ThreadId | null>(null);
+  const [closingSideChatId, setClosingSideChatId] = useState<ThreadId | null>(null);
   const switchGitRef = useAtomCommand(vcsEnvironment.switchRef, { reportFailure: false });
   const setThreadRuntimeMode = useAtomCommand(threadEnvironment.setRuntimeMode, {
     reportFailure: false,
@@ -5018,16 +5020,6 @@ function ChatViewContent(props: ChatViewProps) {
       );
       return;
     }
-    if (sideChatCommand !== null && sideChatCommand.prompt.length === 0) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "warning",
-          title: "Add a side-chat message",
-          description: "Type your question after /side.",
-        }),
-      );
-      return;
-    }
     const promptForSend = sideChatCommand?.prompt ?? originalPromptForSend;
     if (!sideChatCommand && !directAnnotation && showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
@@ -5095,6 +5087,78 @@ function ChatViewContent(props: ChatViewProps) {
           description: "This draft no longer points to an available project.",
         }),
       );
+      return;
+    }
+    if (sideChatCommand !== null && sideChatCommand.prompt.length === 0) {
+      const hasAttachedContent =
+        composerImages.length > 0 ||
+        sendableComposerTerminalContexts.length > 0 ||
+        composerElementContexts.length > 0 ||
+        composerPreviewAnnotations.length > 0 ||
+        composerReviewComments.length > 0;
+      if (hasAttachedContent) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: "Open the side chat first",
+            description: "Remove the attached content, run /side, then attach it in the side chat.",
+          }),
+        );
+        return;
+      }
+
+      const sideThreadId = newThreadId();
+      const createdAt = new Date().toISOString();
+      const modelSelection = createModelSelection(
+        ctxSelectedModelSelection.instanceId,
+        ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
+        ctxSelectedModelSelection.options,
+      );
+      const createResult = await createThread({
+        environmentId,
+        input: {
+          threadId: sideThreadId,
+          projectId: activeProject.id,
+          title: "Side chat",
+          modelSelection,
+          runtimeMode,
+          interactionMode,
+          branch: activeThreadBranch,
+          worktreePath: activeThread.worktreePath,
+          forkedFromThreadId: activeThread.id,
+          createdAt,
+        },
+      });
+      if (createResult._tag === "Failure") {
+        const error = squashAtomCommandFailure(createResult);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Side chat could not be opened",
+            description: chatActionErrorMessage(error),
+          }),
+        );
+        return;
+      }
+
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      const navigateResult = await settlePromise(() =>
+        navigate({
+          to: "/$environmentId/$threadId",
+          params: { environmentId: activeThread.environmentId, threadId: sideThreadId },
+        }),
+      );
+      if (navigateResult._tag === "Failure") {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Side chat was created",
+            description: "It was saved, but could not be opened. Reopen it from Side chats.",
+          }),
+        );
+      }
       return;
     }
     const threadIdForSend = sideChatCommand ? newThreadId() : activeThread.id;
@@ -6124,17 +6188,69 @@ function ChatViewContent(props: ChatViewProps) {
       thread.sideChatPromotedAt == null,
   );
   const promoteSideChat = async () => {
+    if (promotingSideChatId === activeThread.id || closingSideChatId === activeThread.id) return;
+    setPromotingSideChatId(activeThread.id);
     const result = await updateThreadMetadata({
       environmentId,
       input: { threadId: activeThread.id, sideChatPromotedAt: new Date().toISOString() },
     });
-    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      const error = squashAtomCommandFailure(result);
-      setThreadError(
-        activeThread.id,
-        error instanceof Error ? error.message : "Failed to promote side chat.",
-      );
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Failed to promote side chat.",
+        );
+      }
+      setPromotingSideChatId(null);
+      return;
     }
+    setPromotingSideChatId(null);
+    toastManager.add(
+      stackedThreadToast({
+        type: "success",
+        title: "Added to main threads",
+        description: "This side chat now appears in the main thread list.",
+      }),
+    );
+  };
+  const closeSideChat = async () => {
+    if (
+      !isUnpromotedSideChat ||
+      closingSideChatId === activeThread.id ||
+      promotingSideChatId === activeThread.id
+    )
+      return;
+    const parentThreadId = activeThread.forkedFromThreadId;
+    if (!parentThreadId) return;
+    const localApi = readLocalApi();
+    const message = "Close this side chat? Its messages will be permanently deleted.";
+    const confirmed = localApi
+      ? await localApi.dialogs.confirm(message, { variant: "destructive" })
+      : window.confirm(message);
+    if (!confirmed) return;
+
+    setClosingSideChatId(activeThread.id);
+    const result = await deleteThread({
+      environmentId,
+      input: { threadId: activeThread.id },
+    });
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Failed to close side chat.",
+        );
+      }
+      setClosingSideChatId(null);
+      return;
+    }
+    setClosingSideChatId(null);
+    await navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: activeThread.environmentId, threadId: parentThreadId },
+    });
   };
 
   const panelToggleControls = (
@@ -6365,7 +6481,7 @@ function ChatViewContent(props: ChatViewProps) {
         />
         {isUnpromotedSideChat ? (
           <div className="flex items-center justify-between gap-3 border-b border-border/60 bg-muted/35 px-4 py-2 text-sm">
-            <span>This is a private side chat forked from the original thread.</span>
+            <span>This side chat is saved with the original thread until you close it.</span>
             <div className="flex shrink-0 items-center gap-2">
               <Button
                 type="button"
@@ -6383,8 +6499,26 @@ function ChatViewContent(props: ChatViewProps) {
               >
                 Back to original
               </Button>
-              <Button type="button" size="sm" onClick={() => void promoteSideChat()}>
-                Promote to thread
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={
+                  closingSideChatId === activeThread.id || promotingSideChatId === activeThread.id
+                }
+                onClick={() => void closeSideChat()}
+              >
+                {closingSideChatId === activeThread.id ? "Closing…" : "Close side chat"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={
+                  promotingSideChatId === activeThread.id || closingSideChatId === activeThread.id
+                }
+                onClick={() => void promoteSideChat()}
+              >
+                {promotingSideChatId === activeThread.id ? "Adding…" : "Add to main threads"}
               </Button>
             </div>
           </div>

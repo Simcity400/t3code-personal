@@ -157,8 +157,10 @@ export function useThreadComposerState() {
 
     const sideChatCommand = parseSideChatSlashCommand(text);
     if (sideChatCommand !== null) {
-      if (sideChatCommand.prompt.length === 0) {
-        setPendingConnectionError("Type your question after /side.");
+      if (sideChatCommand.prompt.length === 0 && attachments.length > 0) {
+        setPendingConnectionError(
+          "Remove the attachments, open the side chat with /side, then attach them there.",
+        );
         return null;
       }
       const metadata = makeTurnCommandMetadata();
@@ -171,7 +173,10 @@ export function useThreadComposerState() {
         input: {
           threadId: sideThreadId,
           projectId: selectedThreadShell.projectId,
-          title: deriveThreadTitleFromPrompt(sideChatCommand.prompt),
+          title:
+            sideChatCommand.prompt.length > 0
+              ? deriveThreadTitleFromPrompt(sideChatCommand.prompt)
+              : "Side chat",
           modelSelection,
           runtimeMode,
           interactionMode,
@@ -187,6 +192,17 @@ export function useThreadComposerState() {
           error instanceof Error ? error.message : "The side chat could not be created.",
         );
         return null;
+      }
+      if (sideChatCommand.prompt.length === 0) {
+        clearComposerDraftContent(threadKey);
+        setPendingConnectionError(null);
+        navigation.dispatch(
+          StackActions.push("Thread", {
+            environmentId: String(selectedThreadShell.environmentId),
+            threadId: String(sideThreadId),
+          }),
+        );
+        return { messageId: null };
       }
       const messageId = MessageId.make(metadata.messageId);
       const startResult = await startTurn({
@@ -226,7 +242,7 @@ export function useThreadComposerState() {
           threadId: String(sideThreadId),
         }),
       );
-      return messageId;
+      return { messageId };
     }
 
     const metadata = makeQueuedMessageMetadata();
@@ -260,7 +276,7 @@ export function useThreadComposerState() {
         error instanceof Error ? error.message : "Failed to save the queued message.",
       );
     });
-    return messageId;
+    return { messageId };
   }, [
     createThread,
     deleteThread,

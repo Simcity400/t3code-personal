@@ -15,7 +15,7 @@ import {
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { Platform, Pressable, ScrollView, View } from "react-native";
+import { Alert, Platform, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { useEnvironmentQuery } from "../../state/query";
@@ -223,6 +223,8 @@ function ThreadRouteContent(
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
+  const [sideChatAction, setSideChatAction] = useState<"promoting" | "closing" | null>(null);
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -681,7 +683,8 @@ function ThreadRouteContent(
     [allThreadShells, selectedThread],
   );
   const handlePromoteSideChat = useCallback(async () => {
-    if (!selectedThread || !isUnpromotedSideChat) return;
+    if (!selectedThread || !isUnpromotedSideChat || sideChatAction !== null) return;
+    setSideChatAction("promoting");
     const result = await updateThreadMetadata({
       environmentId: selectedThread.environmentId,
       input: { threadId: selectedThread.id, sideChatPromotedAt: new Date().toISOString() },
@@ -691,8 +694,57 @@ function ThreadRouteContent(
       setPendingConnectionError(
         error instanceof Error ? error.message : "The side chat could not be promoted.",
       );
+      setSideChatAction(null);
+      return;
     }
-  }, [isUnpromotedSideChat, selectedThread, updateThreadMetadata]);
+    setPendingConnectionError(null);
+    setSideChatAction(null);
+    Alert.alert("Added to main threads", "This side chat now appears in the main thread list.");
+  }, [isUnpromotedSideChat, selectedThread, sideChatAction, updateThreadMetadata]);
+  const handleOpenOriginalThread = useCallback(() => {
+    if (!selectedThread?.forkedFromThreadId) return;
+    navigation.navigate("Thread", {
+      environmentId: String(selectedThread.environmentId),
+      threadId: String(selectedThread.forkedFromThreadId),
+    });
+  }, [navigation, selectedThread]);
+  const handleCloseSideChat = useCallback(() => {
+    if (!selectedThread || !isUnpromotedSideChat || sideChatAction !== null) return;
+    const parentThreadId = selectedThread.forkedFromThreadId;
+    if (!parentThreadId) return;
+    Alert.alert("Close side chat?", "Its messages will be permanently deleted.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Close",
+        style: "destructive",
+        onPress: () => {
+          void (async () => {
+            setSideChatAction("closing");
+            const result = await deleteThread({
+              environmentId: selectedThread.environmentId,
+              input: { threadId: selectedThread.id },
+            });
+            if (AsyncResult.isFailure(result)) {
+              const error = Cause.squash(result.cause);
+              setPendingConnectionError(
+                error instanceof Error ? error.message : "The side chat could not be closed.",
+              );
+              setSideChatAction(null);
+              return;
+            }
+            setPendingConnectionError(null);
+            setSideChatAction(null);
+            navigation.dispatch(
+              StackActions.replace("Thread", {
+                environmentId: String(selectedThread.environmentId),
+                threadId: String(parentThreadId),
+              }),
+            );
+          })();
+        },
+      },
+    ]);
+  }, [deleteThread, isUnpromotedSideChat, navigation, selectedThread, sideChatAction]);
   const promoteSideChatHeaderItem = useMemo(
     () =>
       withNativeGlassHeaderItem({
@@ -944,6 +996,50 @@ function ThreadRouteContent(
           onBack={layout.usesSplitView ? undefined : () => navigation.goBack()}
           actions={androidHeaderActions}
         />
+      ) : null}
+
+      {isUnpromotedSideChat ? (
+        <View className="border-border bg-surface border-b px-4 py-2">
+          <Text className="text-muted mb-2 text-xs">
+            Side chat · saved with the original thread until you close it
+          </Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ alignItems: "center", gap: 8 }}
+          >
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back to original thread"
+              className="border-border bg-screen rounded-full border px-3 py-1.5"
+              onPress={handleOpenOriginalThread}
+            >
+              <Text className="text-foreground text-xs font-t3-medium">Back to original</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close side chat"
+              disabled={sideChatAction !== null}
+              className="border-border bg-screen rounded-full border px-3 py-1.5 disabled:opacity-50"
+              onPress={handleCloseSideChat}
+            >
+              <Text className="text-foreground text-xs font-t3-medium">
+                {sideChatAction === "closing" ? "Closing…" : "Close"}
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Add side chat to main threads"
+              disabled={sideChatAction !== null}
+              className="bg-accent rounded-full px-3 py-1.5 disabled:opacity-50"
+              onPress={() => void handlePromoteSideChat()}
+            >
+              <Text className="text-accent-foreground text-xs font-t3-medium">
+                {sideChatAction === "promoting" ? "Adding…" : "Add to main threads"}
+              </Text>
+            </Pressable>
+          </ScrollView>
+        </View>
       ) : null}
 
       {!isUnpromotedSideChat && attachedSideChats.length > 0 ? (
