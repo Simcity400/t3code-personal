@@ -14,8 +14,10 @@ import {
   isAgentAttributedToolActivity,
   isSubagentActivityKind,
   isTimelineBypassActivity,
+  filterWorkflowForPanelSection,
   selectSubagentTranscriptActivities,
   selectSubagentTranscriptMessages,
+  subagentPanelSection,
   workflowCardMembers,
 } from "./subagentRuntime.ts";
 
@@ -890,6 +892,61 @@ describe("deriveAgentPanelModel", () => {
     const model = deriveAgentPanelModel({ agents: orphans });
     expect(model.workflows).toHaveLength(0);
     expect(model.directAgents.map((agent) => agent.id)).toEqual(["gone:wf:0"]);
+  });
+});
+
+describe("agent panel sections", () => {
+  it("puts working states on top and every non-working state under idle", () => {
+    expect(subagentPanelSection("pending")).toBe("active");
+    expect(subagentPanelSection("running")).toBe("active");
+    expect(subagentPanelSection("waiting")).toBe("active");
+    expect(subagentPanelSection("idle")).toBe("idle");
+    expect(subagentPanelSection("completed")).toBe("idle");
+    expect(subagentPanelSection("failed")).toBe("idle");
+    expect(subagentPanelSection("interrupted")).toBe("idle");
+  });
+
+  it("splits mixed workflows without moving idle members into active", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "wf-section",
+        taskType: "local_workflow",
+        status: "running",
+      }),
+      activity("task.progress", {
+        taskId: "wf-section:wf:0",
+        parentAgentId: "wf-section",
+        phaseIndex: 0,
+        status: "running",
+      }),
+      activity("task.progress", {
+        taskId: "wf-section:wf:1",
+        parentAgentId: "wf-section",
+        phaseIndex: 0,
+        status: "completed",
+      }),
+      activity("task.progress", {
+        taskId: "wf-section:wf:2",
+        parentAgentId: "wf-section",
+        phaseIndex: 0,
+        status: "idle",
+      }),
+    ]);
+    const group = deriveAgentPanelModel({ agents }).workflows[0]!;
+    const active = filterWorkflowForPanelSection(group, "active");
+    const idle = filterWorkflowForPanelSection(group, "idle");
+
+    expect(group.workflow.status).toBe("running");
+    expect(active?.phases.flatMap((phase) => phase.members).map((member) => member.id)).toEqual([
+      "wf-section:wf:0",
+    ]);
+    expect(idle?.phases.flatMap((phase) => phase.members).map((member) => member.id)).toEqual([
+      "wf-section:wf:1",
+      "wf-section:wf:2",
+    ]);
+    expect(active?.workflow.status).toBe("running");
+    expect(idle?.workflow.status).toBe("idle");
+    expect(idle?.phases[0]).toMatchObject({ state: "running", activeCount: 1, settledCount: 1 });
   });
 });
 
