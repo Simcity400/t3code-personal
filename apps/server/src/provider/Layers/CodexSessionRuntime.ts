@@ -2090,7 +2090,9 @@ export const makeCodexSessionRuntime = (
             emitEvent({
               kind: "notification",
               threadId: options.threadId,
-              method: "collabAgent/prompt",
+              // Reopened-thread prompt recovery is metadata, not evidence
+              // that the historical child is running in this process.
+              method: "collabAgent/historicalPrompt",
               payload: {
                 agentThreadId: link.receiverThreadId,
                 prompt: link.prompt,

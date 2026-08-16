@@ -459,9 +459,10 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
 function applyStatus(agent: MutableAgent, status: RuntimeSubagentStatus, at: string): void {
   const wasTerminal = isTerminalSubagentStatus(agent.status);
   const isTerminal = isTerminalSubagentStatus(status);
-  if (wasTerminal && isTerminal) {
-    // Duplicate terminal events are idempotent: first write wins, timestamps
-    // don't slide.
+  if (wasTerminal && (isTerminal || status === "idle")) {
+    // Duplicate terminal events and late historical-idle metadata are
+    // idempotent: first write wins and timestamps don't slide. Waiting must
+    // still reactivate a child that resumes directly into an approval gate.
     return;
   }
   if ((wasTerminal || agent.status === "idle") && (status === "running" || status === "pending")) {
