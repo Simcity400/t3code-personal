@@ -420,6 +420,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -456,6 +458,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -494,6 +498,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -899,6 +905,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE project_id = ${projectId}
           AND deleted_at IS NULL
           AND archived_at IS NULL
+          AND (forked_from_thread_id IS NULL OR side_chat_promoted_at IS NOT NULL)
         ORDER BY created_at ASC, thread_id ASC
         LIMIT 1
       `,
@@ -937,6 +944,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1573,6 +1582,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 interactionMode: row.interactionMode,
                 branch: row.branch,
                 worktreePath: row.worktreePath,
+                ...(row.forkedFromThreadId != null
+                  ? { forkedFromThreadId: row.forkedFromThreadId }
+                  : {}),
+                ...(row.sideChatPromotedAt != null
+                  ? { sideChatPromotedAt: row.sideChatPromotedAt }
+                  : {}),
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -1780,6 +1795,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   interactionMode: row.interactionMode,
                   branch: row.branch,
                   worktreePath: row.worktreePath,
+                  ...(row.forkedFromThreadId != null
+                    ? { forkedFromThreadId: row.forkedFromThreadId }
+                    : {}),
+                  ...(row.sideChatPromotedAt != null
+                    ? { sideChatPromotedAt: row.sideChatPromotedAt }
+                    : {}),
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -1916,6 +1937,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       interactionMode: row.interactionMode,
                       branch: row.branch,
                       worktreePath: row.worktreePath,
+                      ...(row.forkedFromThreadId != null
+                        ? { forkedFromThreadId: row.forkedFromThreadId }
+                        : {}),
+                      ...(row.sideChatPromotedAt != null
+                        ? { sideChatPromotedAt: row.sideChatPromotedAt }
+                        : {}),
                       latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                       createdAt: row.createdAt,
                       updatedAt: row.updatedAt,
@@ -2061,6 +2088,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   interactionMode: row.interactionMode,
                   branch: row.branch,
                   worktreePath: row.worktreePath,
+                  ...(row.forkedFromThreadId != null
+                    ? { forkedFromThreadId: row.forkedFromThreadId }
+                    : {}),
+                  ...(row.sideChatPromotedAt != null
+                    ? { sideChatPromotedAt: row.sideChatPromotedAt }
+                    : {}),
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -2340,6 +2373,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
+        ...(threadRow.value.forkedFromThreadId != null
+          ? { forkedFromThreadId: threadRow.value.forkedFromThreadId }
+          : {}),
+        ...(threadRow.value.sideChatPromotedAt != null
+          ? { sideChatPromotedAt: threadRow.value.sideChatPromotedAt }
+          : {}),
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
@@ -2461,6 +2500,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
+        ...(threadRow.value.forkedFromThreadId != null
+          ? { forkedFromThreadId: threadRow.value.forkedFromThreadId }
+          : {}),
+        ...(threadRow.value.sideChatPromotedAt != null
+          ? { sideChatPromotedAt: threadRow.value.sideChatPromotedAt }
+          : {}),
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,

@@ -393,6 +393,45 @@ describe("isRecoverableThreadResumeError", () => {
 });
 
 describe("openCodexThread", () => {
+  it.effect("creates a durable provider fork for a side chat", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ method: string; payload: unknown }> = [];
+      const forked = makeThreadOpenResponse("forked-thread");
+      const client = {
+        request: <M extends "thread/start" | "thread/resume">(
+          method: M,
+          payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push({ method, payload });
+          return Effect.succeed(forked as CodexRpc.ClientRequestResponsesByMethod[M]);
+        },
+      };
+
+      const opened = yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("side-thread"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: undefined,
+        forkThreadId: "parent-provider-thread",
+      });
+
+      NodeAssert.equal(opened.thread.id, "forked-thread");
+      NodeAssert.equal(calls[0]?.method, "thread/fork");
+      NodeAssert.deepStrictEqual(calls[0]?.payload, {
+        cwd: "/tmp/project",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        approvalsReviewer: "user",
+        model: "gpt-5.3-codex",
+        threadId: "parent-provider-thread",
+        ephemeral: false,
+      });
+    }),
+  );
+
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
       const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];

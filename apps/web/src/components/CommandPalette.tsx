@@ -931,12 +931,17 @@ function OpenCommandPaletteDialog(props: {
             threads.filter(
               (thread) =>
                 thread.archivedAt === null &&
+                (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null) &&
                 groupedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`),
             ),
             clientSettings.sidebarThreadSortOrder,
           )[0] ?? null)
         : getLatestThreadForProject(
-            threads.filter((thread) => thread.environmentId === project.environmentId),
+            threads.filter(
+              (thread) =>
+                thread.environmentId === project.environmentId &&
+                (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+            ),
             project.id,
             clientSettings.sidebarThreadSortOrder,
           );
@@ -1654,7 +1659,11 @@ function OpenCommandPaletteDialog(props: {
       );
       if (existing) {
         const latestThread = getLatestThreadForProject(
-          threads.filter((thread) => thread.environmentId === existing.environmentId),
+          threads.filter(
+            (thread) =>
+              thread.environmentId === existing.environmentId &&
+              (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+          ),
           existing.id,
           clientSettings.sidebarThreadSortOrder,
         );

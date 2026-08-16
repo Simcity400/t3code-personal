@@ -7,13 +7,15 @@ import {
 } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { Platform, ScrollView, View } from "react-native";
+import { Platform, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { useEnvironmentQuery } from "../../state/query";
@@ -21,6 +23,7 @@ import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vc
 import { vcsEnvironment } from "../../state/vcs";
 
 import { EmptyState } from "../../components/EmptyState";
+import { AppText as Text } from "../../components/AppText";
 import {
   AndroidScreenHeader,
   type AndroidHeaderAction,
@@ -62,7 +65,9 @@ import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-s
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
+import { setPendingConnectionError } from "../../state/use-remote-environment-registry";
 import { threadEnvironment } from "../../state/threads";
+import { useThreadShells } from "../../state/entities";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import {
   useAdaptiveWorkspaceLayout,
@@ -210,10 +215,14 @@ function ThreadRouteContent(
   }, [selectedThread, selectedThreadDetailState]);
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
+  const allThreadShells = useThreadShells();
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
+  const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
+    reportFailure: false,
+  });
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -657,6 +666,44 @@ function ThreadRouteContent(
       }),
     [handleOpenAgents],
   );
+  const isUnpromotedSideChat =
+    selectedThread?.forkedFromThreadId != null && selectedThread.sideChatPromotedAt == null;
+  const attachedSideChats = useMemo(
+    () =>
+      selectedThread
+        ? allThreadShells.filter(
+            (thread) =>
+              thread.environmentId === selectedThread.environmentId &&
+              thread.forkedFromThreadId === selectedThread.id &&
+              thread.sideChatPromotedAt == null,
+          )
+        : [],
+    [allThreadShells, selectedThread],
+  );
+  const handlePromoteSideChat = useCallback(async () => {
+    if (!selectedThread || !isUnpromotedSideChat) return;
+    const result = await updateThreadMetadata({
+      environmentId: selectedThread.environmentId,
+      input: { threadId: selectedThread.id, sideChatPromotedAt: new Date().toISOString() },
+    });
+    if (AsyncResult.isFailure(result)) {
+      const error = Cause.squash(result.cause);
+      setPendingConnectionError(
+        error instanceof Error ? error.message : "The side chat could not be promoted.",
+      );
+    }
+  }, [isUnpromotedSideChat, selectedThread, updateThreadMetadata]);
+  const promoteSideChatHeaderItem = useMemo(
+    () =>
+      withNativeGlassHeaderItem({
+        accessibilityLabel: "Promote side chat to thread",
+        icon: { name: "arrow.up.right.square", type: "sfSymbol" as const },
+        identifier: "thread-right-promote-side-chat",
+        onPress: () => void handlePromoteSideChat(),
+        type: "button" as const,
+      }),
+    [handlePromoteSideChat],
+  );
   const splitLeftHeaderItems = useMemo<NativeHeaderItems>(
     () => [
       {
@@ -702,6 +749,13 @@ function ThreadRouteContent(
     if (Platform.OS !== "android") return [];
 
     const actions: AndroidHeaderAction[] = [];
+    if (isUnpromotedSideChat) {
+      actions.push({
+        accessibilityLabel: "Promote side chat to thread",
+        icon: "arrow.up.right.square",
+        onPress: () => void handlePromoteSideChat(),
+      });
+    }
     if (props.onReturnToThread) {
       actions.push({
         accessibilityLabel: "Return to chat",
@@ -748,6 +802,8 @@ function ThreadRouteContent(
     handleOpenTerminal,
     handleOpenGitInspector,
     handleToggleInspector,
+    handlePromoteSideChat,
+    isUnpromotedSideChat,
     props.onReturnToThread,
     selectedThreadCwd,
     selectedThreadProject?.workspaceRoot,
@@ -872,6 +928,7 @@ function ThreadRouteContent(
           unstable_headerRightItems:
             Platform.OS === "ios"
               ? () => [
+                  ...(isUnpromotedSideChat ? [promoteSideChatHeaderItem] : []),
                   agentsHeaderItem,
                   ...(layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems),
                 ]
@@ -887,6 +944,38 @@ function ThreadRouteContent(
           onBack={layout.usesSplitView ? undefined : () => navigation.goBack()}
           actions={androidHeaderActions}
         />
+      ) : null}
+
+      {!isUnpromotedSideChat && attachedSideChats.length > 0 ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          className="border-border bg-surface border-b"
+          contentContainerStyle={{
+            alignItems: "center",
+            gap: 8,
+            paddingHorizontal: 16,
+            paddingVertical: 8,
+          }}
+        >
+          <Text className="text-muted text-xs">Side chats</Text>
+          {attachedSideChats.map((sideChat) => (
+            <Pressable
+              key={String(sideChat.id)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open side chat ${sideChat.title}`}
+              className="border-border bg-screen rounded-full border px-3 py-1.5"
+              onPress={() =>
+                navigation.navigate("Thread", {
+                  environmentId: String(sideChat.environmentId),
+                  threadId: String(sideChat.id),
+                })
+              }
+            >
+              <Text className="text-foreground text-xs font-t3-medium">{sideChat.title}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
       ) : null}
 
       {/* Android surfaces the git/files/inspector actions in its in-flow

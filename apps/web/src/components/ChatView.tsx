@@ -77,6 +77,7 @@ import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
 import {
   collapseExpandedComposerCursor,
+  parseSideChatSlashCommand,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
 import {
@@ -244,6 +245,7 @@ import {
   useThread,
   useThreadRefs,
   useThreadShell,
+  useThreadShells,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
@@ -1293,6 +1295,7 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const timestampFormat = settings.timestampFormat;
   const navigate = useNavigate();
+  const allThreadShells = useThreadShells();
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
   const composerRuntimeMode = useComposerDraftStore(
@@ -4960,14 +4963,14 @@ function ChatViewContent(props: ChatViewProps) {
             },
           ]
         : sendContextPreviewAnnotations;
-    const promptForSend = promptRef.current;
+    const originalPromptForSend = promptRef.current;
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
       expiredTerminalContextCount,
       hasSendableContent,
     } = deriveComposerSendState({
-      prompt: promptForSend,
+      prompt: originalPromptForSend,
       imageCount: composerImages.length,
       terminalContexts: composerTerminalContexts,
       elementContextCount:
@@ -4975,7 +4978,29 @@ function ChatViewContent(props: ChatViewProps) {
         composerPreviewAnnotations.length +
         composerReviewComments.length,
     });
-    if (!directAnnotation && showPlanFollowUpPrompt && activeProposedPlan) {
+    const sideChatCommand = parseSideChatSlashCommand(trimmed);
+    if (sideChatCommand !== null && !isServerThread) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Start the thread first",
+          description: "Send the first normal message before opening a side chat.",
+        }),
+      );
+      return;
+    }
+    if (sideChatCommand !== null && sideChatCommand.prompt.length === 0) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Add a side-chat message",
+          description: "Type your question after /side.",
+        }),
+      );
+      return;
+    }
+    const promptForSend = sideChatCommand?.prompt ?? originalPromptForSend;
+    if (!sideChatCommand && !directAnnotation && showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
         planMarkdown: activeProposedPlan.planMarkdown,
@@ -5033,17 +5058,21 @@ function ChatViewContent(props: ChatViewProps) {
       );
       return;
     }
-    const threadIdForSend = activeThread.id;
-    const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
+    const threadIdForSend = sideChatCommand ? newThreadId() : activeThread.id;
+    const isFirstMessage =
+      sideChatCommand !== null || !isServerThread || activeThread.messages.length === 0;
     const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
+      !sideChatCommand && isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
         ? activeThreadBranch
         : null;
 
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
     const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
+      !sideChatCommand &&
+      isFirstMessage &&
+      sendEnvMode === "worktree" &&
+      !activeThread.worktreePath;
     if (shouldCreateWorktree && !activeThreadBranch) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
@@ -5125,19 +5154,21 @@ function ChatViewContent(props: ChatViewProps) {
       threadKey: scopedThreadKey(scopeThreadRef(activeThread.environmentId, threadIdForSend)),
       messageId: messageIdForSend,
     });
-    setOptimisticUserMessages((existing) => [
-      ...existing,
-      {
-        id: messageIdForSend,
-        role: "user",
-        text: outgoingMessageText,
-        ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
-        turnId: null,
-        createdAt: messageCreatedAt,
-        updatedAt: messageCreatedAt,
-        streaming: false,
-      },
-    ]);
+    if (!sideChatCommand) {
+      setOptimisticUserMessages((existing) => [
+        ...existing,
+        {
+          id: messageIdForSend,
+          role: "user",
+          text: outgoingMessageText,
+          ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+          turnId: null,
+          createdAt: messageCreatedAt,
+          updatedAt: messageCreatedAt,
+          streaming: false,
+        },
+      ]);
+    }
     setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
       const toastCopy = buildExpiredTerminalContextToastCopy(
@@ -5163,7 +5194,7 @@ function ChatViewContent(props: ChatViewProps) {
         firstComposerImageName = firstComposerImage.name;
       }
     }
-    let titleSeed = trimmed;
+    let titleSeed = sideChatCommand?.prompt ?? trimmed;
     if (!titleSeed) {
       if (firstComposerImageName) {
         titleSeed = `Image: ${firstComposerImageName}`;
@@ -5183,8 +5214,26 @@ function ChatViewContent(props: ChatViewProps) {
     );
 
     let failure: AtomCommandResult<unknown, unknown> | null = null;
+    if (sideChatCommand && isServerThread) {
+      const createResult = await createThread({
+        environmentId,
+        input: {
+          threadId: threadIdForSend,
+          projectId: activeProject.id,
+          title,
+          modelSelection: threadCreateModelSelection,
+          runtimeMode,
+          interactionMode,
+          branch: activeThreadBranch,
+          worktreePath: activeThread.worktreePath,
+          forkedFromThreadId: activeThread.id,
+          createdAt: messageCreatedAt,
+        },
+      });
+      if (createResult._tag === "Failure") failure = createResult;
+    }
     // Auto-title from first message
-    if (isFirstMessage && isServerThread) {
+    if (!sideChatCommand && isFirstMessage && isServerThread) {
       const titleResult = await updateThreadMetadata({
         environmentId,
         input: {
@@ -5277,7 +5326,26 @@ function ChatViewContent(props: ChatViewProps) {
       }
     }
 
+    if (failure === null && sideChatCommand) {
+      const startedResult = await settlePromise(() =>
+        waitForStartedServerThread(scopeThreadRef(activeThread.environmentId, threadIdForSend)),
+      );
+      failure = startedResult._tag === "Failure" ? startedResult : null;
+      if (failure === null) {
+        const navigateResult = await settlePromise(() =>
+          navigate({
+            to: "/$environmentId/$threadId",
+            params: { environmentId: activeThread.environmentId, threadId: threadIdForSend },
+          }),
+        );
+        failure = navigateResult._tag === "Failure" ? navigateResult : null;
+      }
+    }
+
     if (failure !== null) {
+      if (sideChatCommand) {
+        await deleteThread({ environmentId, input: { threadId: threadIdForSend } });
+      }
       if (
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
@@ -5288,6 +5356,7 @@ function ChatViewContent(props: ChatViewProps) {
         (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
           .length ?? 0) === 0
       ) {
+        const retryPrompt = sideChatCommand ? originalPromptForSend : promptForSend;
         setOptimisticUserMessages((existing) => {
           const removed = existing.filter((message) => message.id === messageIdForSend);
           for (const message of removed) {
@@ -5296,27 +5365,27 @@ function ChatViewContent(props: ChatViewProps) {
           const next = existing.filter((message) => message.id !== messageIdForSend);
           return next.length === existing.length ? existing : next;
         });
-        promptRef.current = promptForSend;
+        promptRef.current = retryPrompt;
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
         composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
         composerElementContextsRef.current = composerElementContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, promptForSend);
+        setComposerDraftPrompt(composerDraftTarget, retryPrompt);
         addComposerDraftImages(composerDraftTarget, retryComposerImages);
         setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
         setComposerDraftElementContexts(composerDraftTarget, composerElementContextsSnapshot);
         setComposerDraftPreviewAnnotations(composerDraftTarget, composerPreviewAnnotationsSnapshot);
         setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
         composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
-          prompt: promptForSend,
+          cursor: collapseExpandedComposerCursor(retryPrompt, retryPrompt.length),
+          prompt: retryPrompt,
           detectTrigger: true,
         });
       }
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         setThreadError(
-          threadIdForSend,
+          sideChatCommand ? activeThread.id : threadIdForSend,
           error instanceof Error ? error.message : "Failed to send message.",
         );
       }
@@ -6000,6 +6069,28 @@ function ChatViewContent(props: ChatViewProps) {
     return <NoActiveThreadState />;
   }
 
+  const isUnpromotedSideChat =
+    activeThread.forkedFromThreadId != null && activeThread.sideChatPromotedAt == null;
+  const attachedSideChats = allThreadShells.filter(
+    (thread) =>
+      thread.environmentId === activeThread.environmentId &&
+      thread.forkedFromThreadId === activeThread.id &&
+      thread.sideChatPromotedAt == null,
+  );
+  const promoteSideChat = async () => {
+    const result = await updateThreadMetadata({
+      environmentId,
+      input: { threadId: activeThread.id, sideChatPromotedAt: new Date().toISOString() },
+    });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      setThreadError(
+        activeThread.id,
+        error instanceof Error ? error.message : "Failed to promote side chat.",
+      );
+    }
+  };
+
   const panelToggleControls = (
     <PanelLayoutControls
       terminalAvailable={activeProject !== null}
@@ -6220,6 +6311,56 @@ function ChatViewContent(props: ChatViewProps) {
             setThreadErrorBannerDismissTick((tick) => tick + 1);
           }}
         />
+        {isUnpromotedSideChat ? (
+          <div className="flex items-center justify-between gap-3 border-b border-border/60 bg-muted/35 px-4 py-2 text-sm">
+            <span>This is a private side chat forked from the original thread.</span>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  navigate({
+                    to: "/$environmentId/$threadId",
+                    params: {
+                      environmentId: activeThread.environmentId,
+                      threadId: activeThread.forkedFromThreadId!,
+                    },
+                  })
+                }
+              >
+                Back to original
+              </Button>
+              <Button type="button" size="sm" onClick={() => void promoteSideChat()}>
+                Promote to thread
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        {!isUnpromotedSideChat && attachedSideChats.length > 0 ? (
+          <div className="flex items-center gap-2 overflow-x-auto border-b border-border/60 bg-muted/25 px-4 py-2 text-sm">
+            <span className="shrink-0 text-muted-foreground">Side chats</span>
+            {attachedSideChats.map((sideChat) => (
+              <Button
+                key={sideChat.id}
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  navigate({
+                    to: "/$environmentId/$threadId",
+                    params: {
+                      environmentId: sideChat.environmentId,
+                      threadId: sideChat.id,
+                    },
+                  })
+                }
+              >
+                {sideChat.title}
+              </Button>
+            ))}
+          </div>
+        ) : null}
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}

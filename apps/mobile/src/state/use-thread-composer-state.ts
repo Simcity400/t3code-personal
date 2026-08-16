@@ -1,5 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo } from "react";
+import { StackActions, useNavigation } from "@react-navigation/native";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/unstable/reactivity";
 
 import {
   CommandId,
@@ -8,12 +11,13 @@ import {
   type ModelSelection,
   type ProviderInteractionMode,
   type RuntimeMode,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
+import { parseSideChatSlashCommand } from "@t3tools/shared/composerTrigger";
 
-import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
+import { makeQueuedMessageMetadata, makeTurnCommandMetadata } from "../lib/commandMetadata";
 import {
   convertPastedImagesToAttachments,
   pasteComposerClipboard,
@@ -41,6 +45,10 @@ import { useSelectedThreadDetail } from "../state/use-thread-detail";
 import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
+import { threadEnvironment } from "./threads";
+import { useAtomCommand } from "./use-atom-command";
+import { toUploadChatImageAttachments } from "../lib/composerImages";
+import { deriveThreadTitleFromPrompt } from "../lib/projectThreadStartTurn";
 
 export function appendReviewCommentToDraft(input: {
   readonly environmentId: EnvironmentId;
@@ -74,6 +82,10 @@ export function useThreadDraftForThread(input: {
 }
 
 export function useThreadComposerState() {
+  const navigation = useNavigation();
+  const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
+  const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
+  const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const { selectedThread: selectedThreadShell } = useThreadSelection();
   const selectedThreadDetail = useSelectedThreadDetail();
   const composerDrafts = useAtomValue(composerDraftsAtom);
@@ -143,6 +155,80 @@ export function useThreadComposerState() {
       return null;
     }
 
+    const sideChatCommand = parseSideChatSlashCommand(text);
+    if (sideChatCommand !== null) {
+      if (sideChatCommand.prompt.length === 0) {
+        setPendingConnectionError("Type your question after /side.");
+        return null;
+      }
+      const metadata = makeTurnCommandMetadata();
+      const sideThreadId = ThreadId.make(metadata.threadId);
+      const modelSelection = draft.modelSelection ?? thread.modelSelection;
+      const runtimeMode = draft.runtimeMode ?? thread.runtimeMode;
+      const interactionMode = draft.interactionMode ?? thread.interactionMode;
+      const createResult = await createThread({
+        environmentId: selectedThreadShell.environmentId,
+        input: {
+          threadId: sideThreadId,
+          projectId: selectedThreadShell.projectId,
+          title: deriveThreadTitleFromPrompt(sideChatCommand.prompt),
+          modelSelection,
+          runtimeMode,
+          interactionMode,
+          branch: selectedThreadShell.branch,
+          worktreePath: selectedThreadShell.worktreePath,
+          forkedFromThreadId: selectedThreadShell.id,
+          createdAt: metadata.createdAt,
+        },
+      });
+      if (AsyncResult.isFailure(createResult)) {
+        const error = Cause.squash(createResult.cause);
+        setPendingConnectionError(
+          error instanceof Error ? error.message : "The side chat could not be created.",
+        );
+        return null;
+      }
+      const messageId = MessageId.make(metadata.messageId);
+      const startResult = await startTurn({
+        environmentId: selectedThreadShell.environmentId,
+        input: {
+          commandId: CommandId.make(metadata.commandId),
+          threadId: sideThreadId,
+          message: {
+            messageId,
+            role: "user",
+            text: sideChatCommand.prompt,
+            attachments: toUploadChatImageAttachments(attachments),
+          },
+          modelSelection,
+          titleSeed: deriveThreadTitleFromPrompt(sideChatCommand.prompt),
+          runtimeMode,
+          interactionMode,
+          createdAt: metadata.createdAt,
+        },
+      });
+      if (AsyncResult.isFailure(startResult)) {
+        await deleteThread({
+          environmentId: selectedThreadShell.environmentId,
+          input: { threadId: sideThreadId },
+        });
+        const error = Cause.squash(startResult.cause);
+        setPendingConnectionError(
+          error instanceof Error ? error.message : "The side chat could not be started.",
+        );
+        return null;
+      }
+      clearComposerDraftContent(threadKey);
+      setPendingConnectionError(null);
+      navigation.dispatch(
+        StackActions.push("Thread", {
+          environmentId: String(selectedThreadShell.environmentId),
+          threadId: String(sideThreadId),
+        }),
+      );
+      return messageId;
+    }
+
     const metadata = makeQueuedMessageMetadata();
     const messageId = MessageId.make(metadata.messageId);
     // Enqueue publishes the queued atom synchronously (the durable write
@@ -175,7 +261,14 @@ export function useThreadComposerState() {
       );
     });
     return messageId;
-  }, [selectedThreadDetail, selectedThreadShell]);
+  }, [
+    createThread,
+    deleteThread,
+    navigation,
+    selectedThreadDetail,
+    selectedThreadShell,
+    startTurn,
+  ]);
 
   const onChangeDraftMessage = useCallback(
     (value: string) => {

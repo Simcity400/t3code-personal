@@ -630,6 +630,9 @@ const make = Effect.gen(function* () {
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+        ...(thread.forkedFromThreadId != null
+          ? { forkFromThreadId: thread.forkedFromThreadId }
+          : {}),
         runtimeMode: desiredRuntimeMode,
       });
 

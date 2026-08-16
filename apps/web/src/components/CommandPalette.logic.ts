@@ -158,10 +158,12 @@ export type BuildThreadActionItemsThread = Pick<
   | "branch"
   | "createdAt"
   | "environmentId"
+  | "forkedFromThreadId"
   | "id"
   | "modelSelection"
   | "projectId"
   | "session"
+  | "sideChatPromotedAt"
   | "title"
   | "worktreePath"
 > & {
@@ -186,7 +188,11 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   limit?: number;
 }): CommandPaletteActionItem[] {
   const sortedThreads = sortThreads(
-    input.threads.filter((thread) => thread.archivedAt === null),
+    input.threads.filter(
+      (thread) =>
+        thread.archivedAt === null &&
+        (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+    ),
     input.sortOrder,
   );
   const visibleThreads =

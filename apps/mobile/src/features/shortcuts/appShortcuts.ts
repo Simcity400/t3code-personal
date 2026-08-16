@@ -113,6 +113,17 @@ export function withRecentThreadShortcut(
   ].slice(0, MAX_RECENT_THREAD_SHORTCUTS);
 }
 
+export function withoutRecentThreadShortcut(
+  current: ReadonlyArray<RecentThreadShortcut>,
+  hidden: Pick<RecentThreadShortcut, "environmentId" | "threadId">,
+): ReadonlyArray<RecentThreadShortcut> {
+  const next = current.filter(
+    (thread) =>
+      thread.environmentId !== hidden.environmentId || thread.threadId !== hidden.threadId,
+  );
+  return next.length === current.length ? current : next;
+}
+
 /** Full launcher shortcut list: static "New task" first, then recents. */
 export function buildShortcutActions(recents: ReadonlyArray<RecentThreadShortcut>): Action[] {
   return [

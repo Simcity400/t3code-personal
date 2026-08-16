@@ -335,15 +335,16 @@ function ThreadNavigationSidebarPane(
           ),
     [projects, selectedProjectRefs],
   );
-  const scopedThreads = useMemo(
-    () =>
-      selectedProjectRefs === null
-        ? threads
-        : threads.filter((thread) =>
-            selectedProjectRefs.has(scopedProjectKey(thread.environmentId, thread.projectId)),
-          ),
-    [selectedProjectRefs, threads],
-  );
+  const scopedThreads = useMemo(() => {
+    const visibleThreads = threads.filter(
+      (thread) => thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null,
+    );
+    return selectedProjectRefs === null
+      ? visibleThreads
+      : visibleThreads.filter((thread) =>
+          selectedProjectRefs.has(scopedProjectKey(thread.environmentId, thread.projectId)),
+        );
+  }, [selectedProjectRefs, threads]);
   const scopedPendingTasks = useMemo(
     () =>
       selectedProjectRefs === null
@@ -529,6 +530,7 @@ function ThreadNavigationSidebarPane(
         (thread) =>
           thread.pinnedAt != null &&
           thread.archivedAt === null &&
+          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null) &&
           pinReorderEnvironmentIds.has(thread.environmentId),
       ),
     );
@@ -546,7 +548,11 @@ function ThreadNavigationSidebarPane(
         nextSnoozeWakeAt: null,
       };
     return buildThreadListV2Items({
-      threads: threads.filter((thread) => thread.archivedAt === null),
+      threads: threads.filter(
+        (thread) =>
+          thread.archivedAt === null &&
+          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+      ),
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,

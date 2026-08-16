@@ -301,6 +301,12 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            ...(payload.forkedFromThreadId != null
+              ? { forkedFromThreadId: payload.forkedFromThreadId }
+              : {}),
+            ...(payload.sideChatPromotedAt != null
+              ? { sideChatPromotedAt: payload.sideChatPromotedAt }
+              : {}),
             latestTurn: null,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -460,6 +466,9 @@ export function projectEvent(
               : {}),
             ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
             ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+            ...(payload.sideChatPromotedAt !== undefined
+              ? { sideChatPromotedAt: payload.sideChatPromotedAt }
+              : {}),
             updatedAt: payload.updatedAt,
           }),
         })),
