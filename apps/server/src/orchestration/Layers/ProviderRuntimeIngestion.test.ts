@@ -3280,6 +3280,7 @@ describe("ProviderRuntimeIngestion", () => {
       payload: {
         taskId: "turn-task-1",
         taskType: "plan",
+        prompt: "Review the exact diff and report findings only.",
       },
     });
 
@@ -3349,6 +3350,10 @@ describe("ProviderRuntimeIngestion", () => {
       progress?.payload && typeof progress.payload === "object"
         ? (progress.payload as Record<string, unknown>)
         : undefined;
+    const startedPayload =
+      started?.payload && typeof started.payload === "object"
+        ? (started.payload as Record<string, unknown>)
+        : undefined;
     const completedPayload =
       completed?.payload && typeof completed.payload === "object"
         ? (completed.payload as Record<string, unknown>)
@@ -3356,6 +3361,7 @@ describe("ProviderRuntimeIngestion", () => {
 
     expect(started?.kind).toBe("task.started");
     expect(started?.summary).toBe("Plan task started");
+    expect(startedPayload?.prompt).toBe("Review the exact diff and report findings only.");
     expect(progress?.kind).toBe("task.progress");
     expect(progressPayload?.detail).toBe("Code reviewer is validating the desktop rollout chunks.");
     expect(progressPayload?.summary).toBe(
@@ -3368,6 +3374,69 @@ describe("ProviderRuntimeIngestion", () => {
         (entry: ProviderRuntimeTestProposedPlan) => entry.id === "plan:thread-1:turn:turn-task-1",
       )?.planMarkdown,
     ).toBe("# Plan title");
+  });
+
+  it("keeps a late agent launch prompt when ordinary progress arrives", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-late-prompt-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      payload: {
+        taskId: "child-1",
+        description: "Reviewer",
+      },
+    });
+    harness.emit({
+      type: "task.progress",
+      eventId: asEventId("evt-late-prompt"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      payload: {
+        taskId: "child-1",
+        description: "Reviewer",
+        prompt: "Review the exact diff and report findings only.",
+      },
+    });
+    harness.emit({
+      type: "task.progress",
+      eventId: asEventId("evt-child-progress"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      payload: {
+        taskId: "child-1",
+        description: "Reviewer",
+        summary: "Inspecting the mobile composer.",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) => activity.id === "task-prompt:thread-1:child-1",
+        ) &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.id === "task-progress:thread-1:child-1",
+        ),
+    );
+    const prompt = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "task-prompt:thread-1:child-1",
+    );
+
+    expect(prompt?.payload).toMatchObject({
+      taskId: "child-1",
+      prompt: "Review the exact diff and report findings only.",
+    });
   });
 
   it("titles task activities with the task description, including on completion", async () => {

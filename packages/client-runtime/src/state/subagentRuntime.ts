@@ -1056,6 +1056,7 @@ function deriveSubagentPromptCandidates(
     string,
     {
       prompt: string | undefined;
+      tool: string | undefined;
       receiverThreadIds: Set<string>;
       createdAt: string;
       turnId: OrchestrationMessage["turnId"];
@@ -1091,6 +1092,7 @@ function deriveSubagentPromptCandidates(
         asPrompt(input?.prompt) ??
         asPrompt(item?.prompt) ??
         asPrompt(payload.prompt),
+      tool: existing?.tool ?? asString(item?.tool) ?? asString(data?.toolName),
       receiverThreadIds,
       createdAt:
         existing && existing.createdAt.localeCompare(activity.createdAt) <= 0
@@ -1101,9 +1103,25 @@ function deriveSubagentPromptCandidates(
     });
   }
 
+  const directByText = new Map<string, SubagentPromptCandidate>();
+  for (const candidate of directCandidates) {
+    const existing = directByText.get(candidate.text);
+    if (!existing || candidate.createdAt.localeCompare(existing.createdAt) < 0) {
+      directByText.set(candidate.text, candidate);
+    }
+  }
+  const uniqueDirectCandidates = Array.from(directByText.values());
+  const directPromptTexts = new Set(uniqueDirectCandidates.map((candidate) => candidate.text));
+
   const toolCandidates = Array.from(tools.entries()).flatMap<SubagentPromptCandidate>(
     ([itemId, tool]) => {
       if (!tool.prompt || (!launchingToolIds.has(itemId) && !tool.receiverThreadIds.has(agentId))) {
+        return [];
+      }
+      if (
+        directPromptTexts.has(tool.prompt) &&
+        (launchingToolIds.has(itemId) || tool.tool === "spawnAgent")
+      ) {
         return [];
       }
       return [
@@ -1120,7 +1138,7 @@ function deriveSubagentPromptCandidates(
 
   const seen = new Set<string>();
   // Mobile Hermes does not provide the ES2023 change-by-copy array methods.
-  return [...directCandidates, ...toolCandidates]
+  return [...uniqueDirectCandidates, ...toolCandidates]
     .sort(
       (left, right) =>
         left.createdAt.localeCompare(right.createdAt) || left.key.localeCompare(right.key),

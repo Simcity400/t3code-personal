@@ -567,6 +567,8 @@ const taskAgentLinkageFields = {
   /** Reasoning effort when known (e.g. "high"). Open string: provider vocabularies differ. */
   effort: Schema.optional(TrimmedNonEmptyStringSchema),
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Exact parent instruction when the provider exposes it for this agent. */
+  prompt: Schema.optional(TrimmedNonEmptyStringSchema),
   parentAgentId: Schema.optional(TrimmedNonEmptyStringSchema),
   workflowName: Schema.optional(TrimmedNonEmptyStringSchema),
   agentIndex: Schema.optional(NonNegativeInt),

@@ -566,6 +566,7 @@ function mapCollabAgentEvent(
             description: title,
             title,
             role,
+            ...(typeof payload.prompt === "string" ? { prompt: payload.prompt } : {}),
             ...(agentPath ? { agentPath } : {}),
             ...(typeof payload.parentThreadId === "string"
               ? { parentAgentId: payload.parentThreadId }
@@ -574,6 +575,24 @@ function mapCollabAgentEvent(
           },
         },
       ];
+    case "collabAgent/prompt": {
+      const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
+      if (!prompt) {
+        return [];
+      }
+      return [
+        {
+          ...base,
+          type: "task.progress",
+          payload: {
+            taskId,
+            description: title,
+            prompt,
+            ...statusLinkage,
+          },
+        },
+      ];
+    }
     case "collabAgent/activity": {
       const activityKind = typeof payload.activityKind === "string" ? payload.activityKind : "";
       if (activityKind === "interrupted") {
@@ -599,6 +618,7 @@ function mapCollabAgentEvent(
               description: title,
               title,
               role,
+              ...(typeof payload.prompt === "string" ? { prompt: payload.prompt } : {}),
               ...(agentPath ? { agentPath } : {}),
               timelineBypass: true,
             },

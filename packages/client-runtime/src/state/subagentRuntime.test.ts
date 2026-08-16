@@ -295,6 +295,14 @@ describe("selectSubagentTranscriptMessages", () => {
   it("coalesces Codex spawn lifecycle and includes later parent instructions", () => {
     const activities = [
       activity(
+        "task.progress",
+        {
+          taskId: "agent-1",
+          prompt: "Inspect the mobile transcript.",
+        },
+        "2026-08-01T10:00:01.500Z",
+      ),
+      activity(
         "tool.started",
         {
           itemId: "spawn-1",
@@ -350,7 +358,7 @@ describe("selectSubagentTranscriptMessages", () => {
       {
         role: "user",
         text: "Inspect the mobile transcript.",
-        createdAt: "2026-08-01T10:00:01.000Z",
+        createdAt: "2026-08-01T10:00:01.500Z",
       },
       {
         role: "user",

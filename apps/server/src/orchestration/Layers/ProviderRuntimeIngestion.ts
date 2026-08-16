@@ -350,6 +350,7 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     "model",
     "effort",
     "toolUseId",
+    "prompt",
     "parentAgentId",
     "workflowName",
     "agentIndex",
@@ -580,6 +581,7 @@ export function runtimeEventToActivities(
 
     case "task.progress": {
       const linkage = taskLinkageActivityFields(event.payload as Record<string, unknown>);
+      const hasPrompt = typeof linkage.prompt === "string";
       // Usage and activity are independent latest-state streams. Keeping them
       // under separate stable ids prevents a command/reasoning update from
       // replacing the last known token count (and prevents a usage-only tick
@@ -602,10 +604,15 @@ export function runtimeEventToActivities(
         ...(hasProgressState
           ? [
               {
-                // Stable per-task id: activity is "latest state", not
-                // history, so each meaningful tick replaces the last. This
-                // bounds a large fleet to one activity row per task.
-                id: EventId.make(`task-progress:${event.threadId}:${event.payload.taskId}`),
+                // Keep a launch prompt in its own bounded row. Ordinary
+                // progress is latest-state and must not erase the exact
+                // parent instruction when the provider reports it after the
+                // child task was registered.
+                id: EventId.make(
+                  hasPrompt
+                    ? `task-prompt:${event.threadId}:${event.payload.taskId}`
+                    : `task-progress:${event.threadId}:${event.payload.taskId}`,
+                ),
                 createdAt: event.createdAt,
                 tone: "info" as const,
                 kind: "task.progress" as const,
