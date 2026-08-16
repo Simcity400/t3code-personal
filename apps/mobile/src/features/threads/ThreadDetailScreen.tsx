@@ -77,6 +77,7 @@ import {
   COMPOSER_EXPANDED_CHROME,
   ThreadComposer,
 } from "./ThreadComposer";
+import { blurComposerAfterDraftCommit } from "./composerSendHandoff";
 import { ThreadFeed } from "./ThreadFeed";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 
@@ -523,7 +524,15 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     }
 
     setAnchorMessageId(messageId);
-    composerEditorRef.current?.blur();
+    // The draft store clears synchronously, but the controlled empty value
+    // still needs one render to reach the native editor. Blurring in the same
+    // tick can emit the pre-submit value and restore it as a fresh draft.
+    await blurComposerAfterDraftCommit({
+      targetThreadKey,
+      currentThreadKey: () => selectedThreadKeyRef.current,
+      requestFrame: requestAnimationFrame,
+      blur: () => composerEditorRef.current?.blur(),
+    });
     return messageId;
   }, [props.onSendMessage, selectedThreadKey]);
 
