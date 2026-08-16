@@ -575,7 +575,8 @@ function mapCollabAgentEvent(
           },
         },
       ];
-    case "collabAgent/prompt": {
+    case "collabAgent/prompt":
+    case "collabAgent/historicalPrompt": {
       const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
       if (prompt.trim().length === 0) {
         return [];
@@ -588,6 +589,7 @@ function mapCollabAgentEvent(
             taskId,
             description: title,
             prompt,
+            ...(event.method === "collabAgent/historicalPrompt" ? { status: "idle" as const } : {}),
             ...statusLinkage,
           },
         },
