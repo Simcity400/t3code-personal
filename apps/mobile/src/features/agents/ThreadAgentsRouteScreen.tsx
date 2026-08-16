@@ -137,6 +137,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
         </View>
         <ThreadFeed
           key={selectedAgent.id}
+          keyboardAware={false}
           environmentId={EnvironmentId.make(_props.route.params.environmentId)}
           threadId={thread.id}
           workspaceRoot={selectedThreadCwd}

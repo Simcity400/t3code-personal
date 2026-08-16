@@ -1,6 +1,6 @@
 import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
-import { type LegendListRef } from "@legendapp/list/react-native";
+import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
 import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { CHAT_LIST_ANCHOR_OFFSET, resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
@@ -158,6 +158,8 @@ export interface ThreadFeedProps {
   readonly contentMaxWidth?: number;
   readonly layoutVariant?: LayoutVariant;
   readonly usesAutomaticContentInsets?: boolean;
+  /** Read-only surfaces do not mount the keyboard-controlled native scroll view. */
+  readonly keyboardAware?: boolean;
   readonly onHeaderMaterialVisibilityChange?: (visible: boolean) => void;
   readonly onEndFollowEnabledChange?: (enabled: boolean) => void;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
@@ -1862,6 +1864,22 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     ],
   );
 
+  const FeedList =
+    props.keyboardAware === false
+      ? (LegendList as unknown as typeof KeyboardAwareLegendList)
+      : KeyboardAwareLegendList;
+  const keyboardIntegrationProps =
+    props.keyboardAware === false
+      ? {}
+      : {
+          adjustedInsetCompensation: usesNativeAutomaticInsets ? insets.bottom : 0,
+          applyWorkaroundForContentInsetHitTestBug: true,
+          contentInsetEndAdjustment: props.contentInsetEndAdjustment,
+          contentInsetEndStaticAdjustment: usesNativeAutomaticInsets ? insets.bottom : 0,
+          freeze: props.freeze,
+          keyboardLiftBehavior: "whenAtEnd" as const,
+        };
+
   if (props.contentPresentation.kind === "unavailable") {
     return (
       <ThreadFeedPlaceholder
@@ -1878,7 +1896,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     <>
       <View className="flex-1" onLayout={handleViewportLayout}>
         <View className="flex-1">
-          <KeyboardAwareLegendList
+          <FeedList
             ref={props.listRef}
             // The empty↔filled key remounts the list when messages first
             // arrive. LegendList's maintainScrollAtEnd calls scrollToEnd(),
@@ -1888,10 +1906,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             // mount positions during attach, where UIKit applies the inset.
             key={listMountKey}
             style={{ flex: 1 }}
-            // RN 0.81+ drops touches inside the contentInset area
-            // (facebook/react-native#54123); the anchored end space after a send
-            // is pure inset, so without this the blank region can't be scrolled.
-            applyWorkaroundForContentInsetHitTestBug
+            {...keyboardIntegrationProps}
             contentInsetAdjustmentBehavior={usesNativeAutomaticInsets ? "automatic" : "never"}
             automaticallyAdjustsScrollIndicatorInsets={usesNativeAutomaticInsets}
             {...(usesNativeAutomaticInsets
@@ -1912,18 +1927,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             // instead of 0, so initialScrollAtEnd/maintainScrollAtEnd on short
             // content rest below the transparent header rather than at frame top.
             contentInsetStartAdjustment={usesNativeAutomaticInsets ? anchorTopInset : 0}
-            contentInsetEndAdjustment={props.contentInsetEndAdjustment}
-            // UIKit's automatic behavior adds the safe-area bottom on top of the
-            // raw contentInset the keyboard integration writes. The detail screen
-            // under-reports the composer inset by this amount (see
-            // ThreadDetailScreen); this tells LegendList's scroll math about the
-            // extra so programmatic end scrolls land at the true resting offset.
-            contentInsetEndStaticAdjustment={usesNativeAutomaticInsets ? insets.bottom : 0}
-            // The keyboard integration's offset math (end pinning, max scroll)
-            // must add the same UIKit-added extra, or its keyboard-open end
-            // targets land one safe-area short of the true resting offset.
-            adjustedInsetCompensation={usesNativeAutomaticInsets ? insets.bottom : 0}
-            freeze={props.freeze}
             // Animated: on send, the optimistic message's dataChange fires
             // maintainScrollAtEnd before any render-cycle suppression could
             // engage — an instant snap there teleports the feed to the anchor
@@ -1956,7 +1959,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             drawDistance={500}
             keyboardShouldPersistTaps="always"
             keyboardDismissMode="none"
-            keyboardLiftBehavior="whenAtEnd"
             // Seed the list's scroll math with the real viewport before its own
             // onLayout: the empty→filled remount can then tell at mount that
             // short content underflows the viewport and skip programmatic
