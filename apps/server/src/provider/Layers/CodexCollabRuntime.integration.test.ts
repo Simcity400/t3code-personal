@@ -14,6 +14,7 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
@@ -33,7 +34,72 @@ const MEMORY = "memory-consolidation-thread";
  * terminal lifecycle, and a serverRequest/resolved addressed to a child
  * (must pass through to the parent path, not vanish).
  */
-function buildScript() {
+function buildNativeRollout(rolloutPath: string): string {
+  const rows = [
+    {
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "spawn_agent",
+        call_id: "call_fixture_spawn_a",
+        arguments: JSON.stringify({
+          task_name: "mobile_reviewer",
+          message: "Inspect the native mobile transcript.",
+        }),
+      },
+    },
+    {
+      type: "event_msg",
+      payload: {
+        type: "sub_agent_activity",
+        agent_thread_id: CHILD_A,
+        agent_path: "/root/mobile_reviewer",
+        kind: "started",
+      },
+    },
+    {
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: "call_fixture_spawn_a",
+        output: JSON.stringify({ task_name: "/root/mobile_reviewer" }),
+      },
+    },
+    {
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "spawn_agent",
+        call_id: "call_fixture_spawn_b",
+        arguments: JSON.stringify({
+          task_name: "desktop_reviewer",
+          message: "Inspect the desktop transcript.",
+        }),
+      },
+    },
+    {
+      type: "event_msg",
+      payload: {
+        type: "sub_agent_activity",
+        agent_thread_id: CHILD_B,
+        agent_path: "/root/desktop_reviewer",
+        kind: "started",
+      },
+    },
+    {
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: "call_fixture_spawn_b",
+        output: JSON.stringify({ task_name: "/root/desktop_reviewer" }),
+      },
+    },
+  ];
+  NodeFS.writeFileSync(rolloutPath, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+  return rolloutPath;
+}
+
+function buildScript(rolloutPath: string) {
   const captured = wireFixture.notifications;
   const extras = [
     {
@@ -68,69 +134,57 @@ function buildScript() {
   const emptyThreadReadResponse = {
     thread: {
       ...wireFixture.responses.threadStart.thread,
+      path: rolloutPath,
       turns: [],
-    },
-  };
-  const populatedThreadReadResponse = {
-    thread: {
-      ...wireFixture.responses.threadStart.thread,
-      turns: [
-        {
-          ...wireFixture.responses.turnStart.turn,
-          id: "parent-history-turn",
-          status: "completed",
-          items: [
-            {
-              type: "collabAgentToolCall",
-              id: "call_fixture_spawn_a",
-              tool: "spawnAgent",
-              status: "completed",
-              senderThreadId: ROOT,
-              receiverThreadIds: [CHILD_A],
-              prompt: "Inspect the native mobile transcript.",
-              agentsStates: {},
-            },
-            {
-              type: "collabAgentToolCall",
-              id: "call_fixture_spawn_b",
-              tool: "spawnAgent",
-              status: "completed",
-              senderThreadId: ROOT,
-              receiverThreadIds: [CHILD_B],
-              prompt: "Inspect the desktop transcript.",
-              agentsStates: {},
-            },
-          ],
-        },
-      ],
     },
   };
   return {
     rootThreadId: ROOT,
-    threadReadResponses: [emptyThreadReadResponse, populatedThreadReadResponse],
+    // The real failing wire has no high-level collabAgentToolCall in either
+    // snapshot. Recovery must use the native rollout path instead.
+    threadReadResponses: [emptyThreadReadResponse, emptyThreadReadResponse],
     turnCompleteDelayMs: 500,
     notifications: [...captured.filter((entry) => entry.method !== "turn/completed"), ...extras],
   };
 }
 
 const scriptPath = NodePath.join(import.meta.dirname, "../testFixtures/.collab-script.json");
-const peerPath = NodePath.join(import.meta.dirname, "../testFixtures/codexCollabMockPeer.sh");
+const peerPath = (platform: string) =>
+  NodePath.join(
+    import.meta.dirname,
+    `../testFixtures/codexCollabMockPeer.${platform === "win32" ? "cmd" : "sh"}`,
+  );
+const peerModulePath = NodePath.join(
+  import.meta.dirname,
+  "../testFixtures/codexCollabMockPeer.mjs",
+);
+const peerEnvironment = { T3_CODEX_COLLAB_PEER: peerModulePath };
 
 describe("CodexSessionRuntime collab integration", () => {
   it.live("replays the captured fan-out into synthetic agent events without child leaks", () =>
     Effect.gen(function* () {
+      const platform = yield* HostProcessPlatform;
+      const rolloutPath = `${scriptPath}.rollout.jsonl`;
+      buildNativeRollout(rolloutPath);
       // @effect-diagnostics-next-line preferSchemaOverJson:off
-      NodeFS.writeFileSync(scriptPath, JSON.stringify(buildScript()), "utf8");
+      NodeFS.writeFileSync(scriptPath, JSON.stringify(buildScript(rolloutPath)), "utf8");
       yield* Effect.addFinalizer(() =>
-        Effect.sync(() => NodeFS.rmSync(scriptPath, { force: true })),
+        Effect.sync(() => {
+          NodeFS.rmSync(scriptPath, { force: true });
+          NodeFS.rmSync(rolloutPath, { force: true });
+        }),
       );
 
       const runtime = yield* makeCodexSessionRuntime({
         threadId: ThreadId.make("thread-collab-integration"),
-        binaryPath: peerPath,
+        binaryPath: peerPath(platform),
         cwd: "/tmp",
         runtimeMode: "full-access",
-        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+        environment: {
+          ...process.env,
+          ...peerEnvironment,
+          T3_CODEX_COLLAB_SCRIPT: scriptPath,
+        },
       });
 
       const eventsFiber = yield* runtime.events.pipe(
@@ -159,7 +213,7 @@ describe("CodexSessionRuntime collab integration", () => {
       assert.equal(
         (childPrompt?.payload as { prompt?: string } | undefined)?.prompt,
         "Inspect the native mobile transcript.",
-        "a delayed parent snapshot recovers the exact launch prompt",
+        "the native rollout recovers the exact launch prompt",
       );
       const secondChildPrompt = events.find(
         (event) =>
@@ -169,7 +223,7 @@ describe("CodexSessionRuntime collab integration", () => {
       assert.equal(
         (secondChildPrompt?.payload as { prompt?: string } | undefined)?.prompt,
         "Inspect the desktop transcript.",
-        "one recovered snapshot caches and emits every child prompt",
+        "one incremental rollout scan caches and emits every child prompt",
       );
 
       const childTurnCompleted = events.find(
@@ -210,10 +264,77 @@ describe("CodexSessionRuntime collab integration", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.live("backfills native launch prompts when an existing thread is reopened", () =>
+    Effect.gen(function* () {
+      const platform = yield* HostProcessPlatform;
+      const rolloutPath = `${scriptPath}.reopen.rollout.jsonl`;
+      buildNativeRollout(rolloutPath);
+      const script = {
+        rootThreadId: ROOT,
+        notifications: [],
+        threadOpenResponse: {
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
+          cwd: platform === "win32" ? "C:\\tmp" : "/tmp",
+          model: "gpt-5.6-sol",
+          modelProvider: "openai",
+          sandbox: { type: "dangerFullAccess" },
+          thread: {
+            ...wireFixture.responses.threadStart.thread,
+            id: ROOT,
+            path: rolloutPath,
+            turns: [],
+          },
+        },
+      };
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          NodeFS.rmSync(scriptPath, { force: true });
+          NodeFS.rmSync(rolloutPath, { force: true });
+        }),
+      );
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-collab-reopen"),
+        binaryPath: peerPath(platform),
+        cwd: "/tmp",
+        runtimeMode: "full-access",
+        resumeCursor: { threadId: ROOT },
+        environment: {
+          ...process.env,
+          ...peerEnvironment,
+          T3_CODEX_COLLAB_SCRIPT: scriptPath,
+        },
+      });
+      const eventsFiber = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.method === "session/ready"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+
+      yield* runtime.start();
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const recovered = events.find(
+        (event) =>
+          event.method === "collabAgent/prompt" &&
+          (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_A,
+      );
+      assert.equal(
+        (recovered?.payload as { prompt?: string } | undefined)?.prompt,
+        "Inspect the native mobile transcript.",
+      );
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   // it.live: the runtime talks to a real child process; under it.effect's
   // TestClock the internal timers freeze and the join never completes.
   it.live("Stop interrupts every live child regardless of registration timing", () =>
     Effect.gen(function* () {
+      const platform = yield* HostProcessPlatform;
       // Ordering + liveness torture for stop-everything: child A's
       // turn/started arrives BEFORE anything registers it (foreign
       // suppression path must record the live turn); child B's arrives after
@@ -289,10 +410,14 @@ describe("CodexSessionRuntime collab integration", () => {
 
       const runtime = yield* makeCodexSessionRuntime({
         threadId: ThreadId.make("thread-collab-stop"),
-        binaryPath: peerPath,
+        binaryPath: peerPath(platform),
         cwd: "/tmp",
         runtimeMode: "full-access",
-        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+        environment: {
+          ...process.env,
+          ...peerEnvironment,
+          T3_CODEX_COLLAB_SCRIPT: scriptPath,
+        },
       });
 
       // Wait for both children's turnStarted signals to be processed before
@@ -344,6 +469,7 @@ describe("CodexSessionRuntime collab integration", () => {
 
   it.live("Stop targets the active turn when Codex has accepted a queued follow-up", () =>
     Effect.gen(function* () {
+      const platform = yield* HostProcessPlatform;
       const activeTurnId = "019fe3e8-f908-7f31-8d51-283f4a47897a";
       const queuedTurnId = "019fe3eb-8faf-7de3-a85b-ac64c7f9c8c3";
       const script = {
@@ -367,10 +493,14 @@ describe("CodexSessionRuntime collab integration", () => {
 
       const runtime = yield* makeCodexSessionRuntime({
         threadId: ThreadId.make("thread-codex-queued-stop"),
-        binaryPath: peerPath,
+        binaryPath: peerPath(platform),
         cwd: "/tmp",
         runtimeMode: "full-access",
-        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+        environment: {
+          ...process.env,
+          ...peerEnvironment,
+          T3_CODEX_COLLAB_SCRIPT: scriptPath,
+        },
       });
 
       yield* runtime.start();

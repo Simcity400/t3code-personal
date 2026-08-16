@@ -39,6 +39,10 @@ import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
+import {
+  scanNativeCollabPromptRollout,
+  type NativeCollabPromptRolloutCursor,
+} from "../CodexCollabPromptHistory.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -707,14 +711,47 @@ function readCollabPromptLinksFromItem(
   if (item.tool !== "spawnAgent") {
     return [];
   }
-  const prompt = item.prompt?.trim();
-  if (!prompt) {
+  const prompt = item.prompt;
+  if (typeof prompt !== "string" || prompt.trim().length === 0) {
     return [];
   }
   return item.receiverThreadIds.map((receiverThreadId) => ({
     receiverThreadId,
     prompt,
   }));
+}
+
+export type CollabPromptSource = "native" | "first-class";
+
+export interface CollabPromptRecord {
+  readonly prompt: string;
+  readonly source: CollabPromptSource;
+}
+
+export function mergeCollabPromptRecords(
+  current: ReadonlyMap<string, CollabPromptRecord>,
+  links: ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }>,
+  source: CollabPromptSource,
+): {
+  readonly acceptedLinks: ReadonlyArray<{
+    readonly receiverThreadId: string;
+    readonly prompt: string;
+  }>;
+  readonly records: Map<string, CollabPromptRecord>;
+} {
+  const records = new Map(current);
+  const acceptedLinks: Array<{ readonly receiverThreadId: string; readonly prompt: string }> = [];
+  for (const link of links) {
+    const existing = records.get(link.receiverThreadId);
+    if (source === "native" && existing?.source === "first-class") {
+      continue;
+    }
+    records.set(link.receiverThreadId, { prompt: link.prompt, source });
+    if (existing?.prompt !== link.prompt) {
+      acceptedLinks.push(link);
+    }
+  }
+  return { acceptedLinks, records };
 }
 
 export function readCollabPromptLinksFromItems(
@@ -973,10 +1010,13 @@ export const makeCodexSessionRuntime = (
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
-    const collabPromptsRef = yield* Ref.make(new Map<string, string>());
+    const collabPromptsRef = yield* Ref.make(new Map<string, CollabPromptRecord>());
     const collabPromptRecoveryRequests = yield* Queue.unbounded<string>();
     const exhaustedCollabPromptRecoveriesRef = yield* Ref.make(new Set<string>());
     const collabChildAgentsRef = yield* Ref.make(new Map<string, CollabChildAgentState>());
+    const collabPromptRolloutCursorsRef = yield* Ref.make(
+      new Map<string, NativeCollabPromptRolloutCursor>(),
+    );
     /** Child provider-thread id → its currently running provider turn id. */
     const collabChildLiveTurnsRef = yield* Ref.make(new Map<string, string>());
     const suppressMemoryConsolidationNotification = makeMemoryConsolidationNotificationFilter();
@@ -1098,20 +1138,18 @@ export const makeCodexSessionRuntime = (
 
     const rememberCollabPromptLinks = (
       links: ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }>,
+      source: CollabPromptSource,
     ) =>
       Effect.gen(function* () {
         if (links.length === 0) {
           return;
         }
-        yield* Ref.update(collabPromptsRef, (current) => {
-          const next = new Map(current);
-          for (const link of links) {
-            next.set(link.receiverThreadId, link.prompt);
-          }
-          return next;
+        const acceptedLinks = yield* Ref.modify(collabPromptsRef, (current) => {
+          const merged = mergeCollabPromptRecords(current, links, source);
+          return [merged.acceptedLinks, merged.records] as const;
         });
         const children = yield* Ref.get(collabChildAgentsRef);
-        for (const link of links) {
+        for (const link of acceptedLinks) {
           const knownChild = children.get(link.receiverThreadId);
           if (!knownChild || knownChild.prompt === link.prompt) {
             continue;
@@ -1140,6 +1178,23 @@ export const makeCodexSessionRuntime = (
         }
       });
 
+    const readNativeCollabPromptLinks = (rolloutPath: string) =>
+      Effect.gen(function* () {
+        const previous = (yield* Ref.get(collabPromptRolloutCursorsRef)).get(rolloutPath);
+        const scanned = yield* Effect.promise(() =>
+          scanNativeCollabPromptRollout(rolloutPath, previous),
+        );
+        if (!scanned) {
+          return [];
+        }
+        yield* Ref.update(collabPromptRolloutCursorsRef, (current) => {
+          const next = new Map(current);
+          next.set(rolloutPath, scanned.cursor);
+          return next;
+        });
+        return scanned.links;
+      });
+
     const refreshCollabPromptSnapshot = Effect.gen(function* () {
       const providerThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
       if (!providerThreadId) {
@@ -1157,18 +1212,24 @@ export const makeCodexSessionRuntime = (
       if (!response) {
         return;
       }
+      const nativeLinks = response.thread.path
+        ? yield* readNativeCollabPromptLinks(response.thread.path)
+        : [];
+      yield* rememberCollabPromptLinks(nativeLinks, "native");
       yield* rememberCollabPromptLinks(
         response.thread.turns.flatMap((turn) => readCollabPromptLinksFromItems(turn.items)),
+        "first-class",
       );
     });
 
-    // Native Codex collaboration can omit the live parent-side
-    // collabAgentToolCall even though thread/read exposes it shortly after
-    // the child registers. A scoped worker batches every child registration,
-    // reads the parent snapshot off the notification hot path, caches every
-    // prompt in that snapshot, and retries once after a short durability
-    // window. An unresolved child is then exhausted until a real live prompt
-    // arrives, preventing repeated full-history reads on every activity row.
+    // Native Codex collaboration can omit the parent-side collabAgentToolCall
+    // from both the live stream and thread/read. The exact spawn_agent call is
+    // still in Codex's append-only rollout, alongside the child activity that
+    // identifies its thread. A scoped worker batches child registrations,
+    // incrementally scans that rollout off the notification hot path, and
+    // retries once after a short durability window. An unresolved child is
+    // then exhausted until a real live prompt arrives, preventing repeated
+    // reads on every activity row.
     yield* Effect.forever(
       Effect.gen(function* () {
         const firstAgentThreadId = yield* Queue.take(collabPromptRecoveryRequests);
@@ -1220,7 +1281,7 @@ export const makeCodexSessionRuntime = (
       Effect.gen(function* () {
         const remembered = (yield* Ref.get(collabPromptsRef)).get(agentThreadId);
         if (remembered) {
-          return remembered;
+          return remembered.prompt;
         }
         const exhausted = yield* Ref.get(exhaustedCollabPromptRecoveriesRef);
         if (!exhausted.has(agentThreadId)) {
@@ -1543,7 +1604,7 @@ export const makeCodexSessionRuntime = (
 
         rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
         if (collabPromptLinks.length > 0) {
-          yield* rememberCollabPromptLinks(collabPromptLinks);
+          yield* rememberCollabPromptLinks(collabPromptLinks, "first-class");
         }
         // Interception FIRST: a registered v2 child is usually also in the
         // receiver-turn map (collabAgentToolCall.receiverThreadIds), and the
@@ -2000,19 +2061,29 @@ export const makeCodexSessionRuntime = (
         updatedAt: yield* nowIso,
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
-      const historicalPromptLinks = readHistoricalCollabPromptLinks({
+      const firstClassHistoricalPromptLinks = readHistoricalCollabPromptLinks({
         turns: opened.thread.turns,
         resumeThreadId,
         forkThreadId,
       });
+      const nativeHistoricalPromptLinks =
+        resumeThreadId !== undefined && forkThreadId === undefined && opened.thread.path
+          ? yield* readNativeCollabPromptLinks(opened.thread.path)
+          : [];
+      yield* rememberCollabPromptLinks(nativeHistoricalPromptLinks, "native");
+      yield* rememberCollabPromptLinks(firstClassHistoricalPromptLinks, "first-class");
+      const historicalAgentThreadIds = new Set([
+        ...nativeHistoricalPromptLinks.map((link) => link.receiverThreadId),
+        ...firstClassHistoricalPromptLinks.map((link) => link.receiverThreadId),
+      ]);
+      const rememberedHistoricalPrompts = yield* Ref.get(collabPromptsRef);
+      const historicalPromptLinks = Array.from(historicalAgentThreadIds).flatMap(
+        (receiverThreadId) => {
+          const remembered = rememberedHistoricalPrompts.get(receiverThreadId);
+          return remembered ? [{ receiverThreadId, prompt: remembered.prompt }] : [];
+        },
+      );
       if (historicalPromptLinks.length > 0) {
-        yield* Ref.update(collabPromptsRef, (current) => {
-          const next = new Map(current);
-          for (const link of historicalPromptLinks) {
-            next.set(link.receiverThreadId, link.prompt);
-          }
-          return next;
-        });
         yield* Effect.forEach(
           historicalPromptLinks,
           (link) =>

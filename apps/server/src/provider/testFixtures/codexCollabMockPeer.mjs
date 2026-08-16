@@ -41,7 +41,7 @@ rl.on("line", (line) => {
     return;
   }
   if (method === "thread/start" || method === "thread/resume") {
-    write({ id, result: fixture.responses.threadStart });
+    write({ id, result: script.threadOpenResponse ?? fixture.responses.threadStart });
     return;
   }
   if (method === "turn/start") {
