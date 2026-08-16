@@ -21,6 +21,7 @@ import {
   isRecoverableThreadResumeError,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
+  readCollabPromptLinks,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
@@ -38,6 +39,57 @@ describe("CodexSessionRuntimeIdentifierGenerationError", () => {
       error.message,
       "Failed to generate Codex App Server identifier for provider-event.",
     );
+  });
+});
+
+describe("readCollabPromptLinks", () => {
+  it("associates the exact native prompt with every receiving child", () => {
+    const notification = {
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "parent-turn",
+        completedAtMs: 1,
+        item: {
+          type: "collabAgentToolCall",
+          id: "spawn-1",
+          tool: "spawnAgent",
+          status: "completed",
+          senderThreadId: "parent-thread",
+          receiverThreadIds: ["child-1", "child-2"],
+          prompt: "Review the exact diff.",
+          agentsStates: {},
+        },
+      },
+    } as Parameters<typeof readCollabPromptLinks>[0];
+
+    NodeAssert.deepStrictEqual(readCollabPromptLinks(notification), [
+      { receiverThreadId: "child-1", prompt: "Review the exact diff." },
+      { receiverThreadId: "child-2", prompt: "Review the exact diff." },
+    ]);
+  });
+
+  it("does not treat later sendInput text as the launch prompt", () => {
+    const notification = {
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "parent-turn",
+        completedAtMs: 2,
+        item: {
+          type: "collabAgentToolCall",
+          id: "send-1",
+          tool: "sendInput",
+          status: "completed",
+          senderThreadId: "parent-thread",
+          receiverThreadIds: ["child-1"],
+          prompt: "Also inspect the desktop composer.",
+          agentsStates: {},
+        },
+      },
+    } as Parameters<typeof readCollabPromptLinks>[0];
+
+    NodeAssert.deepStrictEqual(readCollabPromptLinks(notification), []);
   });
 });
 

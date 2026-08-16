@@ -683,6 +683,7 @@ function readRouteFields(notification: CodexServerNotification): {
  */
 interface CollabChildAgentState {
   readonly agentThreadId: string;
+  readonly prompt: string | undefined;
   readonly nickname: string | undefined;
   readonly role: string | undefined;
   readonly agentPath: string | undefined;
@@ -695,6 +696,28 @@ interface CollabChildAgentState {
    * "direct:no-turn" CTA (review finding).
    */
   readonly spawnTurnId: TurnId | undefined;
+}
+
+export function readCollabPromptLinks(
+  notification: CodexServerNotification,
+): ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }> {
+  if (notification.method !== "item/started" && notification.method !== "item/completed") {
+    return [];
+  }
+  if (notification.params.item.type !== "collabAgentToolCall") {
+    return [];
+  }
+  if (notification.params.item.tool !== "spawnAgent") {
+    return [];
+  }
+  const prompt = notification.params.item.prompt?.trim();
+  if (!prompt) {
+    return [];
+  }
+  return notification.params.item.receiverThreadIds.map((receiverThreadId) => ({
+    receiverThreadId,
+    prompt,
+  }));
 }
 
 function readThreadSpawnSource(thread: { readonly source: unknown }):
@@ -918,6 +941,7 @@ export const makeCodexSessionRuntime = (
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
+    const collabPromptsRef = yield* Ref.make(new Map<string, string>());
     const collabChildAgentsRef = yield* Ref.make(new Map<string, CollabChildAgentState>());
     /** Child provider-thread id → its currently running provider turn id. */
     const collabChildLiveTurnsRef = yield* Ref.make(new Map<string, string>());
@@ -1067,6 +1091,7 @@ export const makeCodexSessionRuntime = (
             : ((yield* Ref.get(sessionRef)).activeTurnId ?? undefined);
           const state: CollabChildAgentState = {
             agentThreadId: thread.id,
+            prompt: existingChild?.prompt ?? (yield* Ref.get(collabPromptsRef)).get(thread.id),
             nickname: spawn.nickname ?? thread.agentNickname ?? existingChild?.nickname,
             role: spawn.role ?? thread.agentRole ?? existingChild?.role,
             agentPath: spawn.agentPath ?? existingChild?.agentPath,
@@ -1087,6 +1112,7 @@ export const makeCodexSessionRuntime = (
             ...(state.spawnTurnId ? { turnId: state.spawnTurnId } : {}),
             payload: {
               agentThreadId: state.agentThreadId,
+              ...(state.prompt ? { prompt: state.prompt } : {}),
               ...(state.nickname ? { nickname: state.nickname } : {}),
               ...(state.role ? { role: state.role } : {}),
               ...(state.agentPath ? { agentPath: state.agentPath } : {}),
@@ -1119,6 +1145,7 @@ export const makeCodexSessionRuntime = (
             return false;
           }
           const activitySpawnTurnId = (yield* Ref.get(sessionRef)).activeTurnId ?? undefined;
+          const collabPrompts = yield* Ref.get(collabPromptsRef);
           yield* Ref.update(collabChildAgentsRef, (current) => {
             const existing = current.get(item.agentThreadId);
             const next = new Map(current);
@@ -1131,6 +1158,7 @@ export const makeCodexSessionRuntime = (
             // finding); an unset spawn turn stays unset.
             next.set(item.agentThreadId, {
               agentThreadId: item.agentThreadId,
+              prompt: existing?.prompt ?? collabPrompts.get(item.agentThreadId),
               nickname:
                 existing?.nickname ??
                 item.agentPath.split("/").findLast((segment) => segment.length > 0),
@@ -1152,6 +1180,7 @@ export const makeCodexSessionRuntime = (
               agentThreadId: item.agentThreadId,
               agentPath: item.agentPath,
               activityKind: item.kind,
+              ...(registeredChild?.prompt ? { prompt: registeredChild.prompt } : {}),
             },
           });
           return true;
@@ -1336,6 +1365,7 @@ export const makeCodexSessionRuntime = (
         const payload = notification.params;
         const route = readRouteFields(notification);
         const collabReceiverTurns = yield* Ref.get(collabReceiverTurnsRef);
+        const collabPromptLinks = readCollabPromptLinks(notification);
         const childParentTurnId = (() => {
           const providerConversationId = readNotificationThreadId(notification);
           return providerConversationId
@@ -1344,6 +1374,43 @@ export const makeCodexSessionRuntime = (
         })();
 
         rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
+        if (collabPromptLinks.length > 0) {
+          yield* Ref.update(collabPromptsRef, (current) => {
+            const next = new Map(current);
+            for (const link of collabPromptLinks) {
+              next.set(link.receiverThreadId, link.prompt);
+            }
+            return next;
+          });
+          const children = yield* Ref.get(collabChildAgentsRef);
+          for (const link of collabPromptLinks) {
+            const knownChild = children.get(link.receiverThreadId);
+            if (!knownChild || knownChild.prompt === link.prompt) {
+              continue;
+            }
+            yield* Ref.update(collabChildAgentsRef, (current) => {
+              const next = new Map(current);
+              const child = next.get(link.receiverThreadId);
+              if (child) {
+                next.set(link.receiverThreadId, { ...child, prompt: link.prompt });
+              }
+              return next;
+            });
+            yield* emitEvent({
+              kind: "notification",
+              threadId: options.threadId,
+              ...(knownChild.spawnTurnId ? { turnId: knownChild.spawnTurnId } : {}),
+              method: "collabAgent/prompt",
+              payload: {
+                agentThreadId: knownChild.agentThreadId,
+                prompt: link.prompt,
+                ...(knownChild.nickname ? { nickname: knownChild.nickname } : {}),
+                ...(knownChild.role ? { role: knownChild.role } : {}),
+                ...(knownChild.agentPath ? { agentPath: knownChild.agentPath } : {}),
+              },
+            });
+          }
+        }
         // Interception FIRST: a registered v2 child is usually also in the
         // receiver-turn map (collabAgentToolCall.receiverThreadIds), and the
         // legacy suppressor below would drop its lifecycle before it could

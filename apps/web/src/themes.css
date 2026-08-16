@@ -12,15 +12,6 @@
   color: var(--foreground);
 }
 
-/* ── Fork tweak: one-line composer at rest ────────────────────────────
-   The official composer reserves ~3 lines (min-h-17.5) while empty; start
-   at a single line instead and let it grow with content as it already
-   does. 1lh tracks the prompt font-size setting automatically. */
-
-.composer-editor-surface [data-testid="composer-editor"] {
-  min-height: 1lh;
-}
-
 /* ── Fork tweak: brighter composer placeholder ────────────────────────
    The official placeholder fades muted-foreground to 35%; lift it so the
    hint text is comfortably readable. */

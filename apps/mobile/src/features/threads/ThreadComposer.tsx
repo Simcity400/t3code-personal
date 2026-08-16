@@ -74,6 +74,7 @@ import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
 } from "./use-thread-settings-sheet-presentation";
+import { resolveComposerEditorHeight } from "./composerEditorHeight";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -274,7 +275,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
   const [isFocused, setIsFocused] = useState(false);
-  const [editorContentHeight, setEditorContentHeight] = useState(bodyText.lineHeight);
   const [editorTextLayoutHeight, setEditorTextLayoutHeight] = useState(bodyText.lineHeight);
   const settingsSheetPresentation = useThreadSettingsSheetPresentation({
     editorRef: inputRef,
@@ -292,14 +292,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   // while focus moves between its native editor and the settings picker.
   const isExpanded = isFocused || settingsSheetPresentation.isActive;
   const canSend = hasContent;
-  const explicitLineHeight = props.draftMessage.split("\n").length * bodyText.lineHeight;
-  const desiredEditorHeight = Math.max(
-    bodyText.lineHeight,
-    explicitLineHeight,
-    Math.ceil(editorContentHeight),
-    Math.ceil(editorTextLayoutHeight),
-  );
-  const editorHeight = Math.min(COMPOSER_EDITOR_MAX_HEIGHT, desiredEditorHeight);
+  const { desiredHeight: desiredEditorHeight, height: editorHeight } = resolveComposerEditorHeight({
+    lineHeight: bodyText.lineHeight,
+    explicitLineCount: props.draftMessage.split("\n").length,
+    measuredTextHeight: editorTextLayoutHeight,
+    maxHeight: COMPOSER_EDITOR_MAX_HEIGHT,
+  });
 
   // Notify the parent from the derived value, not focus events: the parent
   // sizes the feed inset from this, and blur-during-sheet would otherwise
@@ -816,7 +814,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               skills={selectedProviderStatus?.skills ?? []}
               selection={composerSelection}
               onChangeText={props.onChangeDraftMessage}
-              onContentSizeChange={({ height }) => setEditorContentHeight(height)}
               onSelectionChange={handleSelectionChange}
               onPasteImages={(uris) => void props.onNativePasteImages(uris)}
               placeholder={props.placeholder}
