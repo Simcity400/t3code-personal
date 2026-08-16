@@ -734,6 +734,15 @@ export function readHistoricalCollabPromptLinks(input: {
   return input.turns.flatMap((turn) => readCollabPromptLinksFromItems(turn.items));
 }
 
+export function readCollabPromptForAgent(input: {
+  readonly turns: ReadonlyArray<{ readonly items: ReadonlyArray<CodexThreadItem> }>;
+  readonly agentThreadId: string;
+}): string | undefined {
+  return input.turns
+    .flatMap((turn) => readCollabPromptLinksFromItems(turn.items))
+    .find((link) => link.receiverThreadId === input.agentThreadId)?.prompt;
+}
+
 export function readCollabPromptLinks(
   notification: CodexServerNotification,
 ): ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }> {
@@ -965,6 +974,8 @@ export const makeCodexSessionRuntime = (
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
     const collabPromptsRef = yield* Ref.make(new Map<string, string>());
+    const collabPromptRecoveryRequests = yield* Queue.unbounded<string>();
+    const exhaustedCollabPromptRecoveriesRef = yield* Ref.make(new Set<string>());
     const collabChildAgentsRef = yield* Ref.make(new Map<string, CollabChildAgentState>());
     /** Child provider-thread id → its currently running provider turn id. */
     const collabChildLiveTurnsRef = yield* Ref.make(new Map<string, string>());
@@ -1085,6 +1096,139 @@ export const makeCodexSessionRuntime = (
         ),
       );
 
+    const rememberCollabPromptLinks = (
+      links: ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }>,
+    ) =>
+      Effect.gen(function* () {
+        if (links.length === 0) {
+          return;
+        }
+        yield* Ref.update(collabPromptsRef, (current) => {
+          const next = new Map(current);
+          for (const link of links) {
+            next.set(link.receiverThreadId, link.prompt);
+          }
+          return next;
+        });
+        const children = yield* Ref.get(collabChildAgentsRef);
+        for (const link of links) {
+          const knownChild = children.get(link.receiverThreadId);
+          if (!knownChild || knownChild.prompt === link.prompt) {
+            continue;
+          }
+          yield* Ref.update(collabChildAgentsRef, (current) => {
+            const next = new Map(current);
+            const child = next.get(link.receiverThreadId);
+            if (child) {
+              next.set(link.receiverThreadId, { ...child, prompt: link.prompt });
+            }
+            return next;
+          });
+          yield* emitEvent({
+            kind: "notification",
+            threadId: options.threadId,
+            ...(knownChild.spawnTurnId ? { turnId: knownChild.spawnTurnId } : {}),
+            method: "collabAgent/prompt",
+            payload: {
+              agentThreadId: knownChild.agentThreadId,
+              prompt: link.prompt,
+              ...(knownChild.nickname ? { nickname: knownChild.nickname } : {}),
+              ...(knownChild.role ? { role: knownChild.role } : {}),
+              ...(knownChild.agentPath ? { agentPath: knownChild.agentPath } : {}),
+            },
+          });
+        }
+      });
+
+    const refreshCollabPromptSnapshot = Effect.gen(function* () {
+      const providerThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+      if (!providerThreadId) {
+        return;
+      }
+      const response = yield* client
+        .request("thread/read", {
+          threadId: providerThreadId,
+          includeTurns: true,
+        })
+        .pipe(
+          Effect.timeout("2 seconds"),
+          Effect.catch(() => Effect.void),
+        );
+      if (!response) {
+        return;
+      }
+      yield* rememberCollabPromptLinks(
+        response.thread.turns.flatMap((turn) => readCollabPromptLinksFromItems(turn.items)),
+      );
+    });
+
+    // Native Codex collaboration can omit the live parent-side
+    // collabAgentToolCall even though thread/read exposes it shortly after
+    // the child registers. A scoped worker batches every child registration,
+    // reads the parent snapshot off the notification hot path, caches every
+    // prompt in that snapshot, and retries once after a short durability
+    // window. An unresolved child is then exhausted until a real live prompt
+    // arrives, preventing repeated full-history reads on every activity row.
+    yield* Effect.forever(
+      Effect.gen(function* () {
+        const firstAgentThreadId = yield* Queue.take(collabPromptRecoveryRequests);
+        yield* Effect.sleep("50 millis");
+        const queuedAgentThreadIds = yield* Queue.takeAll(collabPromptRecoveryRequests);
+        const requestedAgentThreadIds = new Set([
+          firstAgentThreadId,
+          ...Array.from(queuedAgentThreadIds),
+        ]);
+        const exhausted = yield* Ref.get(exhaustedCollabPromptRecoveriesRef);
+        for (const agentThreadId of exhausted) {
+          requestedAgentThreadIds.delete(agentThreadId);
+        }
+        const rememberedPrompts = yield* Ref.get(collabPromptsRef);
+        for (const agentThreadId of rememberedPrompts.keys()) {
+          requestedAgentThreadIds.delete(agentThreadId);
+        }
+        if (requestedAgentThreadIds.size === 0) {
+          return;
+        }
+
+        yield* refreshCollabPromptSnapshot;
+        let prompts = yield* Ref.get(collabPromptsRef);
+        const unresolvedAfterFirstRead = Array.from(requestedAgentThreadIds).filter(
+          (agentThreadId) => !prompts.has(agentThreadId),
+        );
+        if (unresolvedAfterFirstRead.length > 0) {
+          yield* Effect.sleep("250 millis");
+          yield* refreshCollabPromptSnapshot;
+          prompts = yield* Ref.get(collabPromptsRef);
+        }
+
+        const unresolved = Array.from(requestedAgentThreadIds).filter(
+          (agentThreadId) => !prompts.has(agentThreadId),
+        );
+        if (unresolved.length > 0) {
+          yield* Ref.update(exhaustedCollabPromptRecoveriesRef, (current) => {
+            const next = new Set(current);
+            for (const agentThreadId of unresolved) {
+              next.add(agentThreadId);
+            }
+            return next;
+          });
+        }
+      }),
+    ).pipe(Effect.forkIn(runtimeScope));
+
+    const recoverCollabPrompt = (agentThreadId: string) =>
+      Effect.gen(function* () {
+        const remembered = (yield* Ref.get(collabPromptsRef)).get(agentThreadId);
+        if (remembered) {
+          return remembered;
+        }
+        const exhausted = yield* Ref.get(exhaustedCollabPromptRecoveriesRef);
+        if (!exhausted.has(agentThreadId)) {
+          yield* Queue.offer(collabPromptRecoveryRequests, agentThreadId);
+        }
+        return undefined;
+      });
+
     /**
      * Registers v2 collab children and re-emits their notifications as
      * synthetic `collabAgent/*` events for the adapter's task.* synthesis.
@@ -1109,12 +1253,13 @@ export const makeCodexSessionRuntime = (
           // child onto a new fleet's CTA (review finding). Only a genuinely
           // new registration captures the current turn.
           const existingChild = (yield* Ref.get(collabChildAgentsRef)).get(thread.id);
+          const prompt = existingChild?.prompt ?? (yield* recoverCollabPrompt(thread.id));
           const spawnTurnId = existingChild
             ? existingChild.spawnTurnId
             : ((yield* Ref.get(sessionRef)).activeTurnId ?? undefined);
           const state: CollabChildAgentState = {
             agentThreadId: thread.id,
-            prompt: existingChild?.prompt ?? (yield* Ref.get(collabPromptsRef)).get(thread.id),
+            prompt,
             nickname: spawn.nickname ?? thread.agentNickname ?? existingChild?.nickname,
             role: spawn.role ?? thread.agentRole ?? existingChild?.role,
             agentPath: spawn.agentPath ?? existingChild?.agentPath,
@@ -1168,7 +1313,7 @@ export const makeCodexSessionRuntime = (
             return false;
           }
           const activitySpawnTurnId = (yield* Ref.get(sessionRef)).activeTurnId ?? undefined;
-          const collabPrompts = yield* Ref.get(collabPromptsRef);
+          const recoveredPrompt = yield* recoverCollabPrompt(item.agentThreadId);
           yield* Ref.update(collabChildAgentsRef, (current) => {
             const existing = current.get(item.agentThreadId);
             const next = new Map(current);
@@ -1181,7 +1326,7 @@ export const makeCodexSessionRuntime = (
             // finding); an unset spawn turn stays unset.
             next.set(item.agentThreadId, {
               agentThreadId: item.agentThreadId,
-              prompt: existing?.prompt ?? collabPrompts.get(item.agentThreadId),
+              prompt: existing?.prompt ?? recoveredPrompt,
               nickname:
                 existing?.nickname ??
                 item.agentPath.split("/").findLast((segment) => segment.length > 0),
@@ -1398,41 +1543,7 @@ export const makeCodexSessionRuntime = (
 
         rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
         if (collabPromptLinks.length > 0) {
-          yield* Ref.update(collabPromptsRef, (current) => {
-            const next = new Map(current);
-            for (const link of collabPromptLinks) {
-              next.set(link.receiverThreadId, link.prompt);
-            }
-            return next;
-          });
-          const children = yield* Ref.get(collabChildAgentsRef);
-          for (const link of collabPromptLinks) {
-            const knownChild = children.get(link.receiverThreadId);
-            if (!knownChild || knownChild.prompt === link.prompt) {
-              continue;
-            }
-            yield* Ref.update(collabChildAgentsRef, (current) => {
-              const next = new Map(current);
-              const child = next.get(link.receiverThreadId);
-              if (child) {
-                next.set(link.receiverThreadId, { ...child, prompt: link.prompt });
-              }
-              return next;
-            });
-            yield* emitEvent({
-              kind: "notification",
-              threadId: options.threadId,
-              ...(knownChild.spawnTurnId ? { turnId: knownChild.spawnTurnId } : {}),
-              method: "collabAgent/prompt",
-              payload: {
-                agentThreadId: knownChild.agentThreadId,
-                prompt: link.prompt,
-                ...(knownChild.nickname ? { nickname: knownChild.nickname } : {}),
-                ...(knownChild.role ? { role: knownChild.role } : {}),
-                ...(knownChild.agentPath ? { agentPath: knownChild.agentPath } : {}),
-              },
-            });
-          }
+          yield* rememberCollabPromptLinks(collabPromptLinks);
         }
         // Interception FIRST: a registered v2 child is usually also in the
         // receiver-turn map (collabAgentToolCall.receiverThreadIds), and the
@@ -1948,6 +2059,7 @@ export const makeCodexSessionRuntime = (
         ),
       );
       yield* Scope.close(runtimeScope, Exit.void);
+      yield* Queue.shutdown(collabPromptRecoveryRequests);
       yield* Queue.shutdown(serverNotifications);
       yield* Queue.shutdown(events);
     });

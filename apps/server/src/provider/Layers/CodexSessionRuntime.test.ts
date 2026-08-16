@@ -16,12 +16,14 @@ import {
 } from "../CodexDeveloperInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
+  type CodexThreadItem,
   buildTurnStartParams,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
   readCollabPromptLinks,
+  readCollabPromptForAgent,
   readCollabPromptLinksFromItems,
   readHistoricalCollabPromptLinks,
 } from "./CodexSessionRuntime.ts";
@@ -105,6 +107,36 @@ describe("readCollabPromptLinks", () => {
         forkThreadId: undefined,
       }),
       [{ receiverThreadId: "child-1", prompt: "Review the exact diff." }],
+    );
+  });
+
+  it("recovers one child's launch prompt from a parent thread snapshot", () => {
+    const items = [
+      {
+        type: "collabAgentToolCall",
+        id: "spawn-1",
+        tool: "spawnAgent",
+        status: "completed",
+        senderThreadId: "parent-thread",
+        receiverThreadIds: ["child-1"],
+        prompt: "Inspect the exact mobile behavior.",
+        agentsStates: {},
+      },
+    ] as unknown as ReadonlyArray<CodexThreadItem>;
+
+    NodeAssert.equal(
+      readCollabPromptForAgent({
+        turns: [{ items }],
+        agentThreadId: "child-1",
+      }),
+      "Inspect the exact mobile behavior.",
+    );
+    NodeAssert.equal(
+      readCollabPromptForAgent({
+        turns: [{ items }],
+        agentThreadId: "child-2",
+      }),
+      undefined,
     );
   });
 

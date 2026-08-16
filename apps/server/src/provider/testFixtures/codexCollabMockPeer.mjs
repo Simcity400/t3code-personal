@@ -17,6 +17,7 @@ const script = JSON.parse(NodeFS.readFileSync(process.env.T3_CODEX_COLLAB_SCRIPT
 
 const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 let turnStartCount = 0;
+let threadReadCount = 0;
 
 const rl = NodeReadline.createInterface({ input: process.stdin });
 rl.on("line", (line) => {
@@ -62,15 +63,32 @@ rl.on("line", (line) => {
       write({ jsonrpc: "2.0", method: notification.method, params: notification.params });
     }
     if (script.holdTurnOpen !== true) {
-      write({
-        jsonrpc: "2.0",
-        method: "turn/completed",
-        params: {
-          threadId: rootThreadId,
-          turn: { ...turn, status: "completed" },
-        },
-      });
+      const completeTurn = () =>
+        write({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: {
+            threadId: rootThreadId,
+            turn: { ...turn, status: "completed" },
+          },
+        });
+      if (script.turnCompleteDelayMs) {
+        setTimeout(completeTurn, script.turnCompleteDelayMs);
+      } else {
+        completeTurn();
+      }
     }
+    return;
+  }
+  if (method === "thread/read" && script.threadReadResponses) {
+    const response =
+      script.threadReadResponses[Math.min(threadReadCount, script.threadReadResponses.length - 1)];
+    threadReadCount += 1;
+    write({ id, result: response });
+    return;
+  }
+  if (method === "thread/read" && script.threadReadResponse) {
+    write({ id, result: script.threadReadResponse });
     return;
   }
   if (method === "turn/interrupt") {
