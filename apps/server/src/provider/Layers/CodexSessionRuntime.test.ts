@@ -21,6 +21,7 @@ import {
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   makeMemoryConsolidationNotificationFilter,
+  mergeCollabPromptRecords,
   openCodexThread,
   readCollabPromptLinks,
   readCollabPromptForAgent,
@@ -47,6 +48,31 @@ describe("CodexSessionRuntimeIdentifierGenerationError", () => {
 });
 
 describe("readCollabPromptLinks", () => {
+  it("keeps first-class prompt data authoritative across later native scans", () => {
+    const child = "child-1";
+    const native = mergeCollabPromptRecords(
+      new Map(),
+      [{ receiverThreadId: child, prompt: "Native fallback" }],
+      "native",
+    );
+    const firstClass = mergeCollabPromptRecords(
+      native.records,
+      [{ receiverThreadId: child, prompt: "  First-class prompt\n" }],
+      "first-class",
+    );
+    const laterNative = mergeCollabPromptRecords(
+      firstClass.records,
+      [{ receiverThreadId: child, prompt: "Stale native fallback" }],
+      "native",
+    );
+
+    NodeAssert.deepEqual(laterNative.acceptedLinks, []);
+    NodeAssert.deepEqual(laterNative.records.get(child), {
+      prompt: "  First-class prompt\n",
+      source: "first-class",
+    });
+  });
+
   it("associates the exact native prompt with every receiving child", () => {
     const notification = {
       method: "item/completed",

@@ -576,8 +576,8 @@ function mapCollabAgentEvent(
         },
       ];
     case "collabAgent/prompt": {
-      const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
-      if (!prompt) {
+      const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
+      if (prompt.trim().length === 0) {
         return [];
       }
       return [
