@@ -1119,8 +1119,9 @@ function deriveSubagentPromptCandidates(
   );
 
   const seen = new Set<string>();
+  // Mobile Hermes does not provide the ES2023 change-by-copy array methods.
   return [...directCandidates, ...toolCandidates]
-    .toSorted(
+    .sort(
       (left, right) =>
         left.createdAt.localeCompare(right.createdAt) || left.key.localeCompare(right.key),
     )
@@ -1163,7 +1164,8 @@ export function selectSubagentTranscriptMessages(
       updatedAt: candidate.createdAt,
     }));
 
-  return [...promptMessages, ...selectedMessages].toSorted(
+  // Keep this shared selector compatible with mobile Hermes.
+  return [...promptMessages, ...selectedMessages].sort(
     (left, right) =>
       left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
   );
