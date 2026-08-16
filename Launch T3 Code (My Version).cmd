@@ -1,10 +1,10 @@
 @echo off
-rem Launches your personal build of T3 Code.
-rem If it fails to start, run "Update T3 Code (My Version).cmd" first to rebuild.
-cd /d "%~dp0"
-call pnpm start:desktop
-if errorlevel 1 (
-  echo.
-  echo T3 Code failed to start. Run "Update T3 Code (My Version).cmd" to rebuild, then try again.
+rem Compatibility launcher for the one installed personal T3 Code app.
+setlocal
+set "APP=%LOCALAPPDATA%\Programs\t3code\T3 Code (Nightly).exe"
+if not exist "%APP%" (
+  echo Your personal T3 Code app is not installed. Run "Setup T3 Code (My Version).cmd".
   pause
+  exit /b 1
 )
+start "" "%APP%"

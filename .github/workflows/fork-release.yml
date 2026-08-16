@@ -1,17 +1,26 @@
 name: Fork Release
 
-# Fork-only pipeline: merges upstream on a schedule, builds an unsigned
-# Windows installer, and publishes it as a GitHub prerelease on this
+# Fork-only pipeline: builds an unsigned Windows installer and publishes it as
+# a GitHub prerelease on this
 # repository. Packaged apps point their electron-updater feed here
 # (GITHUB_REPOSITORY at build time), so the in-app update button picks these
 # releases up. Kept separate from upstream's release.yml to avoid merge
 # conflicts; that workflow needs T3's own secrets and runners and cannot run
 # on this fork.
 
-# Dormant by choice (2026-08-05): Alex prefers the from-source ForkUpdates
-# flow, so automatic triggers are disabled and no Actions minutes are spent.
-# Trigger manually from the Actions tab to produce an installer on demand.
+# Every direct push to main publishes the personal Windows build so the one
+# installed app follows the same branch as mobile OTA and source checkouts.
+# workflow_dispatch remains available for a manual rebuild.
 on:
+  push:
+    branches:
+      - main
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact main commit to package
+        required: true
+        type: string
   workflow_dispatch:
 
 permissions:
@@ -25,13 +34,11 @@ env:
   FORK_BRANCH: main
 
 jobs:
-  # Scheduled and manual runs first pull in upstream's latest changes. This
-  # replaces the from-source ForkUpdates merge flow once the app runs packaged
-  # (ForkUpdates is inactive in packaged builds). A merge conflict fails this
-  # job with instructions; pushes from a local resolution build as usual.
+  # Manual runs first pull in upstream's latest changes. Scheduled fork-sync
+  # runs call this workflow with the exact main commit they already pushed.
   sync_upstream:
     name: Merge upstream/main
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: inputs.ref == '' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -80,8 +87,8 @@ jobs:
     name: Build WSL node-pty (linux-x64)
     needs: [sync_upstream]
     if: |
-      !cancelled() &&
-      (github.event_name == 'push' ||
+      always() && !cancelled() &&
+      (inputs.ref != '' || github.event_name == 'push' ||
        (needs.sync_upstream.result == 'success' && needs.sync_upstream.outputs.has_changes == 'true'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -89,7 +96,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
+          ref: ${{ inputs.ref != '' && inputs.ref || github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
           sparse-checkout: |
             /*
             !/.repos/
@@ -125,7 +132,7 @@ jobs:
   release:
     name: Build and release Windows x64
     needs: [sync_upstream, build_wsl_node_pty]
-    if: ${{ !cancelled() && needs.build_wsl_node_pty.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.build_wsl_node_pty.result == 'success' }}
     runs-on: windows-2025
     timeout-minutes: 60
     env:
@@ -137,15 +144,15 @@ jobs:
       T3CODE_CLERK_JWT_TEMPLATE: t3-relay
       T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: hzxSgY2cH10sDU2r
       T3CODE_RELAY_URL: https://relay.t3.codes
-      # Bake the private-repo update feed into app-update.yml. At runtime the
-      # installed app needs a GH_TOKEN env var (fine-grained PAT with read-only
-      # contents access to this repository) to check for and download updates.
+      # Bake the private-repo update feed into app-update.yml. At runtime only
+      # the updater reads the existing GitHub CLI login; agents never inherit
+      # the credential through the app process environment.
       T3CODE_DESKTOP_UPDATE_PRIVATE: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
+          ref: ${{ inputs.ref != '' && inputs.ref || github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
           sparse-checkout: |
             /*
             !/.repos/
@@ -174,7 +181,7 @@ jobs:
           nightly_date="$(date -u +%Y%m%d)"
           node scripts/resolve-nightly-release.ts \
             --date "$nightly_date" \
-            --run-number "${{ github.run_number }}" \
+            --run-number "${{ github.run_id }}" \
             --sha "$(git rev-parse HEAD)" \
             --github-output
 
@@ -219,7 +226,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_meta.outputs.tag }}
-          target_commitish: ${{ github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
+          target_commitish: ${{ inputs.ref != '' && inputs.ref || github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
           name: ${{ steps.release_meta.outputs.name }}
           prerelease: true
           make_latest: false

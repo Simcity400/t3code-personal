@@ -64,6 +64,8 @@ jobs:
     if: needs.gate.outputs.proceed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      ref: ${{ steps.push.outputs.ref }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v6
@@ -143,8 +145,19 @@ jobs:
             git commit -am "chore(fork): pin nightly $NIGHTLY"
           fi
 
-      - name: Push main and clear the conflict marker
+      - id: push
+        name: Push main and clear the conflict marker
         run: |
           set -euo pipefail
           git push origin main
           git push origin :refs/heads/needs-merge-help 2>/dev/null || true
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Publish the synced personal Windows app
+    needs: sync
+    uses: ./.github/workflows/fork-release.yml
+    with:
+      ref: ${{ needs.sync.outputs.ref }}
+    permissions:
+      contents: write

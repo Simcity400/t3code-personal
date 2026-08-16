@@ -223,7 +223,7 @@ const desktopApplicationLayer = Layer.mergeAll(
   DesktopShellEnvironment.layer,
   desktopSshLayer,
 ).pipe(
-  Layer.provideMerge(DesktopUpdates.layer),
+  Layer.provideMerge(DesktopUpdates.liveLayer),
   Layer.provideMerge(ForkUpdates.layer),
   Layer.provideMerge(desktopWslBackendLayer),
   Layer.provideMerge(desktopLocalEnvironmentAuthLayer),
