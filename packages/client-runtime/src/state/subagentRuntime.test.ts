@@ -292,6 +292,39 @@ describe("selectSubagentTranscriptMessages", () => {
     ]);
   });
 
+  it("places a launch prompt recovered on restart before existing child output", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [
+        {
+          id: "message-child",
+          role: "assistant",
+          text: "Review complete",
+          agentId: "agent-1",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-08-01T10:00:03.000Z",
+          updatedAt: "2026-08-01T10:00:03.000Z",
+        },
+      ] as unknown as ReadonlyArray<OrchestrationMessage>,
+      [
+        activity(
+          "task.progress",
+          {
+            taskId: "agent-1",
+            prompt: "Inspect the mobile transcript.",
+          },
+          "2026-08-01T12:00:00.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: "Inspect the mobile transcript." },
+      { role: "assistant", text: "Review complete" },
+    ]);
+  });
+
   it("coalesces Codex spawn lifecycle and includes later parent instructions", () => {
     const activities = [
       activity(
