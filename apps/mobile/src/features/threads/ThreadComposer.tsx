@@ -398,6 +398,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       const q = composerTrigger.query.toLowerCase();
       const allBuiltIn = [
         {
+          id: "cmd:side",
+          type: "slash-command" as const,
+          command: "side",
+          label: "/side",
+          description: "Start a side chat",
+        },
+        {
           id: "cmd:model",
           type: "slash-command" as const,
           command: "model",

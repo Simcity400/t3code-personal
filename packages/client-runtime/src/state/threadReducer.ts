@@ -86,6 +86,12 @@ export function applyThreadDetailEvent(
           interactionMode: event.payload.interactionMode,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
+          ...(event.payload.forkedFromThreadId != null
+            ? { forkedFromThreadId: event.payload.forkedFromThreadId }
+            : {}),
+          ...(event.payload.sideChatPromotedAt != null
+            ? { sideChatPromotedAt: event.payload.sideChatPromotedAt }
+            : {}),
           latestTurn: null,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
@@ -217,6 +223,9 @@ export function applyThreadDetailEvent(
           ...(event.payload.branch !== undefined ? { branch: event.payload.branch } : {}),
           ...(event.payload.worktreePath !== undefined
             ? { worktreePath: event.payload.worktreePath }
+            : {}),
+          ...(event.payload.sideChatPromotedAt !== undefined
+            ? { sideChatPromotedAt: event.payload.sideChatPromotedAt }
             : {}),
           updatedAt: event.payload.updatedAt,
         },

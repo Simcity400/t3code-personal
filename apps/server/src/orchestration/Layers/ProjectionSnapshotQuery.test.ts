@@ -756,6 +756,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           branch,
           worktree_path,
           latest_turn_id,
+          forked_from_thread_id,
+          side_chat_promoted_at,
           created_at,
           updated_at,
           archived_at,
@@ -772,6 +774,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             NULL,
             NULL,
             NULL,
+            'thread-parent',
+            NULL,
             '2026-03-01T00:00:05.000Z',
             '2026-03-01T00:00:06.000Z',
             NULL,
@@ -787,6 +791,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             NULL,
             NULL,
             NULL,
+            NULL,
+            NULL,
             '2026-03-01T00:00:07.000Z',
             '2026-03-01T00:00:08.000Z',
             NULL,
@@ -799,6 +805,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             '{"provider":"codex","model":"gpt-5-codex"}',
             'full-access',
             'default',
+            NULL,
+            NULL,
             NULL,
             NULL,
             NULL,
@@ -829,7 +837,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         );
         assert.equal(firstThreadId._tag, "Some");
         if (firstThreadId._tag === "Some") {
-          assert.equal(firstThreadId.value, ThreadId.make("thread-first"));
+          assert.equal(firstThreadId.value, ThreadId.make("thread-second"));
         }
       }),
   );

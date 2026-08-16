@@ -348,15 +348,16 @@ export function HomeScreen(props: HomeScreenProps) {
           ),
     [props.projects, selectedProjectRefKeys],
   );
-  const scopedThreads = useMemo(
-    () =>
-      selectedProjectRefKeys === null
-        ? props.threads
-        : props.threads.filter((thread) =>
-            selectedProjectRefKeys.has(scopedProjectKey(thread.environmentId, thread.projectId)),
-          ),
-    [props.threads, selectedProjectRefKeys],
-  );
+  const scopedThreads = useMemo(() => {
+    const visibleThreads = props.threads.filter(
+      (thread) => thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null,
+    );
+    return selectedProjectRefKeys === null
+      ? visibleThreads
+      : visibleThreads.filter((thread) =>
+          selectedProjectRefKeys.has(scopedProjectKey(thread.environmentId, thread.projectId)),
+        );
+  }, [props.threads, selectedProjectRefKeys]);
   const scopedPendingTasks = useMemo(
     () =>
       selectedProjectRefKeys === null
@@ -643,6 +644,7 @@ export function HomeScreen(props: HomeScreenProps) {
         (thread) =>
           thread.pinnedAt != null &&
           thread.archivedAt === null &&
+          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null) &&
           pinReorderEnvironmentIds.has(thread.environmentId),
       ),
     );
@@ -662,7 +664,11 @@ export function HomeScreen(props: HomeScreenProps) {
     // Settled threads are live shells; archived threads keep their original
     // "hidden from lists" meaning.
     return buildThreadListV2Items({
-      threads: props.threads.filter((thread) => thread.archivedAt === null),
+      threads: props.threads.filter(
+        (thread) =>
+          thread.archivedAt === null &&
+          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+      ),
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,

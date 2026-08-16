@@ -7,6 +7,7 @@ import {
   expandCollapsedComposerCursor,
   isCollapsedCursorAdjacentToInlineToken,
   parseStandaloneComposerSlashCommand,
+  parseSideChatSlashCommand,
   replaceTextRange,
   shouldSubmitComposerOnEnter,
 } from "./composer-logic";
@@ -370,5 +371,21 @@ describe("parseStandaloneComposerSlashCommand", () => {
 
   it("ignores slash commands with extra message text", () => {
     expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
+  });
+});
+
+describe("parseSideChatSlashCommand", () => {
+  it("extracts the first side-chat prompt", () => {
+    expect(parseSideChatSlashCommand("/side compare these approaches")).toEqual({
+      prompt: "compare these approaches",
+    });
+  });
+
+  it("recognizes an empty side command so the UI can ask for a message", () => {
+    expect(parseSideChatSlashCommand(" /SIDE ")).toEqual({ prompt: "" });
+  });
+
+  it("does not intercept unrelated slash commands", () => {
+    expect(parseSideChatSlashCommand("/plan")).toBeNull();
   });
 });

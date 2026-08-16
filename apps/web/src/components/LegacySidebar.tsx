@@ -1277,7 +1277,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       });
     };
     const visibleProjectThreads = sortThreads(
-      projectThreads.filter((thread) => thread.archivedAt === null),
+      projectThreads.filter(
+        (thread) =>
+          thread.archivedAt === null &&
+          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+      ),
       threadSortOrder,
     );
     const projectStatus = resolveProjectStatusIndicator(

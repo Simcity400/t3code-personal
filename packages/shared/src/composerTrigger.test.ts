@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { serializeComposerFileLink, serializeComposerMentionPath } from "./composerTrigger.ts";
+import {
+  parseSideChatSlashCommand,
+  serializeComposerFileLink,
+  serializeComposerMentionPath,
+} from "./composerTrigger.ts";
+
+describe("parseSideChatSlashCommand", () => {
+  it("extracts multiline prompts", () => {
+    expect(parseSideChatSlashCommand("/side first line\nsecond line")).toEqual({
+      prompt: "first line\nsecond line",
+    });
+  });
+});
 
 describe("serializeComposerMentionPath", () => {
   it("keeps simple mention paths unquoted", () => {

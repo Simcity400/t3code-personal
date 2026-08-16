@@ -1039,6 +1039,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (composerTrigger.kind === "slash-command") {
       const builtInSlashCommandItems = [
         {
+          id: "slash:side",
+          type: "slash-command",
+          command: "side",
+          label: "/side",
+          description: "Fork this conversation into a private side chat",
+        },
+        {
           id: "slash:model",
           type: "slash-command",
           command: "model",

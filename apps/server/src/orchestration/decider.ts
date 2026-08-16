@@ -360,6 +360,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (command.forkedFromThreadId != null) {
+        const parentThread = yield* requireThread({
+          readModel,
+          command,
+          threadId: command.forkedFromThreadId,
+        });
+        if (parentThread.projectId !== command.projectId) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Side chat parent '${parentThread.id}' belongs to a different project.`,
+          });
+        }
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -377,6 +390,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.forkedFromThreadId !== undefined
+            ? { forkedFromThreadId: command.forkedFromThreadId, sideChatPromotedAt: null }
+            : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -384,11 +400,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const activeSideChats = listThreadsByProjectId(readModel, thread.projectId).filter(
+        (candidate) =>
+          candidate.deletedAt === null &&
+          candidate.forkedFromThreadId === thread.id &&
+          candidate.sideChatPromotedAt == null,
+      );
+      if (activeSideChats.length > 0) {
+        const promotedAt = yield* nowIso;
+        return yield* decideCommandSequence({
+          readModel,
+          commands: [
+            ...activeSideChats.map(
+              (sideChat): Extract<OrchestrationCommand, { type: "thread.meta.update" }> => ({
+                type: "thread.meta.update",
+                commandId: command.commandId,
+                threadId: sideChat.id,
+                sideChatPromotedAt: promotedAt,
+              }),
+            ),
+            command,
+          ],
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -799,6 +838,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (command.sideChatPromotedAt != null && thread.forkedFromThreadId == null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${thread.id}' is not a side chat and cannot be promoted.`,
+        });
+      }
       const branch =
         command.branch !== undefined &&
         command.expectedBranch !== undefined &&
@@ -835,6 +880,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(branch !== undefined ? { branch } : {}),
           ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
+          ...(command.sideChatPromotedAt !== undefined
+            ? { sideChatPromotedAt: command.sideChatPromotedAt }
+            : {}),
           updatedAt: occurredAt,
         },
       };

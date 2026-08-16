@@ -566,11 +566,55 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           );
         }
         const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        const hasCompatiblePersistedCursor =
+          persistedBinding?.providerInstanceId === resolvedInstanceId &&
+          persistedBinding.resumeCursor !== null &&
+          persistedBinding.resumeCursor !== undefined;
+        const shouldForkFromParent =
+          input.forkFromThreadId !== undefined &&
+          input.resumeCursor === undefined &&
+          !hasCompatiblePersistedCursor;
+        if (
+          shouldForkFromParent &&
+          resolvedProvider !== "codex" &&
+          resolvedProvider !== "claudeAgent"
+        ) {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            `Provider '${resolvedProvider}' does not support side-chat forks.`,
+          );
+        }
+        const parentBinding = shouldForkFromParent
+          ? Option.getOrUndefined(yield* directory.getBinding(input.forkFromThreadId!))
+          : undefined;
+        if (shouldForkFromParent && parentBinding === undefined) {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            `Cannot fork thread '${input.forkFromThreadId}': its provider continuation is unavailable.`,
+          );
+        }
+        if (shouldForkFromParent && parentBinding?.providerInstanceId !== resolvedInstanceId) {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            `Cannot fork thread '${input.forkFromThreadId}' with a different provider instance.`,
+          );
+        }
+        if (
+          shouldForkFromParent &&
+          (parentBinding?.resumeCursor === null || parentBinding?.resumeCursor === undefined)
+        ) {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            `Cannot fork thread '${input.forkFromThreadId}': it has no resumable provider context.`,
+          );
+        }
         const effectiveResumeCursor =
           input.resumeCursor ??
-          (persistedBinding?.providerInstanceId === resolvedInstanceId
+          (hasCompatiblePersistedCursor
             ? persistedBinding.resumeCursor
-            : undefined);
+            : shouldForkFromParent
+              ? parentBinding?.resumeCursor
+              : undefined);
         const effectiveCwd =
           input.cwd ??
           (persistedBinding?.providerInstanceId === resolvedInstanceId
@@ -597,10 +641,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         });
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
         yield* prepareMcpSession(threadId, resolvedInstanceId);
+        const { forkFromThreadId: _forkFromThreadId, ...adapterInput } = input;
         const session = yield* adapter
           .startSession({
-            ...input,
+            ...adapterInput,
             providerInstanceId: resolvedInstanceId,
+            ...(shouldForkFromParent && input.forkFromThreadId !== undefined
+              ? { forkFromThreadId: input.forkFromThreadId }
+              : {}),
             ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
             ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
           })
