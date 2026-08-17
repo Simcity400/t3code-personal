@@ -310,7 +310,7 @@ describe("selectSubagentTranscriptMessages", () => {
       ] as unknown as ReadonlyArray<OrchestrationMessage>,
       [
         activity(
-          "task.progress",
+          "task.updated",
           {
             taskId: "agent-1",
             prompt: "Inspect the mobile transcript.",
@@ -1114,7 +1114,7 @@ describe("session-derived interruption", () => {
 describe("terminal robustness", () => {
   it("keeps reopened prompt metadata idle without reviving settled agents", () => {
     const promptOnly = fold([
-      activity("task.progress", {
+      activity("task.updated", {
         taskId: "historical-idle",
         status: "idle",
         prompt: "Original launch prompt",
