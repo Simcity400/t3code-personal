@@ -1,0 +1,15 @@
+name: Personal iPhone preview update
+
+jobs:
+  publish_preview_update:
+    name: Publish iPhone preview update
+    type: update
+    environment: preview
+    env:
+      APP_VARIANT: preview
+      MOBILE_VERSION_POLICY: fingerprint
+      T3CODE_EXPO_PUSH_ALERTS: "1"
+      NODE_OPTIONS: --max-old-space-size=4096
+    params:
+      branch: preview
+      platform: ios
