@@ -59,7 +59,12 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
-import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
+import {
+  FetchHttpClient,
+  HttpRouter,
+  HttpServerRequest,
+  HttpServerRespondable,
+} from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
@@ -101,6 +106,7 @@ import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as ExpoPushAlerts from "./notifications/ExpoPushAlerts.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
@@ -122,6 +128,7 @@ import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
+import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -382,6 +389,7 @@ const makeWsRpcLayer = (
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
+      const expoPushAlerts = yield* ExpoPushAlerts.ExpoPushAlerts;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
         Ref.get(rpcClientIds).pipe(
@@ -1603,6 +1611,12 @@ const makeWsRpcLayer = (
               ),
             ),
           ),
+        [WS_METHODS.serverRegisterExpoPushNotifications]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverRegisterExpoPushNotifications,
+            expoPushAlerts.register(input).pipe(Effect.map((registered) => ({ registered }))),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverReportHostPowerState]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReportHostPowerState,
@@ -2319,6 +2333,12 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           Effect.provide(
             makeWsRpcLayer(session, previewAutomationBroker).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
+              Layer.provide(
+                ExpoPushAlerts.layer.pipe(
+                  Layer.provide(ServerSecretStore.layer),
+                  Layer.provide(FetchHttpClient.layer),
+                ),
+              ),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
               // One server-lifetime service means clients share the same PR caches, and a WS

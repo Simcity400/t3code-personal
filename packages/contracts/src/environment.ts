@@ -80,6 +80,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       this is false — no update would ever repaint it. Absent on older
       servers, which may still publish, so only an explicit false skips. */
   agentActivityPublishing: Schema.optionalKey(Schema.Boolean),
+  /** Server accepts a mobile Expo push-token registration and can deliver
+      per-environment agent alerts without the hosted T3 relay. */
+  expoPushNotifications: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

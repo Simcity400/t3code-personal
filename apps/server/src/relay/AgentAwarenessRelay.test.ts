@@ -219,6 +219,19 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
     );
   });
 
+  it("still publishes to the hosted relay after Expo observed the state first", () => {
+    const identity = AgentAwarenessRelay.agentAwarenessPublishIdentity(state);
+    expect(
+      AgentAwarenessRelay.resolveAgentAwarenessDeliveryNeeds({
+        identity,
+        relayIdentity: undefined,
+        expoIdentity: identity,
+        canPublishToRelay: true,
+        hasExpoPushRegistrations: true,
+      }),
+    ).toEqual({ relay: true, expo: false });
+  });
+
   it("requires an explicit opt-in before publishing agent activity", () => {
     expect(AgentAwarenessRelay.isAgentActivityPublishingEnabled(null)).toBe(false);
     expect(AgentAwarenessRelay.isAgentActivityPublishingEnabled("false")).toBe(false);

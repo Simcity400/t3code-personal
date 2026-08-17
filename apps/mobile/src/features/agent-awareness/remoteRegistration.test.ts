@@ -332,6 +332,17 @@ describe("makeRelayDeviceRegistrationRequest", () => {
     });
   });
 
+  it("ends existing Live Activities in the personal Expo alert-only build", () => {
+    Constants.expoConfig!.extra = { personalExpoPushAlerts: true };
+    const activity = { end: vi.fn(() => Promise.resolve()) };
+    widgetMocks.getInstances.mockReturnValue([activity] as never);
+
+    setAgentAwarenessRelayTokenProvider(() => Promise.resolve("clerk-token-user-a"));
+
+    expect(activity.end).toHaveBeenCalledWith("immediate");
+    expect(backgroundRuntime.pending).toHaveLength(0);
+  });
+
   it("marks notification delivery disabled when APNs permission is unavailable", () => {
     expect(
       makeRelayDeviceRegistrationRequest({
