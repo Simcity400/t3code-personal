@@ -1,0 +1,18 @@
+name: Personal iPhone preview
+
+jobs:
+  build_preview:
+    name: Build iPhone preview
+    type: build
+    params:
+      platform: ios
+      profile: preview
+
+  publish_preview_update:
+    name: Publish iPhone preview update
+    needs: [build_preview]
+    type: update
+    environment: preview
+    params:
+      branch: preview
+      platform: ios
