@@ -711,6 +711,19 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
   if (!payload) {
     return false;
   }
+  // Older servers persisted reopened-thread prompt recovery as task.progress.
+  // It is transcript metadata for an already-idle child, never a fresh spawn
+  // anchor. Keep this compatibility guard so existing false CTA rows vanish
+  // as soon as the client updates.
+  if (
+    activity.kind === "task.progress" &&
+    payload.timelineBypass === true &&
+    payload.status === "idle" &&
+    typeof payload.prompt === "string" &&
+    payload.prompt.trim().length > 0
+  ) {
+    return true;
+  }
   const isTaskRow =
     activity.kind === "task.started" ||
     activity.kind === "task.progress" ||

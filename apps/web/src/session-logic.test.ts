@@ -1840,6 +1840,25 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     expect(entries[0]!.agentSpawn?.agentTaskIds).toEqual(["child-1", "child-2"]);
   });
 
+  it("does not turn reopened child prompt recovery into a subagent launch row", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "historical-child-prompt",
+        kind: "task.progress",
+        summary: "child-thread-1",
+        tone: "info",
+        payload: {
+          taskId: "child-thread-1",
+          status: "idle",
+          prompt: "Review the old diff.",
+          timelineBypass: true,
+        },
+      }),
+    ]);
+
+    expect(entries).toEqual([]);
+  });
+
   it("timelineBypass non-agent rows (background shells) stay suppressed", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
