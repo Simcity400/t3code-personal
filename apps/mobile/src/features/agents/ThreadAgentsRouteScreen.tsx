@@ -4,7 +4,6 @@ import {
   formatSubagentTitle,
   isActiveSubagentStatus,
   subagentPanelSection,
-  type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -22,56 +21,13 @@ import { useSelectedThreadDetail } from "../../state/use-thread-detail";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { ThreadFeed } from "../threads/ThreadFeed";
+import { AgentCard, AgentStatus } from "./AgentCard";
+import { useAgentStatusClock } from "./agentStatusClock";
 
 type ThreadAgentsRouteScreenProps = StaticScreenProps<{
   readonly environmentId: string;
   readonly threadId: string;
 }>;
-
-function agentStatusLabel(agent: RuntimeSubagent): string {
-  switch (agent.status) {
-    case "pending":
-    case "running":
-    case "waiting":
-      return "Working";
-    case "idle":
-      return "Idle";
-    case "completed":
-      return "Completed";
-    case "failed":
-      return "Failed";
-    case "cancelled":
-    case "interrupted":
-      return "Stopped";
-  }
-}
-
-function AgentCard({
-  agent,
-  onOpen,
-}: {
-  readonly agent: RuntimeSubagent;
-  readonly onOpen: () => void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`Open ${formatSubagentTitle(agent.title)} transcript`}
-      onPress={onOpen}
-      className="rounded-xl bg-card px-3 py-3 active:opacity-70"
-    >
-      <View className="flex-row items-center justify-between gap-3">
-        <Text className="min-w-0 flex-1 text-sm font-t3-semibold text-foreground" numberOfLines={1}>
-          {formatSubagentTitle(agent.title)}
-        </Text>
-        <Text className="text-xs text-foreground-muted">{agentStatusLabel(agent)}</Text>
-      </View>
-      <Text className="mt-1 text-xs text-foreground-muted" numberOfLines={1}>
-        {agent.progress ?? agent.result ?? agent.error ?? agent.role ?? "No activity yet"}
-      </Text>
-    </Pressable>
-  );
-}
 
 export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
   const thread = useSelectedThreadDetail();
@@ -116,6 +72,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
     return null;
   }, [transcript]);
   const selectedAgentWorking = selectedAgent ? isActiveSubagentStatus(selectedAgent.status) : false;
+  const statusClock = useAgentStatusClock(activeAgents.length > 0 || selectedAgentWorking);
   const transcriptLatestTurn =
     selectedAgent && transcriptTurnId
       ? {
@@ -166,7 +123,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
             >
               {selectedAgentTitle}
             </Text>
-            <Text className="text-xs text-foreground-muted">{agentStatusLabel(selectedAgent)}</Text>
+            <AgentStatus agent={selectedAgent} clock={statusClock} />
           </View>
         </View>
         <ThreadFeed
@@ -218,6 +175,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
                   <AgentCard
                     key={agent.id}
                     agent={agent}
+                    clock={statusClock}
                     onOpen={() => setSelectedAgentId(agent.id)}
                   />
                 ))}
@@ -249,6 +207,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
                       <AgentCard
                         key={agent.id}
                         agent={agent}
+                        clock={statusClock}
                         onOpen={() => setSelectedAgentId(agent.id)}
                       />
                     ))}
