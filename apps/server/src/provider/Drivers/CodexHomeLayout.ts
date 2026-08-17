@@ -420,3 +420,7 @@ export function codexContinuationIdentity(layout: CodexHomeLayout) {
     continuationKey: layout.continuationKey,
   };
 }
+
+export function codexModelCatalogHomePath(layout: CodexHomeLayout): string {
+  return layout.effectiveHomePath ?? layout.sharedHomePath;
+}

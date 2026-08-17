@@ -1095,8 +1095,6 @@ interface SubagentPromptCandidate {
   readonly activityId: string;
   readonly promptId: string | undefined;
   readonly childUserMessage: boolean;
-  readonly encryptedFallback: boolean;
-  readonly dedupeKey: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -1108,15 +1106,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function asPrompt(value: unknown): string | undefined {
   if (typeof value !== "string" || value.trim().length === 0) return undefined;
   return /^gAAAAA[A-Za-z0-9_-]{74,}={0,2}$/.test(value.trim()) ? undefined : value;
-}
-
-const ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER =
-  "Instruction sent to subagent. Codex encrypted the original text in this older thread.";
-
-function asEncryptedPrompt(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return /^gAAAAA[A-Za-z0-9_-]{74,}={0,2}$/.test(trimmed) ? trimmed : undefined;
 }
 
 function readUserMessagePrompt(item: Record<string, unknown> | undefined): string | undefined {
@@ -1151,19 +1140,16 @@ function deriveSubagentPromptCandidates(
     const toolUseId = asString(payload.toolUseId);
     if (toolUseId) launchingToolIds.add(toolUseId);
     const prompt = asPrompt(payload.prompt);
-    const encryptedPrompt = asEncryptedPrompt(payload.prompt);
-    if (prompt || encryptedPrompt) {
+    if (prompt) {
       directCandidates.push({
         key: `task:${activity.id}`,
         source: "task",
-        text: prompt ?? ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER,
+        text: prompt,
         createdAt: activity.createdAt,
         turnId: activity.turnId,
         activityId: activity.id,
         promptId: asString(payload.promptId),
         childUserMessage: false,
-        encryptedFallback: encryptedPrompt !== undefined,
-        dedupeKey: prompt ?? encryptedPrompt!,
       });
     }
   }
@@ -1237,9 +1223,9 @@ function deriveSubagentPromptCandidates(
       }
       continue;
     }
-    const existing = directWithoutPromptIdByText.get(candidate.dedupeKey);
+    const existing = directWithoutPromptIdByText.get(candidate.text);
     if (!existing || candidate.createdAt.localeCompare(existing.createdAt) < 0) {
-      directWithoutPromptIdByText.set(candidate.dedupeKey, candidate);
+      directWithoutPromptIdByText.set(candidate.text, candidate);
     }
   }
   const uniqueDirectCandidates = [
@@ -1275,8 +1261,6 @@ function deriveSubagentPromptCandidates(
           activityId: tool.activityId,
           promptId: itemId,
           childUserMessage: tool.itemType === "user_message" && tool.activityAgentId === agentId,
-          encryptedFallback: false,
-          dedupeKey: tool.prompt,
         },
       ];
     },
@@ -1311,38 +1295,6 @@ function deriveSubagentPromptCandidates(
     });
 }
 
-function suppressCorrelatedEncryptedFallbacks(
-  candidates: ReadonlyArray<SubagentPromptCandidate>,
-  selectedMessages: ReadonlyArray<OrchestrationMessage>,
-): ReadonlyArray<SubagentPromptCandidate> {
-  const exactPromptTimes = [
-    ...selectedMessages.flatMap((message) => (message.role === "user" ? [message.createdAt] : [])),
-    ...candidates.flatMap((candidate) => (candidate.childUserMessage ? [candidate.createdAt] : [])),
-  ].sort((left, right) => left.localeCompare(right));
-  const encryptedCandidates = candidates.filter((candidate) => candidate.encryptedFallback);
-  const suppressedKeys = new Set<string>();
-
-  // Older providers offer no shared id between an encrypted parent tool row
-  // and its decrypted child user item. Pair each exact item with at most one
-  // preceding marker, newest-first. This preserves every other marker instead
-  // of making one plaintext instruction erase the agent's whole history.
-  for (const exactPromptTime of exactPromptTimes) {
-    for (let index = encryptedCandidates.length - 1; index >= 0; index -= 1) {
-      const encrypted = encryptedCandidates[index];
-      if (
-        encrypted &&
-        !suppressedKeys.has(encrypted.key) &&
-        encrypted.createdAt.localeCompare(exactPromptTime) <= 0
-      ) {
-        suppressedKeys.add(encrypted.key);
-        break;
-      }
-    }
-  }
-
-  return candidates.filter((candidate) => !suppressedKeys.has(candidate.key));
-}
-
 /**
  * Selects one agent's persisted messages and inserts the parent's original
  * instructions as user-style messages. This keeps provider-specific linkage
@@ -1356,17 +1308,14 @@ export function selectSubagentTranscriptMessages(
   agentId: string,
 ): ReadonlyArray<OrchestrationMessage> {
   const selectedMessages = messages.filter((message) => message.agentId === agentId);
-  const firstSelectedCreatedAt = selectedMessages.reduce<string | undefined>(
-    (earliest, message) =>
-      earliest === undefined || message.createdAt.localeCompare(earliest) < 0
-        ? message.createdAt
-        : earliest,
-    undefined,
-  );
-  const promptCandidates = suppressCorrelatedEncryptedFallbacks(
-    deriveSubagentPromptCandidates(activities, agentId),
-    selectedMessages,
-  );
+  const firstTranscriptCreatedAt = [
+    ...selectedMessages.map((message) => message.createdAt),
+    ...selectSubagentTranscriptActivities(activities, agentId).map(
+      (activity) => activity.createdAt,
+    ),
+  ].sort((left, right) => left.localeCompare(right))[0];
+  const promptCandidates = deriveSubagentPromptCandidates(activities, agentId);
+  const initialPromptKey = promptCandidates[0]?.key;
   const promptMessages = promptCandidates
     .filter(
       (candidate) =>
@@ -1376,10 +1325,10 @@ export function selectSubagentTranscriptMessages(
     )
     .map<OrchestrationMessage>((candidate) => {
       const createdAt =
-        candidate.source === "task" &&
-        firstSelectedCreatedAt !== undefined &&
-        firstSelectedCreatedAt.localeCompare(candidate.createdAt) < 0
-          ? firstSelectedCreatedAt
+        candidate.key === initialPromptKey &&
+        firstTranscriptCreatedAt !== undefined &&
+        firstTranscriptCreatedAt.localeCompare(candidate.createdAt) < 0
+          ? firstTranscriptCreatedAt
           : candidate.createdAt;
       return {
         id: MessageId.make(`subagent-prompt:${agentId}:${candidate.activityId}`),

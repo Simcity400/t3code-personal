@@ -31,6 +31,7 @@ import * as Crypto from "effect/Crypto";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -54,6 +55,7 @@ import {
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { materializePlaintextCollabModelCatalog } from "../CodexPlaintextCollabCatalog.ts";
 import {
   CodexResumeCursorSchema,
   CodexSessionRuntimeThreadIdMissingError,
@@ -63,7 +65,11 @@ import {
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
-import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import {
+  hasCodexModelCatalogOverride,
+  resolveCodexLaunchArgs,
+  withCodexModelCatalogLaunchArgs,
+} from "./codexLaunchArgs.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
@@ -85,6 +91,10 @@ export interface CodexAdapterLiveOptions {
   >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly plaintextCollabCatalog?: {
+    readonly modelCatalogHomePath: string;
+    readonly instanceId: ProviderInstanceId;
+  };
 }
 
 interface CodexAdapterSessionContext {
@@ -1699,6 +1709,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("codex");
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* Effect.service(ServerConfig);
@@ -1735,12 +1746,40 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        const configuredLaunchArgs = resolveCodexLaunchArgs(
+          codexConfig.launchArgs,
+          options?.environment,
+        );
+        const plaintextCollabModelCatalogPath =
+          options?.plaintextCollabCatalog && !hasCodexModelCatalogOverride(configuredLaunchArgs)
+            ? yield* materializePlaintextCollabModelCatalog({
+                ...options.plaintextCollabCatalog,
+                outputDirectory: serverConfig.providerStatusCacheDir,
+              }).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(Path.Path, path),
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      detail:
+                        "Could not enable exact subagent instructions; Codex was not started because it would encrypt them.",
+                      cause,
+                    }),
+                ),
+              )
+            : undefined;
+        const launchArgs = withCodexModelCatalogLaunchArgs(
+          configuredLaunchArgs,
+          plaintextCollabModelCatalogPath,
+        );
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
           cwd: input.cwd ?? process.cwd(),
           binaryPath: codexConfig.binaryPath,
-          launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
+          launchArgs,
           ...(options?.environment ? { environment: options.environment } : {}),
           ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
           ...(isCodexResumeCursorSchema(input.resumeCursor)
