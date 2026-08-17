@@ -22,6 +22,7 @@ import {
   isRecoverableThreadResumeError,
   makeMemoryConsolidationNotificationFilter,
   mergeCollabPromptRecords,
+  reconcileHistoricalCollabPromptLinks,
   openCodexThread,
   readCollabPromptLinks,
   readCollabPromptForAgent,
@@ -69,6 +70,7 @@ describe("readCollabPromptLinks", () => {
     NodeAssert.deepEqual(laterNative.acceptedLinks, []);
     NodeAssert.deepEqual(laterNative.records.get(child), {
       prompt: "  First-class prompt\n",
+      promptId: undefined,
       source: "first-class",
     });
   });
@@ -94,12 +96,12 @@ describe("readCollabPromptLinks", () => {
     } as Parameters<typeof readCollabPromptLinks>[0];
 
     NodeAssert.deepStrictEqual(readCollabPromptLinks(notification), [
-      { receiverThreadId: "child-1", prompt: "Review the exact diff." },
-      { receiverThreadId: "child-2", prompt: "Review the exact diff." },
+      { receiverThreadId: "child-1", prompt: "Review the exact diff.", promptId: "spawn-1" },
+      { receiverThreadId: "child-2", prompt: "Review the exact diff.", promptId: "spawn-1" },
     ]);
   });
 
-  it("recovers launch prompts from a resumed thread snapshot", () => {
+  it("recovers launch and follow-up prompts from a resumed thread snapshot", () => {
     const items = [
       {
         type: "collabAgentToolCall",
@@ -124,7 +126,12 @@ describe("readCollabPromptLinks", () => {
     ] as Parameters<typeof readCollabPromptLinksFromItems>[0];
 
     NodeAssert.deepStrictEqual(readCollabPromptLinksFromItems(items), [
-      { receiverThreadId: "child-1", prompt: "Review the exact diff." },
+      { receiverThreadId: "child-1", prompt: "Review the exact diff.", promptId: "spawn-1" },
+      {
+        receiverThreadId: "child-1",
+        prompt: "Also inspect the desktop composer.",
+        promptId: "send-1",
+      },
     ]);
     NodeAssert.deepStrictEqual(
       readHistoricalCollabPromptLinks({
@@ -132,7 +139,14 @@ describe("readCollabPromptLinks", () => {
         resumeThreadId: "parent-thread",
         forkThreadId: undefined,
       }),
-      [{ receiverThreadId: "child-1", prompt: "Review the exact diff." }],
+      [
+        { receiverThreadId: "child-1", prompt: "Review the exact diff.", promptId: "spawn-1" },
+        {
+          receiverThreadId: "child-1",
+          prompt: "Also inspect the desktop composer.",
+          promptId: "send-1",
+        },
+      ],
     );
   });
 
@@ -190,7 +204,7 @@ describe("readCollabPromptLinks", () => {
     );
   });
 
-  it("does not treat later sendInput text as the launch prompt", () => {
+  it("records later sendInput text as a transcript prompt", () => {
     const notification = {
       method: "item/completed",
       params: {
@@ -205,6 +219,78 @@ describe("readCollabPromptLinks", () => {
           senderThreadId: "parent-thread",
           receiverThreadIds: ["child-1"],
           prompt: "Also inspect the desktop composer.",
+          agentsStates: {},
+        },
+      },
+    } as Parameters<typeof readCollabPromptLinks>[0];
+
+    NodeAssert.deepStrictEqual(readCollabPromptLinks(notification), [
+      {
+        receiverThreadId: "child-1",
+        prompt: "Also inspect the desktop composer.",
+        promptId: "send-1",
+      },
+    ]);
+  });
+
+  it("retains identical first-class follow-ups with different item ids", () => {
+    const first = mergeCollabPromptRecords(
+      new Map(),
+      [{ receiverThreadId: "child-1", prompt: "Check again.", promptId: "send-1" }],
+      "first-class",
+    );
+    const replay = mergeCollabPromptRecords(
+      first.records,
+      [{ receiverThreadId: "child-1", prompt: "Check again.", promptId: "send-1" }],
+      "first-class",
+    );
+    const repeated = mergeCollabPromptRecords(
+      replay.records,
+      [{ receiverThreadId: "child-1", prompt: "Check again.", promptId: "send-2" }],
+      "first-class",
+    );
+
+    NodeAssert.equal(first.acceptedLinks.length, 1);
+    NodeAssert.deepStrictEqual(replay.acceptedLinks, []);
+    NodeAssert.deepStrictEqual(repeated.acceptedLinks, [
+      { receiverThreadId: "child-1", prompt: "Check again.", promptId: "send-2" },
+    ]);
+  });
+
+  it("keeps a distinct native launch prompt beside first-class follow-ups", () => {
+    NodeAssert.deepStrictEqual(
+      reconcileHistoricalCollabPromptLinks(
+        [{ receiverThreadId: "child-1", prompt: "Initial review." }],
+        [
+          {
+            receiverThreadId: "child-1",
+            prompt: "Follow up.",
+            promptId: "send-1",
+          },
+        ],
+      ),
+      [
+        { receiverThreadId: "child-1", prompt: "Initial review." },
+        { receiverThreadId: "child-1", prompt: "Follow up.", promptId: "send-1" },
+      ],
+    );
+  });
+
+  it("rejects encrypted collaboration arguments as transcript text", () => {
+    const notification = {
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "parent-turn",
+        completedAtMs: 3,
+        item: {
+          type: "collabAgentToolCall",
+          id: "spawn-encrypted",
+          tool: "spawnAgent",
+          status: "completed",
+          senderThreadId: "parent-thread",
+          receiverThreadIds: ["child-1"],
+          prompt: `gAAAAA${"x".repeat(90)}`,
           agentsStates: {},
         },
       },

@@ -567,6 +567,7 @@ function mapCollabAgentEvent(
             title,
             role,
             ...(typeof payload.prompt === "string" ? { prompt: payload.prompt } : {}),
+            ...(typeof payload.promptId === "string" ? { promptId: payload.promptId } : {}),
             ...(agentPath ? { agentPath } : {}),
             ...(typeof payload.parentThreadId === "string"
               ? { parentAgentId: payload.parentThreadId }
@@ -593,6 +594,7 @@ function mapCollabAgentEvent(
             taskId,
             description: title,
             prompt,
+            ...(typeof payload.promptId === "string" ? { promptId: payload.promptId } : {}),
             ...(historical ? { status: "idle" as const } : {}),
             ...statusLinkage,
           },

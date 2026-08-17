@@ -569,6 +569,8 @@ const taskAgentLinkageFields = {
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Exact parent instruction when the provider exposes it for this agent. */
   prompt: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Stable provider item id for deduplicating mirrored prompt events. */
+  promptId: Schema.optional(TrimmedNonEmptyStringSchema),
   parentAgentId: Schema.optional(TrimmedNonEmptyStringSchema),
   workflowName: Schema.optional(TrimmedNonEmptyStringSchema),
   agentIndex: Schema.optional(NonNegativeInt),

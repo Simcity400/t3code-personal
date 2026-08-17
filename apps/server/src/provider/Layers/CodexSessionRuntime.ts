@@ -40,6 +40,7 @@ import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 import {
+  isEncryptedCollabPrompt,
   scanNativeCollabPromptRollout,
   type NativeCollabPromptRolloutCursor,
 } from "../CodexCollabPromptHistory.ts";
@@ -688,6 +689,7 @@ function readRouteFields(notification: CodexServerNotification): {
 interface CollabChildAgentState {
   readonly agentThreadId: string;
   readonly prompt: string | undefined;
+  readonly promptId: string | undefined;
   readonly nickname: string | undefined;
   readonly role: string | undefined;
   readonly agentPath: string | undefined;
@@ -702,61 +704,101 @@ interface CollabChildAgentState {
   readonly spawnTurnId: TurnId | undefined;
 }
 
-function readCollabPromptLinksFromItem(
-  item: CodexThreadItem,
-): ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }> {
+function readCollabPromptLinksFromItem(item: CodexThreadItem): ReadonlyArray<CollabPromptLink> {
   if (item.type !== "collabAgentToolCall") {
     return [];
   }
-  if (item.tool !== "spawnAgent") {
+  if (item.tool !== "spawnAgent" && item.tool !== "sendInput") {
     return [];
   }
   const prompt = item.prompt;
-  if (typeof prompt !== "string" || prompt.trim().length === 0) {
+  if (typeof prompt !== "string" || prompt.trim().length === 0 || isEncryptedCollabPrompt(prompt)) {
     return [];
   }
   return item.receiverThreadIds.map((receiverThreadId) => ({
     receiverThreadId,
     prompt,
+    promptId: item.id,
   }));
 }
 
 export type CollabPromptSource = "native" | "first-class";
 
+export interface CollabPromptLink {
+  readonly receiverThreadId: string;
+  readonly prompt: string;
+  readonly promptId?: string;
+}
+
 export interface CollabPromptRecord {
   readonly prompt: string;
+  readonly promptId: string | undefined;
   readonly source: CollabPromptSource;
 }
 
 export function mergeCollabPromptRecords(
   current: ReadonlyMap<string, CollabPromptRecord>,
-  links: ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }>,
+  links: ReadonlyArray<CollabPromptLink>,
   source: CollabPromptSource,
 ): {
-  readonly acceptedLinks: ReadonlyArray<{
-    readonly receiverThreadId: string;
-    readonly prompt: string;
-  }>;
+  readonly acceptedLinks: ReadonlyArray<CollabPromptLink>;
   readonly records: Map<string, CollabPromptRecord>;
 } {
   const records = new Map(current);
-  const acceptedLinks: Array<{ readonly receiverThreadId: string; readonly prompt: string }> = [];
+  const acceptedLinks: CollabPromptLink[] = [];
   for (const link of links) {
     const existing = records.get(link.receiverThreadId);
     if (source === "native" && existing?.source === "first-class") {
       continue;
     }
-    records.set(link.receiverThreadId, { prompt: link.prompt, source });
-    if (existing?.prompt !== link.prompt) {
+    const sameLogicalPrompt =
+      link.promptId !== undefined
+        ? existing?.promptId === link.promptId ||
+          (existing?.source === "native" &&
+            source === "first-class" &&
+            existing.prompt === link.prompt)
+        : existing?.prompt === link.prompt;
+    records.set(link.receiverThreadId, {
+      prompt: link.prompt,
+      promptId: link.promptId,
+      source,
+    });
+    if (!sameLogicalPrompt) {
       acceptedLinks.push(link);
     }
   }
   return { acceptedLinks, records };
 }
 
+export function reconcileHistoricalCollabPromptLinks(
+  nativeLinks: ReadonlyArray<CollabPromptLink>,
+  firstClassLinks: ReadonlyArray<CollabPromptLink>,
+): ReadonlyArray<CollabPromptLink> {
+  return [
+    ...nativeLinks.filter(
+      (link) =>
+        !firstClassLinks.some(
+          (firstClassLink) =>
+            firstClassLink.receiverThreadId === link.receiverThreadId &&
+            firstClassLink.prompt === link.prompt,
+        ),
+    ),
+    ...firstClassLinks,
+  ].filter(
+    (link, index, links) =>
+      links.findIndex(
+        (candidate) =>
+          candidate.receiverThreadId === link.receiverThreadId &&
+          (link.promptId !== undefined
+            ? candidate.promptId === link.promptId
+            : candidate.promptId === undefined && candidate.prompt === link.prompt),
+      ) === index,
+  );
+}
+
 export function readCollabPromptLinksFromItems(
   items: ReadonlyArray<CodexThreadItem>,
-): ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }> {
+): ReadonlyArray<CollabPromptLink> {
   return items.flatMap(readCollabPromptLinksFromItem);
 }
 
@@ -764,7 +806,7 @@ export function readHistoricalCollabPromptLinks(input: {
   readonly turns: ReadonlyArray<{ readonly items: ReadonlyArray<CodexThreadItem> }>;
   readonly resumeThreadId: string | undefined;
   readonly forkThreadId: string | undefined;
-}): ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }> {
+}): ReadonlyArray<CollabPromptLink> {
   if (input.resumeThreadId === undefined || input.forkThreadId !== undefined) {
     return [];
   }
@@ -782,7 +824,7 @@ export function readCollabPromptForAgent(input: {
 
 export function readCollabPromptLinks(
   notification: CodexServerNotification,
-): ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }> {
+): ReadonlyArray<CollabPromptLink> {
   if (notification.method !== "item/started" && notification.method !== "item/completed") {
     return [];
   }
@@ -1137,7 +1179,7 @@ export const makeCodexSessionRuntime = (
       );
 
     const rememberCollabPromptLinks = (
-      links: ReadonlyArray<{ readonly receiverThreadId: string; readonly prompt: string }>,
+      links: ReadonlyArray<CollabPromptLink>,
       source: CollabPromptSource,
     ) =>
       Effect.gen(function* () {
@@ -1151,14 +1193,21 @@ export const makeCodexSessionRuntime = (
         const children = yield* Ref.get(collabChildAgentsRef);
         for (const link of acceptedLinks) {
           const knownChild = children.get(link.receiverThreadId);
-          if (!knownChild || knownChild.prompt === link.prompt) {
+          if (
+            !knownChild ||
+            (knownChild.prompt === link.prompt && knownChild.promptId === link.promptId)
+          ) {
             continue;
           }
           yield* Ref.update(collabChildAgentsRef, (current) => {
             const next = new Map(current);
             const child = next.get(link.receiverThreadId);
             if (child) {
-              next.set(link.receiverThreadId, { ...child, prompt: link.prompt });
+              next.set(link.receiverThreadId, {
+                ...child,
+                prompt: link.prompt,
+                promptId: link.promptId,
+              });
             }
             return next;
           });
@@ -1170,6 +1219,7 @@ export const makeCodexSessionRuntime = (
             payload: {
               agentThreadId: knownChild.agentThreadId,
               prompt: link.prompt,
+              ...(link.promptId ? { promptId: link.promptId } : {}),
               ...(knownChild.nickname ? { nickname: knownChild.nickname } : {}),
               ...(knownChild.role ? { role: knownChild.role } : {}),
               ...(knownChild.agentPath ? { agentPath: knownChild.agentPath } : {}),
@@ -1281,7 +1331,7 @@ export const makeCodexSessionRuntime = (
       Effect.gen(function* () {
         const remembered = (yield* Ref.get(collabPromptsRef)).get(agentThreadId);
         if (remembered) {
-          return remembered.prompt;
+          return remembered;
         }
         const exhausted = yield* Ref.get(exhaustedCollabPromptRecoveriesRef);
         if (!exhausted.has(agentThreadId)) {
@@ -1314,13 +1364,14 @@ export const makeCodexSessionRuntime = (
           // child onto a new fleet's CTA (review finding). Only a genuinely
           // new registration captures the current turn.
           const existingChild = (yield* Ref.get(collabChildAgentsRef)).get(thread.id);
-          const prompt = existingChild?.prompt ?? (yield* recoverCollabPrompt(thread.id));
+          const recoveredPrompt = yield* recoverCollabPrompt(thread.id);
           const spawnTurnId = existingChild
             ? existingChild.spawnTurnId
             : ((yield* Ref.get(sessionRef)).activeTurnId ?? undefined);
           const state: CollabChildAgentState = {
             agentThreadId: thread.id,
-            prompt,
+            prompt: existingChild?.prompt ?? recoveredPrompt?.prompt,
+            promptId: existingChild?.promptId ?? recoveredPrompt?.promptId,
             nickname: spawn.nickname ?? thread.agentNickname ?? existingChild?.nickname,
             role: spawn.role ?? thread.agentRole ?? existingChild?.role,
             agentPath: spawn.agentPath ?? existingChild?.agentPath,
@@ -1342,6 +1393,7 @@ export const makeCodexSessionRuntime = (
             payload: {
               agentThreadId: state.agentThreadId,
               ...(state.prompt ? { prompt: state.prompt } : {}),
+              ...(state.promptId ? { promptId: state.promptId } : {}),
               ...(state.nickname ? { nickname: state.nickname } : {}),
               ...(state.role ? { role: state.role } : {}),
               ...(state.agentPath ? { agentPath: state.agentPath } : {}),
@@ -1387,7 +1439,8 @@ export const makeCodexSessionRuntime = (
             // finding); an unset spawn turn stays unset.
             next.set(item.agentThreadId, {
               agentThreadId: item.agentThreadId,
-              prompt: existing?.prompt ?? recoveredPrompt,
+              prompt: existing?.prompt ?? recoveredPrompt?.prompt,
+              promptId: existing?.promptId ?? recoveredPrompt?.promptId,
               nickname:
                 existing?.nickname ??
                 item.agentPath.split("/").findLast((segment) => segment.length > 0),
@@ -1410,6 +1463,7 @@ export const makeCodexSessionRuntime = (
               agentPath: item.agentPath,
               activityKind: item.kind,
               ...(registeredChild?.prompt ? { prompt: registeredChild.prompt } : {}),
+              ...(registeredChild?.promptId ? { promptId: registeredChild.promptId } : {}),
             },
           });
           return true;
@@ -2072,16 +2126,9 @@ export const makeCodexSessionRuntime = (
           : [];
       yield* rememberCollabPromptLinks(nativeHistoricalPromptLinks, "native");
       yield* rememberCollabPromptLinks(firstClassHistoricalPromptLinks, "first-class");
-      const historicalAgentThreadIds = new Set([
-        ...nativeHistoricalPromptLinks.map((link) => link.receiverThreadId),
-        ...firstClassHistoricalPromptLinks.map((link) => link.receiverThreadId),
-      ]);
-      const rememberedHistoricalPrompts = yield* Ref.get(collabPromptsRef);
-      const historicalPromptLinks = Array.from(historicalAgentThreadIds).flatMap(
-        (receiverThreadId) => {
-          const remembered = rememberedHistoricalPrompts.get(receiverThreadId);
-          return remembered ? [{ receiverThreadId, prompt: remembered.prompt }] : [];
-        },
+      const historicalPromptLinks = reconcileHistoricalCollabPromptLinks(
+        nativeHistoricalPromptLinks,
+        firstClassHistoricalPromptLinks,
       );
       if (historicalPromptLinks.length > 0) {
         yield* Effect.forEach(
@@ -2096,6 +2143,7 @@ export const makeCodexSessionRuntime = (
               payload: {
                 agentThreadId: link.receiverThreadId,
                 prompt: link.prompt,
+                ...(link.promptId ? { promptId: link.promptId } : {}),
               },
             }),
           { discard: true },

@@ -1060,7 +1060,11 @@ export function selectSubagentTranscriptActivities(
       return [];
     }
     const payload = activity.payload as Record<string, unknown>;
-    if (asString(payload.agentId) !== agentId || payload.itemType === "assistant_message") {
+    if (
+      asString(payload.agentId) !== agentId ||
+      payload.itemType === "assistant_message" ||
+      payload.itemType === "user_message"
+    ) {
       return [];
     }
     const { agentId: _agentId, timelineBypass: _timelineBypass, ...transcriptPayload } = payload;
@@ -1080,6 +1084,8 @@ interface SubagentPromptCandidate {
   readonly createdAt: string;
   readonly turnId: OrchestrationMessage["turnId"];
   readonly activityId: string;
+  readonly promptId: string | undefined;
+  readonly childUserMessage: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -1089,7 +1095,19 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 function asPrompt(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+  if (typeof value !== "string" || value.trim().length === 0) return undefined;
+  return /^gAAAAA[A-Za-z0-9_-]{74,}={0,2}$/.test(value.trim()) ? undefined : value;
+}
+
+function readUserMessagePrompt(item: Record<string, unknown> | undefined): string | undefined {
+  if (item?.type !== "userMessage" || !Array.isArray(item.content)) return undefined;
+  const text = item.content
+    .flatMap((content) => {
+      const part = asRecord(content);
+      return part?.type === "text" && typeof part.text === "string" ? [part.text] : [];
+    })
+    .join("\n");
+  return asPrompt(text);
 }
 
 /**
@@ -1121,6 +1139,8 @@ function deriveSubagentPromptCandidates(
         createdAt: activity.createdAt,
         turnId: activity.turnId,
         activityId: activity.id,
+        promptId: asString(payload.promptId),
+        childUserMessage: false,
       });
     }
   }
@@ -1134,6 +1154,8 @@ function deriveSubagentPromptCandidates(
       createdAt: string;
       turnId: OrchestrationMessage["turnId"];
       activityId: string;
+      itemType: string | undefined;
+      activityAgentId: string | undefined;
     }
   >();
 
@@ -1150,7 +1172,7 @@ function deriveSubagentPromptCandidates(
     const itemId = asString(payload.itemId) ?? activity.id;
     const existing = tools.get(itemId);
     const data = asRecord(payload.data);
-    const item = asRecord(data?.item);
+    const item = asRecord(data?.item) ?? (typeof data?.type === "string" ? data : undefined);
     const input = asRecord(data?.input);
     const receiverThreadIds = new Set(existing?.receiverThreadIds ?? []);
     if (Array.isArray(item?.receiverThreadIds)) {
@@ -1159,11 +1181,15 @@ function deriveSubagentPromptCandidates(
         if (receiver) receiverThreadIds.add(receiver);
       }
     }
+    if (asString(payload.agentId) === agentId && payload.itemType === "user_message") {
+      receiverThreadIds.add(agentId);
+    }
     tools.set(itemId, {
       prompt:
         existing?.prompt ??
         asPrompt(input?.prompt) ??
         asPrompt(item?.prompt) ??
+        readUserMessagePrompt(item) ??
         asPrompt(payload.prompt),
       tool: existing?.tool ?? asString(item?.tool) ?? asString(data?.toolName),
       receiverThreadIds,
@@ -1173,27 +1199,46 @@ function deriveSubagentPromptCandidates(
           : activity.createdAt,
       turnId: existing?.turnId ?? activity.turnId,
       activityId: existing?.activityId ?? activity.id,
+      itemType: existing?.itemType ?? asString(payload.itemType),
+      activityAgentId: existing?.activityAgentId ?? asString(payload.agentId),
     });
   }
 
-  const directByText = new Map<string, SubagentPromptCandidate>();
+  const directByPromptId = new Map<string, SubagentPromptCandidate>();
+  const directWithoutPromptIdByText = new Map<string, SubagentPromptCandidate>();
   for (const candidate of directCandidates) {
-    const existing = directByText.get(candidate.text);
+    if (candidate.promptId) {
+      const existing = directByPromptId.get(candidate.promptId);
+      if (!existing || candidate.createdAt.localeCompare(existing.createdAt) < 0) {
+        directByPromptId.set(candidate.promptId, candidate);
+      }
+      continue;
+    }
+    const existing = directWithoutPromptIdByText.get(candidate.text);
     if (!existing || candidate.createdAt.localeCompare(existing.createdAt) < 0) {
-      directByText.set(candidate.text, candidate);
+      directWithoutPromptIdByText.set(candidate.text, candidate);
     }
   }
-  const uniqueDirectCandidates = Array.from(directByText.values());
+  const uniqueDirectCandidates = [
+    ...directByPromptId.values(),
+    ...directWithoutPromptIdByText.values(),
+  ];
   const directPromptTexts = new Set(uniqueDirectCandidates.map((candidate) => candidate.text));
+  const directPromptIds = new Set(
+    uniqueDirectCandidates.flatMap((candidate) => (candidate.promptId ? [candidate.promptId] : [])),
+  );
 
   const toolCandidates = Array.from(tools.entries()).flatMap<SubagentPromptCandidate>(
     ([itemId, tool]) => {
       if (!tool.prompt || (!launchingToolIds.has(itemId) && !tool.receiverThreadIds.has(agentId))) {
         return [];
       }
+      if (directPromptIds.has(itemId)) {
+        return [];
+      }
       if (
         directPromptTexts.has(tool.prompt) &&
-        (launchingToolIds.has(itemId) || tool.tool === "spawnAgent")
+        (launchingToolIds.has(itemId) || tool.tool === "spawnAgent" || tool.tool === "sendInput")
       ) {
         return [];
       }
@@ -1205,12 +1250,21 @@ function deriveSubagentPromptCandidates(
           createdAt: tool.createdAt,
           turnId: tool.turnId,
           activityId: tool.activityId,
+          promptId: itemId,
+          childUserMessage: tool.itemType === "user_message" && tool.activityAgentId === agentId,
         },
       ];
     },
   );
 
   const seen = new Set<string>();
+  const remainingChildMirrorsByText = new Map<string, number>();
+  for (const candidate of uniqueDirectCandidates) {
+    remainingChildMirrorsByText.set(
+      candidate.text,
+      (remainingChildMirrorsByText.get(candidate.text) ?? 0) + 1,
+    );
+  }
   // Mobile Hermes does not provide the ES2023 change-by-copy array methods.
   return [...uniqueDirectCandidates, ...toolCandidates]
     .sort(
@@ -1218,6 +1272,13 @@ function deriveSubagentPromptCandidates(
         left.createdAt.localeCompare(right.createdAt) || left.key.localeCompare(right.key),
     )
     .filter((candidate) => {
+      if (candidate.childUserMessage) {
+        const remainingMirrors = remainingChildMirrorsByText.get(candidate.text) ?? 0;
+        if (remainingMirrors > 0) {
+          remainingChildMirrorsByText.set(candidate.text, remainingMirrors - 1);
+          return false;
+        }
+      }
       const fingerprint = `${candidate.createdAt}\u0000${candidate.text}`;
       if (seen.has(fingerprint)) return false;
       seen.add(fingerprint);
