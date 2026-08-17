@@ -337,8 +337,9 @@ function publishDesktop(input: {
     { cwd: input.releaseRoot },
   );
   runCommand(
-    input.vpPath,
+    process.execPath,
     [
+      input.vpPath,
       "run",
       "dist:desktop:artifact",
       "--platform",
@@ -403,11 +404,19 @@ function easCommand(releaseRoot: string, args: ReadonlyArray<string>, capture = 
     MOBILE_VERSION_POLICY: "fingerprint",
     NODE_OPTIONS: "--max-old-space-size=8192",
   };
+  const npxPath = NodePath.join(
+    NodePath.dirname(process.execPath),
+    "node_modules",
+    "npm",
+    "bin",
+    "npx-cli.js",
+  );
+  assertFile(npxPath, "Node.js npx runtime");
   const fullArgs = ["--yes", "eas-cli@latest", ...args];
   if (capture) {
-    return captureCommand("npx.cmd", fullArgs, { cwd, env, quiet: true });
+    return captureCommand(process.execPath, [npxPath, ...fullArgs], { cwd, env, quiet: true });
   }
-  runCommand("npx.cmd", fullArgs, { cwd, env });
+  runCommand(process.execPath, [npxPath, ...fullArgs], { cwd, env });
   return "";
 }
 
@@ -599,10 +608,18 @@ async function main(): Promise<void> {
   let builtNewIphoneApp = false;
   try {
     runCommand("git.exe", ["worktree", "add", "--detach", releaseRoot, sha], { cwd: repoRoot });
-    runCommand("corepack.cmd", ["pnpm", "install", "--frozen-lockfile"], {
+    const corepackPath = NodePath.join(
+      NodePath.dirname(process.execPath),
+      "node_modules",
+      "corepack",
+      "dist",
+      "corepack.js",
+    );
+    assertFile(corepackPath, "Node.js Corepack runtime");
+    runCommand(process.execPath, [corepackPath, "pnpm", "install", "--frozen-lockfile"], {
       cwd: releaseRoot,
     });
-    const vpPath = NodePath.join(releaseRoot, "node_modules", ".bin", "vp.CMD");
+    const vpPath = NodePath.join(releaseRoot, "node_modules", "vite-plus", "bin", "vp");
     assertFile(vpPath, "Vite+ executable");
 
     if (selection.iphone) {
