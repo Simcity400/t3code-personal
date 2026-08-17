@@ -75,6 +75,7 @@ import {
 import {
   COMPOSER_COLLAPSED_CHROME,
   COMPOSER_EXPANDED_CHROME,
+  COMPOSER_LAYOUT_DURATION_MS,
   ThreadComposer,
 } from "./ThreadComposer";
 import { blurComposerAfterDraftCommit } from "./composerSendHandoff";
@@ -343,6 +344,43 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     Math.max(0, estimatedOverlayHeight - nativeInsetOvercount),
     -nativeInsetOvercount,
   );
+  // Reanimated's iOS layout transition can visually collapse the composer
+  // without delivering a final parent onLayout. In that state the feed keeps
+  // the expanded card's inset and its last message is cut off above a large
+  // empty strip. Remeasure once the transition settles so the correction uses
+  // the real overlay height, including attachments and status rows. Android
+  // deliberately snaps this layout and does not need the fallback.
+  useEffect(() => {
+    if (Platform.OS !== "ios" || props.activePendingApproval || props.activePendingUserInput) {
+      return;
+    }
+
+    let cancelled = false;
+    let animationFrame: number | null = null;
+    const transitionTimer = setTimeout(() => {
+      animationFrame = requestAnimationFrame(() => {
+        composerOverlayRef.current?.measure((_x, _y, _width, height) => {
+          if (!cancelled) {
+            contentInsetEndAdjustment.value = Math.max(0, height - nativeInsetOvercount);
+          }
+        });
+      });
+    }, COMPOSER_LAYOUT_DURATION_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(transitionTimer);
+      if (animationFrame !== null) {
+        cancelAnimationFrame(animationFrame);
+      }
+    };
+  }, [
+    composerExpanded,
+    contentInsetEndAdjustment,
+    nativeInsetOvercount,
+    props.activePendingApproval,
+    props.activePendingUserInput,
+  ]);
   // The expanded questionnaire is an absolute overlay on iOS, so it never
   // changes the measured overlay height (that constancy is what keeps the
   // feed from snapping on collapse/expand). The toggle choreography runs on

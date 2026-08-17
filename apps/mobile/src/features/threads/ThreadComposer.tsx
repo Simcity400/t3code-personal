@@ -137,8 +137,10 @@ export interface ThreadComposerProps {
 // KeyboardStickyView (frame-synced to the IME), and a time-based morph
 // running alongside that translate reads as jitter. Snapping the layout and
 // letting the keyboard-synced slide be the only motion looks native there.
+export const COMPOSER_LAYOUT_DURATION_MS = 220;
+
 const COMPOSER_LAYOUT_TRANSITION =
-  Platform.OS === "android" ? undefined : LinearTransition.duration(220);
+  Platform.OS === "android" ? undefined : LinearTransition.duration(COMPOSER_LAYOUT_DURATION_MS);
 
 export function ComposerSurface(props: {
   readonly children: ReactNode;
