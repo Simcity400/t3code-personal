@@ -85,11 +85,9 @@ const registeredActivityPushTokens = new Map<string, number>();
 let pushTokenSubscription: { remove: () => void } | null = null;
 let appStateSubscription: { remove: () => void } | null = null;
 
-// Whether the relay has actually accepted this device's registration. The
-// notification/Live Activity settings toggles must reflect this rather than
-// only local iOS permission or saved preferences: if the registration request
-// never succeeded, the device cannot receive anything, so the switches must
-// not read as enabled.
+// Whether the relay has actually accepted this device's registration. This is
+// operational delivery state for retries and user-facing failure messages; it
+// is deliberately separate from durable iOS permission and saved preferences.
 export type AgentAwarenessRegistrationStatus = "unknown" | "pending" | "registered" | "failed";
 let registrationStatus: AgentAwarenessRegistrationStatus = "unknown";
 const registrationStatusListeners = new Set<() => void>();

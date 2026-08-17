@@ -207,6 +207,10 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function isOpaqueSubagentTitle(title: string, agentId: string): boolean {
+  return title === agentId || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(title);
+}
+
 function asCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
@@ -380,7 +384,12 @@ function getOrCreate(
 /** Metadata fill from any payload: never downgrades known values to null. */
 function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): void {
   const title = asString(payload.title);
-  if (title) agent.title = title;
+  if (
+    title &&
+    (!isOpaqueSubagentTitle(title, agent.id) || isOpaqueSubagentTitle(agent.title, agent.id))
+  ) {
+    agent.title = title;
+  }
   const role = asString(payload.role);
   if (role) agent.role = role;
   const model = asString(payload.model);
@@ -1086,6 +1095,8 @@ interface SubagentPromptCandidate {
   readonly activityId: string;
   readonly promptId: string | undefined;
   readonly childUserMessage: boolean;
+  readonly encryptedFallback: boolean;
+  readonly dedupeKey: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -1097,6 +1108,15 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function asPrompt(value: unknown): string | undefined {
   if (typeof value !== "string" || value.trim().length === 0) return undefined;
   return /^gAAAAA[A-Za-z0-9_-]{74,}={0,2}$/.test(value.trim()) ? undefined : value;
+}
+
+const ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER =
+  "Instruction sent to subagent. Codex encrypted the original text in this older thread.";
+
+function asEncryptedPrompt(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return /^gAAAAA[A-Za-z0-9_-]{74,}={0,2}$/.test(trimmed) ? trimmed : undefined;
 }
 
 function readUserMessagePrompt(item: Record<string, unknown> | undefined): string | undefined {
@@ -1131,16 +1151,19 @@ function deriveSubagentPromptCandidates(
     const toolUseId = asString(payload.toolUseId);
     if (toolUseId) launchingToolIds.add(toolUseId);
     const prompt = asPrompt(payload.prompt);
-    if (prompt) {
+    const encryptedPrompt = asEncryptedPrompt(payload.prompt);
+    if (prompt || encryptedPrompt) {
       directCandidates.push({
         key: `task:${activity.id}`,
         source: "task",
-        text: prompt,
+        text: prompt ?? ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER,
         createdAt: activity.createdAt,
         turnId: activity.turnId,
         activityId: activity.id,
         promptId: asString(payload.promptId),
         childUserMessage: false,
+        encryptedFallback: encryptedPrompt !== undefined,
+        dedupeKey: prompt ?? encryptedPrompt!,
       });
     }
   }
@@ -1214,9 +1237,9 @@ function deriveSubagentPromptCandidates(
       }
       continue;
     }
-    const existing = directWithoutPromptIdByText.get(candidate.text);
+    const existing = directWithoutPromptIdByText.get(candidate.dedupeKey);
     if (!existing || candidate.createdAt.localeCompare(existing.createdAt) < 0) {
-      directWithoutPromptIdByText.set(candidate.text, candidate);
+      directWithoutPromptIdByText.set(candidate.dedupeKey, candidate);
     }
   }
   const uniqueDirectCandidates = [
@@ -1252,6 +1275,8 @@ function deriveSubagentPromptCandidates(
           activityId: tool.activityId,
           promptId: itemId,
           childUserMessage: tool.itemType === "user_message" && tool.activityAgentId === agentId,
+          encryptedFallback: false,
+          dedupeKey: tool.prompt,
         },
       ];
     },
@@ -1286,6 +1311,38 @@ function deriveSubagentPromptCandidates(
     });
 }
 
+function suppressCorrelatedEncryptedFallbacks(
+  candidates: ReadonlyArray<SubagentPromptCandidate>,
+  selectedMessages: ReadonlyArray<OrchestrationMessage>,
+): ReadonlyArray<SubagentPromptCandidate> {
+  const exactPromptTimes = [
+    ...selectedMessages.flatMap((message) => (message.role === "user" ? [message.createdAt] : [])),
+    ...candidates.flatMap((candidate) => (candidate.childUserMessage ? [candidate.createdAt] : [])),
+  ].sort((left, right) => left.localeCompare(right));
+  const encryptedCandidates = candidates.filter((candidate) => candidate.encryptedFallback);
+  const suppressedKeys = new Set<string>();
+
+  // Older providers offer no shared id between an encrypted parent tool row
+  // and its decrypted child user item. Pair each exact item with at most one
+  // preceding marker, newest-first. This preserves every other marker instead
+  // of making one plaintext instruction erase the agent's whole history.
+  for (const exactPromptTime of exactPromptTimes) {
+    for (let index = encryptedCandidates.length - 1; index >= 0; index -= 1) {
+      const encrypted = encryptedCandidates[index];
+      if (
+        encrypted &&
+        !suppressedKeys.has(encrypted.key) &&
+        encrypted.createdAt.localeCompare(exactPromptTime) <= 0
+      ) {
+        suppressedKeys.add(encrypted.key);
+        break;
+      }
+    }
+  }
+
+  return candidates.filter((candidate) => !suppressedKeys.has(candidate.key));
+}
+
 /**
  * Selects one agent's persisted messages and inserts the parent's original
  * instructions as user-style messages. This keeps provider-specific linkage
@@ -1306,7 +1363,11 @@ export function selectSubagentTranscriptMessages(
         : earliest,
     undefined,
   );
-  const promptMessages = deriveSubagentPromptCandidates(activities, agentId)
+  const promptCandidates = suppressCorrelatedEncryptedFallbacks(
+    deriveSubagentPromptCandidates(activities, agentId),
+    selectedMessages,
+  );
+  const promptMessages = promptCandidates
     .filter(
       (candidate) =>
         !selectedMessages.some(

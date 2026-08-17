@@ -7,8 +7,8 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { SymbolView } from "../../components/AppSymbol";
 import * as Effect from "effect/Effect";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Alert, Linking, Platform, Pressable, ScrollView, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, AppState, Linking, Platform, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -25,17 +25,12 @@ import {
   supportsRemoteAgentAwarenessLiveActivities,
   usesPersonalExpoPushAlerts,
 } from "../agent-awareness/capabilities";
-import {
-  getPersonalExpoPushRegistrationStatus,
-  requestPersonalExpoPushRegistrationRefresh,
-  subscribePersonalExpoPushRegistrationStatus,
-} from "../agent-awareness/expoPushRegistration";
+import { requestPersonalExpoPushRegistrationRefresh } from "../agent-awareness/expoPushRegistration";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import {
   getAgentAwarenessRegistrationStatus,
   refreshAgentAwarenessRegistration,
-  subscribeAgentAwarenessRegistrationStatus,
 } from "../agent-awareness/remoteRegistration";
 import { refreshManagedRelayEnvironments } from "../cloud/managedRelayState";
 import { hasCloudPublicConfig, resolveRelayClerkTokenOptions } from "../cloud/publicConfig";
@@ -55,28 +50,14 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
-import { resolveAgentAwarenessPlatformPresentation } from "./SettingsRouteScreen.logic";
+import {
+  resolveAgentAwarenessPlatformPresentation,
+  resolveLiveActivitySwitchValue,
+  resolveNotificationSwitchValue,
+} from "./SettingsRouteScreen.logic";
 
 type NotificationStatus = "checking" | "enabled" | "disabled" | "unsupported";
 type LiveActivityStatus = "checking" | "enabled" | "disabled" | "signed-out" | "linking";
-
-// Reflects whether the relay actually accepted this device's registration.
-// The notification and Live Activity switches are gated on this so they can
-// never read as enabled when the device cannot receive anything (e.g. the
-// registration request timed out).
-function useDeviceRegistered(): boolean {
-  const relayStatus = useSyncExternalStore(
-    subscribeAgentAwarenessRegistrationStatus,
-    getAgentAwarenessRegistrationStatus,
-    () => "unknown" as const,
-  );
-  const expoStatus = useSyncExternalStore(
-    subscribePersonalExpoPushRegistrationStatus,
-    getPersonalExpoPushRegistrationStatus,
-    () => "unknown" as const,
-  );
-  return usesPersonalExpoPushAlerts() ? expoStatus === "registered" : relayStatus === "registered";
-}
 
 export function SettingsRouteScreen() {
   const navigation = useNavigation();
@@ -169,8 +150,8 @@ function ConfiguredSettingsRouteScreen() {
   const { savedConnectionsById } = useSavedRemoteConnections();
   const [notificationStatus, setNotificationStatus] = useState<NotificationStatus>("checking");
   const [liveActivityStatus, setLiveActivityStatus] = useState<LiveActivityStatus>("checking");
-  const deviceRegistered = useDeviceRegistered();
-  const liveActivitiesPreferenceEnabled = AsyncResult.isSuccess(preferencesResult)
+  const hasLoadedLiveActivitiesPreference = AsyncResult.isSuccess(preferencesResult);
+  const liveActivitiesPreferenceEnabled = hasLoadedLiveActivitiesPreference
     ? preferencesResult.value.liveActivitiesEnabled !== false
     : true;
 
@@ -198,6 +179,12 @@ function ConfiguredSettingsRouteScreen() {
 
   useEffect(() => {
     void refreshNotifications();
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        void refreshNotifications();
+      }
+    });
+    return () => subscription.remove();
   }, [refreshNotifications]);
 
   useEffect(() => {
@@ -512,11 +499,13 @@ function ConfiguredSettingsRouteScreen() {
                 ? "Delivered directly by each connected T3 Code environment."
                 : agentAwarenessPlatform.subtitle
             }
-            // Permission alone is insufficient: the selected delivery route
-            // must also have accepted this device's token.
-            value={
-              agentAwarenessPushAvailable && notificationStatus === "enabled" && deviceRegistered
-            }
+            // iOS permission is the durable user setting. Registration is an
+            // operational state that retries in the background and must not
+            // make an enabled switch visually turn itself off.
+            value={resolveNotificationSwitchValue({
+              pushAvailable: agentAwarenessPushAvailable,
+              permissionStatus: notificationStatus,
+            })}
             onValueChange={handleDeviceNotificationsChange}
           />
           <SettingsSwitchRow
@@ -535,14 +524,14 @@ function ConfiguredSettingsRouteScreen() {
                 ? "Remote updates require a personal APNs relay and are unavailable in this build."
                 : agentAwarenessPlatform.subtitle
             }
-            // Same gate: a saved preference is meaningless until the device
-            // registration the relay needs to push updates has succeeded.
-            value={
-              remoteLiveActivitiesAvailable &&
-              agentAwarenessPushAvailable &&
-              (liveActivityStatus === "enabled" || liveActivityStatus === "linking") &&
-              deviceRegistered
-            }
+            // The preference is durable; relay registration is transient and
+            // reports failures separately without rewriting the switch.
+            value={resolveLiveActivitySwitchValue({
+              liveActivitiesAvailable: remoteLiveActivitiesAvailable,
+              pushAvailable: agentAwarenessPushAvailable,
+              preferenceEnabled:
+                hasLoadedLiveActivitiesPreference && liveActivitiesPreferenceEnabled,
+            })}
             onValueChange={handleLiveActivitiesChange}
           />
         </SettingsSection>
