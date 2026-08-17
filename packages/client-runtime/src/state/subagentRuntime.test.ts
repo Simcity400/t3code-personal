@@ -437,6 +437,73 @@ describe("selectSubagentTranscriptMessages", () => {
     ]);
   });
 
+  it("shows an honest marker when an older prompt exists only as encrypted history", () => {
+    const encryptedPrompt = `gAAAAA${"x".repeat(90)}`;
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "task.updated",
+          { taskId: "agent-1", prompt: encryptedPrompt },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: encryptedPrompt },
+          "2026-08-01T10:00:02.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      {
+        role: "user",
+        text: "Instruction sent to subagent. Codex encrypted the original text in this older thread.",
+      },
+    ]);
+  });
+
+  it("suppresses encrypted markers one-for-one when later plaintext items are available", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "task.updated",
+          { taskId: "agent-1", prompt: `gAAAAA${"a".repeat(90)}` },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: `gAAAAA${"b".repeat(90)}` },
+          "2026-08-01T10:00:02.000Z",
+        ),
+        activity(
+          "tool.completed",
+          {
+            agentId: "agent-1",
+            itemId: "child-user-1",
+            itemType: "user_message",
+            data: {
+              type: "userMessage",
+              content: [{ type: "text", text: "Check the collapsed composer again." }],
+            },
+          },
+          "2026-08-01T10:00:03.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      {
+        role: "user",
+        text: "Instruction sent to subagent. Codex encrypted the original text in this older thread.",
+      },
+      { role: "user", text: "Check the collapsed composer again." },
+    ]);
+  });
+
   it("deduplicates parent and child copies while retaining repeated identical sends", () => {
     const prompt = "Check the collapsed composer again.";
     const selected = selectSubagentTranscriptMessages(
@@ -616,6 +683,16 @@ describe("foldSubagentActivities", () => {
     expect(agents).toHaveLength(1);
     expect(agents[0]!.title).toBe("Recovered agent");
     expect(agents[0]!.status).toBe("running");
+  });
+
+  it("does not let a later opaque fallback title replace a known task name", () => {
+    const taskId = "01a00ecb-a17a-7323-93ab-22f3880b5a58";
+    const agents = fold([
+      activity("task.started", { taskId, title: "collapsed_composer_review" }),
+      activity("task.progress", { taskId, title: taskId, status: "idle" }),
+    ]);
+
+    expect(agents[0]!.title).toBe("collapsed_composer_review");
   });
 
   it("completion before start stays terminal; a late start only fills metadata", () => {
