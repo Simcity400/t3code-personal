@@ -6,6 +6,7 @@ import {
   codexAppServerArgs,
   codexExecLaunchArgs,
   resolveCodexLaunchArgs,
+  withCodexModelCatalogLaunchArgs,
 } from "./codexLaunchArgs.ts";
 
 describe("resolveCodexLaunchArgs", () => {
@@ -40,6 +41,40 @@ describe("codexAppServerArgs", () => {
       "--enable",
       "foo",
     ]);
+  });
+});
+
+describe("withCodexModelCatalogLaunchArgs", () => {
+  it("adds a quoted model catalog override that survives tokenization", () => {
+    const launchArgs = withCodexModelCatalogLaunchArgs(
+      "--strict-config",
+      "C:\\T3 Code\\codex-models.json",
+    );
+
+    NodeAssert.deepStrictEqual(codexAppServerArgs(launchArgs), [
+      "app-server",
+      "--strict-config",
+      "--config",
+      "model_catalog_json=C:\\T3 Code\\codex-models.json",
+    ]);
+  });
+
+  it("preserves an explicit user model catalog override", () => {
+    NodeAssert.equal(
+      withCodexModelCatalogLaunchArgs(
+        '--config model_catalog_json="C:\\custom\\models.json"',
+        "C:\\t3\\models.json",
+      ),
+      '--config model_catalog_json="C:\\custom\\models.json"',
+    );
+  });
+
+  it("preserves a TOML-valid override with whitespace around the equals sign", () => {
+    const configured = `-c "model_catalog_json = 'C:\\custom models\\models.json'"`;
+    NodeAssert.equal(
+      withCodexModelCatalogLaunchArgs(configured, "C:\\t3\\models.json"),
+      configured,
+    );
   });
 });
 

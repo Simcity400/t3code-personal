@@ -437,7 +437,7 @@ describe("selectSubagentTranscriptMessages", () => {
     ]);
   });
 
-  it("shows an honest marker when an older prompt exists only as encrypted history", () => {
+  it("omits an older prompt when the provider persisted only ciphertext", () => {
     const encryptedPrompt = `gAAAAA${"x".repeat(90)}`;
     const selected = selectSubagentTranscriptMessages(
       [],
@@ -456,15 +456,10 @@ describe("selectSubagentTranscriptMessages", () => {
       "agent-1",
     );
 
-    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
-      {
-        role: "user",
-        text: "Instruction sent to subagent. Codex encrypted the original text in this older thread.",
-      },
-    ]);
+    expect(selected).toEqual([]);
   });
 
-  it("suppresses encrypted markers one-for-one when later plaintext items are available", () => {
+  it("renders a later exact child instruction without an encrypted placeholder", () => {
     const selected = selectSubagentTranscriptMessages(
       [],
       [
@@ -496,12 +491,41 @@ describe("selectSubagentTranscriptMessages", () => {
     );
 
     expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
-      {
-        role: "user",
-        text: "Instruction sent to subagent. Codex encrypted the original text in this older thread.",
-      },
       { role: "user", text: "Check the collapsed composer again." },
     ]);
+  });
+
+  it("places a recovered launch prompt before earlier child tool activity", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "tool.completed",
+          {
+            agentId: "agent-1",
+            itemId: "command-1",
+            itemType: "command_execution",
+          },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "task.updated",
+          {
+            taskId: "agent-1",
+            prompt: "Inspect the mobile transcript.",
+          },
+          "2026-08-01T12:00:00.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected).toHaveLength(1);
+    expect(selected[0]).toMatchObject({
+      role: "user",
+      text: "Inspect the mobile transcript.",
+      createdAt: "2026-08-01T10:00:01.000Z",
+    });
   });
 
   it("deduplicates parent and child copies while retaining repeated identical sends", () => {

@@ -10,6 +10,37 @@ export const resolveCodexLaunchArgs = (
 export const codexLaunchArgv = (launchArgs?: string): ReadonlyArray<string> =>
   tokenizeCliArgs(launchArgs);
 
+export function hasCodexModelCatalogOverride(launchArgs: string): boolean {
+  const args = codexLaunchArgv(launchArgs);
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === undefined) continue;
+    const configValue =
+      argument === "--config" || argument === "-c"
+        ? args[index + 1]
+        : argument.startsWith("--config=")
+          ? argument.slice("--config=".length)
+          : argument.startsWith("-c=")
+            ? argument.slice("-c=".length)
+            : undefined;
+    if (configValue !== undefined && /^\s*model_catalog_json\s*=/.test(configValue)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export const withCodexModelCatalogLaunchArgs = (
+  launchArgs: string | undefined,
+  modelCatalogPath: string | undefined,
+): string => {
+  const configured = launchArgs?.trim() ?? "";
+  if (modelCatalogPath === undefined) return configured;
+  if (hasCodexModelCatalogOverride(configured)) return configured;
+  const override = `--config model_catalog_json=${JSON.stringify(modelCatalogPath)}`;
+  return configured.length === 0 ? override : `${configured} ${override}`;
+};
+
 export const codexAppServerArgs = (launchArgs?: string) => [
   "app-server",
   ...codexLaunchArgv(launchArgs),

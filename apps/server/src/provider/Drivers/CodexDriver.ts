@@ -54,6 +54,7 @@ import {
 } from "../providerUpdateSettings.ts";
 import {
   codexContinuationIdentity,
+  codexModelCatalogHomePath,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
@@ -158,6 +159,10 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const adapter = yield* makeCodexAdapter(effectiveConfig, {
         instanceId,
         environment: processEnv,
+        plaintextCollabCatalog: {
+          modelCatalogHomePath: codexModelCatalogHomePath(homeLayout),
+          instanceId,
+        },
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
       const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnv);
