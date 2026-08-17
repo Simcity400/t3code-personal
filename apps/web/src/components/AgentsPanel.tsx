@@ -49,6 +49,7 @@ import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { MessagesTimeline } from "~/components/chat/MessagesTimeline";
 import { Button } from "~/components/ui/button";
+import { AgentRowActivity, AgentStatusLabel } from "./AgentWorkingStatus";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -205,7 +206,7 @@ function AgentRow({ agent, onOpen }: { agent: RuntimeSubagent; onOpen: () => voi
           agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
         )}
       >
-        {activity ?? visuals.label}
+        <AgentRowActivity status={agent.status} activity={activity} settledLabel={visuals.label} />
       </span>
       <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
         {metadata.join(" · ")}
@@ -778,7 +779,10 @@ function AgentTranscript({
         <StatusDot status={agent.status} />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{title}</span>
         <span className="text-[.65rem] text-muted-foreground">
-          {STATUS_VISUALS[agent.status].label}
+          <AgentStatusLabel
+            status={agent.status}
+            settledLabel={STATUS_VISUALS[agent.status].label}
+          />
         </span>
       </header>
       <div className="relative min-h-0 flex-1">
