@@ -593,7 +593,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
 
       const firstEvent = yield* Fiber.join(firstEventFiber);
       NodeAssert.equal(firstEvent._tag, "Some");
-      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "task.progress") {
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "task.updated") {
         return;
       }
       NodeAssert.equal(firstEvent.value.payload.prompt, "Review the old diff.");

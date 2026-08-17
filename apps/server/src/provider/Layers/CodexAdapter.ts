@@ -581,15 +581,19 @@ function mapCollabAgentEvent(
       if (prompt.trim().length === 0) {
         return [];
       }
+      const historical = event.method === "collabAgent/historicalPrompt";
       return [
         {
           ...base,
-          type: "task.progress",
+          // Reopened-thread recovery only adds transcript metadata. Using an
+          // update keeps it out of launch-card derivation while still letting
+          // the agent fold and transcript selector consume the prompt.
+          type: historical ? "task.updated" : "task.progress",
           payload: {
             taskId,
             description: title,
             prompt,
-            ...(event.method === "collabAgent/historicalPrompt" ? { status: "idle" as const } : {}),
+            ...(historical ? { status: "idle" as const } : {}),
             ...statusLinkage,
           },
         },
