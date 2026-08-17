@@ -60,6 +60,37 @@ describe("native Codex collaboration prompt history", () => {
     ]);
   });
 
+  it("does not expose encrypted rollout arguments as transcript prompts", async () => {
+    const rows = [
+      line(
+        {
+          type: "function_call",
+          name: "spawn_agent",
+          call_id: "call-encrypted",
+          arguments: JSON.stringify({
+            task_name: "reviewer",
+            message: `gAAAAA${"x".repeat(90)}`,
+          }),
+        },
+        "response_item",
+      ),
+      line(
+        {
+          type: "sub_agent_activity",
+          agent_thread_id: "child-encrypted",
+          agent_path: "/root/reviewer",
+          kind: "started",
+        },
+        "event_msg",
+      ),
+    ];
+    NodeFS.writeFileSync(fixturePath, `${rows.join("\n")}\n`, "utf8");
+
+    const scanned = await scanNativeCollabPromptRollout(fixturePath);
+
+    expect(scanned?.links).toEqual([]);
+  });
+
   it("keeps repeated task paths paired when outputs are interleaved", async () => {
     const spawn = (callId: string, message: string) =>
       line(

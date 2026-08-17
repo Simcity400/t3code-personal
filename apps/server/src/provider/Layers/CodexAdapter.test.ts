@@ -530,6 +530,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           agentThreadId: "child-thread-1",
           nickname: "reviewer",
           prompt: "Review the exact diff and report findings only.",
+          promptId: "spawn-1",
         },
       } satisfies ProviderEvent);
 
@@ -542,6 +543,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         firstEvent.value.payload.prompt,
         "Review the exact diff and report findings only.",
       );
+      NodeAssert.equal(firstEvent.value.payload.promptId, "spawn-1");
     }),
   );
 

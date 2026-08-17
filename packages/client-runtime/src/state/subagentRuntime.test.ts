@@ -402,6 +402,122 @@ describe("selectSubagentTranscriptMessages", () => {
       },
     ]);
   });
+
+  it("uses decrypted child user items and never renders encrypted fallback prompts", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "task.progress",
+          {
+            taskId: "agent-1",
+            prompt: `gAAAAA${"x".repeat(90)}`,
+          },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "tool.completed",
+          {
+            agentId: "agent-1",
+            itemId: "child-user-1",
+            itemType: "user_message",
+            data: {
+              type: "userMessage",
+              content: [{ type: "text", text: "Check the collapsed composer again." }],
+            },
+          },
+          "2026-08-01T10:00:02.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: "Check the collapsed composer again." },
+    ]);
+  });
+
+  it("deduplicates parent and child copies while retaining repeated identical sends", () => {
+    const prompt = "Check the collapsed composer again.";
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt, promptId: "send-1" },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "tool.completed",
+          {
+            itemId: "send-1",
+            itemType: "collab_agent_tool_call",
+            data: {
+              item: {
+                type: "collabAgentToolCall",
+                tool: "sendInput",
+                prompt,
+                receiverThreadIds: ["agent-1"],
+              },
+            },
+          },
+          "2026-08-01T10:00:01.100Z",
+        ),
+        activity(
+          "tool.completed",
+          {
+            agentId: "agent-1",
+            itemId: "child-user-1",
+            itemType: "user_message",
+            data: { type: "userMessage", content: [{ type: "text", text: prompt }] },
+          },
+          "2026-08-01T10:00:01.200Z",
+        ),
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt, promptId: "send-2" },
+          "2026-08-01T10:00:02.000Z",
+        ),
+        activity(
+          "tool.completed",
+          {
+            agentId: "agent-1",
+            itemId: "child-user-2",
+            itemType: "user_message",
+            data: { type: "userMessage", content: [{ type: "text", text: prompt }] },
+          },
+          "2026-08-01T10:00:02.200Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: prompt },
+      { role: "user", text: prompt },
+    ]);
+  });
+
+  it("keeps a legacy id-less launch beside an identical id-bearing follow-up", () => {
+    const prompt = "Check again.";
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity("task.started", { taskId: "agent-1", prompt }, "2026-08-01T10:00:01.000Z"),
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt, promptId: "send-1" },
+          "2026-08-01T10:00:02.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: prompt },
+      { role: "user", text: prompt },
+    ]);
+  });
 });
 
 describe("selectSubagentTranscriptActivities", () => {
@@ -439,6 +555,21 @@ describe("selectSubagentTranscriptActivities", () => {
     });
     expect(selected[0]?.payload).not.toHaveProperty("agentId");
     expect(selected[0]?.payload).not.toHaveProperty("timelineBypass");
+  });
+
+  it("keeps user-message lifecycle out of the tool feed", () => {
+    const selected = selectSubagentTranscriptActivities(
+      [
+        activity("tool.completed", {
+          agentId: "agent-1",
+          itemId: "child-user-1",
+          itemType: "user_message",
+        }),
+      ],
+      "agent-1",
+    );
+
+    expect(selected).toEqual([]);
   });
 });
 
