@@ -13,6 +13,11 @@ jobs:
     needs: [build_preview]
     type: update
     environment: preview
+    env:
+      APP_VARIANT: preview
+      MOBILE_VERSION_POLICY: fingerprint
+      T3CODE_EXPO_PUSH_ALERTS: "1"
+      NODE_OPTIONS: --max-old-space-size=4096
     params:
       branch: preview
       platform: ios
