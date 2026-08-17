@@ -16,6 +16,11 @@ personal customizations, backed up at
   the updater reads the existing `gh` login directly; it does not put the GitHub token
   in the app or agent environment. `fork-sync.yml` explicitly calls the same release
   workflow after it merges official changes into `main`.
+- **iPhone agent alerts**: the personal preview registers an Expo Push token with each
+  connected T3 Code environment, so approval, input, completion, and failure alerts do
+  not depend on the official app's APNs identity. Remote Live Activity updates remain
+  unavailable in the personal build because they require a separately operated APNs
+  relay whose signing team matches this app.
 - **Develop from source**: run the repo tooling explicitly. Source Electron is not a
   second installed app and must not be pinned to the Start Menu or taskbar.
 

@@ -20,7 +20,16 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
-import { supportsAgentAwarenessPush } from "../agent-awareness/capabilities";
+import {
+  supportsAgentAwarenessPush,
+  supportsRemoteAgentAwarenessLiveActivities,
+  usesPersonalExpoPushAlerts,
+} from "../agent-awareness/capabilities";
+import {
+  getPersonalExpoPushRegistrationStatus,
+  requestPersonalExpoPushRegistrationRefresh,
+  subscribePersonalExpoPushRegistrationStatus,
+} from "../agent-awareness/expoPushRegistration";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import {
@@ -56,12 +65,17 @@ type LiveActivityStatus = "checking" | "enabled" | "disabled" | "signed-out" | "
 // never read as enabled when the device cannot receive anything (e.g. the
 // registration request timed out).
 function useDeviceRegistered(): boolean {
-  const status = useSyncExternalStore(
+  const relayStatus = useSyncExternalStore(
     subscribeAgentAwarenessRegistrationStatus,
     getAgentAwarenessRegistrationStatus,
     () => "unknown" as const,
   );
-  return status === "registered";
+  const expoStatus = useSyncExternalStore(
+    subscribePersonalExpoPushRegistrationStatus,
+    getPersonalExpoPushRegistrationStatus,
+    () => "unknown" as const,
+  );
+  return usesPersonalExpoPushAlerts() ? expoStatus === "registered" : relayStatus === "registered";
 }
 
 export function SettingsRouteScreen() {
@@ -144,7 +158,9 @@ function LocalSettingsRouteScreen() {
 function ConfiguredSettingsRouteScreen() {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
-  const agentAwarenessPushAvailable = supportsAgentAwarenessPush();
+  const personalExpoPushAlerts = usesPersonalExpoPushAlerts();
+  const agentAwarenessPushAvailable = supportsAgentAwarenessPush() || personalExpoPushAlerts;
+  const remoteLiveActivitiesAvailable = supportsRemoteAgentAwarenessLiveActivities();
   const agentAwarenessPlatform = resolveAgentAwarenessPlatformPresentation(Platform.OS);
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
@@ -212,7 +228,11 @@ function ConfiguredSettingsRouteScreen() {
       runtime.runPromiseExit(
         requestAgentNotificationPermission.pipe(
           Effect.tap((permission) =>
-            permission.type === "granted" ? refreshAgentAwarenessRegistration() : Effect.void,
+            permission.type === "granted"
+              ? personalExpoPushAlerts
+                ? Effect.sync(requestPersonalExpoPushRegistrationRefresh)
+                : refreshAgentAwarenessRegistration()
+              : Effect.void,
           ),
         ),
       ),
@@ -229,6 +249,13 @@ function ConfiguredSettingsRouteScreen() {
     }
     if (result.value.type === "granted") {
       setNotificationStatus("enabled");
+      if (personalExpoPushAlerts) {
+        Alert.alert(
+          "Notifications enabled",
+          "Connected T3 Code environments will register this device for agent alerts.",
+        );
+        return;
+      }
       // Permission alone is not enough: the switch stays off until the relay
       // registration succeeds, so tell the user the truth about which happened.
       if (getAgentAwarenessRegistrationStatus() === "registered") {
@@ -265,7 +292,7 @@ function ConfiguredSettingsRouteScreen() {
         { text: "Open Settings", onPress: () => void Linking.openSettings() },
       ],
     );
-  }, []);
+  }, [personalExpoPushAlerts]);
 
   const promptSignIn = useCallback(() => {
     Alert.alert(
@@ -480,10 +507,13 @@ function ConfiguredSettingsRouteScreen() {
               notificationStatus === "checking" ||
               notificationStatus === "unsupported"
             }
-            subtitle={agentAwarenessPlatform.subtitle}
-            // Only reads as on when this device is actually registered with the
-            // relay; otherwise notifications cannot be delivered regardless of
-            // the local iOS permission.
+            subtitle={
+              personalExpoPushAlerts
+                ? "Delivered directly by each connected T3 Code environment."
+                : agentAwarenessPlatform.subtitle
+            }
+            // Permission alone is insufficient: the selected delivery route
+            // must also have accepted this device's token.
             value={
               agentAwarenessPushAvailable && notificationStatus === "enabled" && deviceRegistered
             }
@@ -491,6 +521,7 @@ function ConfiguredSettingsRouteScreen() {
           />
           <SettingsSwitchRow
             disabled={
+              !remoteLiveActivitiesAvailable ||
               !agentAwarenessPlatform.supported ||
               !agentAwarenessPushAvailable ||
               !isLoaded ||
@@ -499,10 +530,15 @@ function ConfiguredSettingsRouteScreen() {
             }
             icon="bolt.circle"
             label="Live Activity Updates"
-            subtitle={agentAwarenessPlatform.subtitle}
+            subtitle={
+              personalExpoPushAlerts
+                ? "Remote updates require a personal APNs relay and are unavailable in this build."
+                : agentAwarenessPlatform.subtitle
+            }
             // Same gate: a saved preference is meaningless until the device
             // registration the relay needs to push updates has succeeded.
             value={
+              remoteLiveActivitiesAvailable &&
               agentAwarenessPushAvailable &&
               (liveActivityStatus === "enabled" || liveActivityStatus === "linking") &&
               deviceRegistered

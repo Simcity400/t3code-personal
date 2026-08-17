@@ -43,6 +43,7 @@ import {
 } from "../cloud/config.ts";
 import { getOrCreateEnvironmentKeyPairFromSecretStore } from "../cloud/environmentKeys.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ExpoPushAlerts from "../notifications/ExpoPushAlerts.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -100,6 +101,19 @@ export function agentAwarenessPublishIdentity(state: RelayAgentActivityState | n
   }
   const { updatedAt: _updatedAt, ...meaningfulState } = state;
   return JSON.stringify(meaningfulState);
+}
+
+export function resolveAgentAwarenessDeliveryNeeds(input: {
+  readonly identity: string;
+  readonly relayIdentity: string | undefined;
+  readonly expoIdentity: string | undefined;
+  readonly canPublishToRelay: boolean;
+  readonly hasExpoPushRegistrations: boolean;
+}): { readonly relay: boolean; readonly expo: boolean } {
+  return {
+    relay: input.canPublishToRelay && input.relayIdentity !== input.identity,
+    expo: input.hasExpoPushRegistrations && input.expoIdentity !== input.identity,
+  };
 }
 
 export function isAgentActivityPublishingEnabled(value: string | null): boolean {
@@ -296,10 +310,12 @@ export const make = Effect.gen(function* () {
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const snapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const expoPushAlerts = yield* ExpoPushAlerts.ExpoPushAlerts;
   const crypto = yield* Crypto.Crypto;
   const cloudLinkKeyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
   const activeSnapshotPublishedRef = yield* Ref.make(false);
   const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
+  const expoStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
 
   const readSecretString = (name: string) =>
     secrets
@@ -346,20 +362,17 @@ export const make = Effect.gen(function* () {
     const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
       Effect.orElseSucceed(() => false),
     );
-    if (!publishAgentActivity) {
-      yield* Effect.logDebug("agent activity publish skipped; publication disabled", {
-        threadId,
-      });
-      return;
-    }
     const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
-    if (!relayConfig) {
-      yield* Effect.logDebug("agent activity publish skipped; relay link credentials unavailable", {
+    const hasExpoPushRegistrations = yield* expoPushAlerts.hasRegistrations;
+    const canPublishToRelay = publishAgentActivity && relayConfig !== null;
+    if (!canPublishToRelay && !hasExpoPushRegistrations) {
+      yield* Effect.logDebug("agent activity publish skipped; no delivery route available", {
         threadId,
+        publishAgentActivity,
+        relayConfigured: relayConfig !== null,
       });
       return;
     }
-    const relayClient = yield* makeRelayClient(relayConfig);
     const environmentId = yield* serverEnvironment.getEnvironmentId;
 
     const publishState = (input: {
@@ -368,6 +381,10 @@ export const make = Effect.gen(function* () {
       readonly reason: string;
     }) =>
       Effect.gen(function* () {
+        if (relayConfig === null) {
+          return;
+        }
+        const relayClient = yield* makeRelayClient(relayConfig);
         const proof = yield* makePublishProof({
           privateKey: cloudLinkKeyPair.privateKey,
           relayIssuer: relayConfig.issuer,
@@ -417,7 +434,15 @@ export const make = Effect.gen(function* () {
     });
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
-    if (publishedStateByThread.get(threadId) === publishIdentity) {
+    const expoStateByThread = yield* Ref.get(expoStateByThreadRef);
+    const deliveryNeeds = resolveAgentAwarenessDeliveryNeeds({
+      identity: publishIdentity,
+      relayIdentity: publishedStateByThread.get(threadId),
+      expoIdentity: expoStateByThread.get(threadId),
+      canPublishToRelay,
+      hasExpoPushRegistrations,
+    });
+    if (!deliveryNeeds.relay && !deliveryNeeds.expo) {
       // The projection is back at (or never left) the last published state, so
       // any pending deferred confirmation is moot. Leaving the deadline in
       // place would let a much later transient null find it already expired
@@ -443,8 +468,13 @@ export const make = Effect.gen(function* () {
     // only publish if the projection still holds when it drains.
     const requiresConfirmation =
       (snapshot.state === null &&
-        publishedStateByThread.get(threadId) !== agentAwarenessPublishIdentity(null)) ||
-      (snapshot.state?.phase === "completed" && !publishedStateByThread.has(threadId));
+        [...publishedStateByThread, ...expoStateByThread].some(
+          ([publishedThreadId, identity]) =>
+            publishedThreadId === threadId && identity !== agentAwarenessPublishIdentity(null),
+        )) ||
+      (snapshot.state?.phase === "completed" &&
+        !publishedStateByThread.has(threadId) &&
+        !expoStateByThread.has(threadId));
     if (requiresConfirmation) {
       const nowMs = (yield* DateTime.now).epochMilliseconds;
       const deadline = publishConfirmDeadlines.get(threadId);
@@ -488,16 +518,37 @@ export const make = Effect.gen(function* () {
       });
     }
 
-    yield* publishState({
-      projectId: snapshot.projectId,
-      state: snapshot.state,
-      reason: snapshot.reason,
-    });
-    yield* Ref.update(publishedStateByThreadRef, (publishedStates) => {
-      const nextPublishedStates = new Map(publishedStates);
-      nextPublishedStates.set(threadId, publishIdentity);
-      return nextPublishedStates;
-    });
+    if (deliveryNeeds.relay) {
+      yield* publishState({
+        projectId: snapshot.projectId,
+        state: snapshot.state,
+        reason: snapshot.reason,
+      }).pipe(
+        Effect.tap(() =>
+          Ref.update(publishedStateByThreadRef, (publishedStates) => {
+            const nextPublishedStates = new Map(publishedStates);
+            nextPublishedStates.set(threadId, publishIdentity);
+            return nextPublishedStates;
+          }),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("hosted agent activity publish failed", {
+            threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+    }
+    if (deliveryNeeds.expo) {
+      const published = yield* expoPushAlerts.publish({ threadId, state: snapshot.state });
+      if (published) {
+        yield* Ref.update(expoStateByThreadRef, (publishedStates) => {
+          const nextPublishedStates = new Map(publishedStates);
+          nextPublishedStates.set(threadId, publishIdentity);
+          return nextPublishedStates;
+        });
+      }
+    }
   });
 
   const publishThread: AgentAwarenessRelay["Service"]["publishThread"] = (threadId) =>
@@ -516,14 +567,11 @@ export const make = Effect.gen(function* () {
     const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
       Effect.orElseSucceed(() => false),
     );
-    if (!publishAgentActivity) {
-      yield* Effect.logDebug("agent activity snapshot skipped; publication disabled");
-      return false;
-    }
     const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
-    if (!relayConfig) {
-      yield* Effect.logDebug("agent activity snapshot skipped; relay link credentials unavailable");
-      return false;
+    const hasExpoPushRegistrations = yield* expoPushAlerts.hasRegistrations;
+    if ((!publishAgentActivity || !relayConfig) && !hasExpoPushRegistrations) {
+      yield* Effect.logDebug("agent activity snapshot skipped; no delivery route available");
+      return { relay: false, expo: false };
     }
     const environmentId = yield* serverEnvironment.getEnvironmentId;
     const snapshot = yield* snapshotQuery.getShellSnapshot();
@@ -534,23 +582,39 @@ export const make = Effect.gen(function* () {
     });
     if (activeThreadIds.length === 0) {
       yield* Effect.logDebug("agent activity snapshot has no publishable threads");
-      return true;
+      return {
+        relay: publishAgentActivity && relayConfig !== null,
+        expo: hasExpoPushRegistrations,
+      };
     }
     yield* Effect.logInfo("publishing active agent activity snapshot", {
       count: activeThreadIds.length,
     });
     yield* Effect.forEach(activeThreadIds, publishThread, { concurrency: 4, discard: true });
-    return true;
+    return {
+      relay: publishAgentActivity && relayConfig !== null,
+      expo: hasExpoPushRegistrations,
+    };
   });
 
   const publishActiveThreadsOnceWhenConfigured = (logEnabledWhenReady: boolean) =>
     Effect.gen(function* () {
       while (!(yield* Ref.get(activeSnapshotPublishedRef))) {
-        const published = yield* publishActiveThreadsUnsafe.pipe(Effect.orElseSucceed(() => false));
-        if (published) {
-          yield* Ref.set(activeSnapshotPublishedRef, true);
+        const [publishEnabled, relayConfig] = yield* Effect.all([
+          readPublishAgentActivityEnabled.pipe(Effect.orElseSucceed(() => false)),
+          readRelayConfig.pipe(Effect.orElseSucceed(() => null)),
+        ]);
+        const relayReady = publishEnabled && relayConfig !== null;
+        if (relayReady) {
+          const published = yield* publishActiveThreadsUnsafe.pipe(
+            Effect.orElseSucceed(() => ({ relay: false, expo: false })),
+          );
+          if (published.relay) {
+            yield* Ref.set(activeSnapshotPublishedRef, true);
+          }
+        }
+        if (yield* Ref.get(activeSnapshotPublishedRef)) {
           if (logEnabledWhenReady) {
-            const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
             yield* Effect.logInfo("agent activity publishing enabled after link reconciliation", {
               relayUrl: relayConfig?.url,
             });
@@ -560,6 +624,22 @@ export const make = Effect.gen(function* () {
         yield* Effect.sleep("5 seconds");
       }
     });
+
+  const publishExpoActiveThreadsWhenRegistered = expoPushAlerts.registrationChanges.pipe(
+    Stream.runForEach(() =>
+      Effect.gen(function* () {
+        if (!(yield* expoPushAlerts.hasRegistrations)) {
+          return;
+        }
+        const published = yield* publishActiveThreadsUnsafe.pipe(
+          Effect.orElseSucceed(() => ({ relay: false, expo: false })),
+        );
+        if (published.relay) {
+          yield* Ref.set(activeSnapshotPublishedRef, true);
+        }
+      }),
+    ),
+  );
 
   const worker = yield* makeDrainableWorker(publishThread);
 
@@ -606,6 +686,7 @@ export const make = Effect.gen(function* () {
           Effect.andThen(publishActiveThreadsOnceWhenConfigured(startupState !== "enabled")),
         ),
       );
+      yield* forkParked(publishExpoActiveThreadsWhenRegistered);
       yield* forkParked(
         Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
           const threadId = eventThreadId(event);
@@ -638,4 +719,6 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(AgentAwarenessRelay, make);
+export const layer = Layer.effect(AgentAwarenessRelay, make).pipe(
+  Layer.provide(ExpoPushAlerts.layer.pipe(Layer.provide(FetchHttpClient.layer))),
+);

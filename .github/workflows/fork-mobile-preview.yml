@@ -32,6 +32,7 @@ jobs:
     env:
       APP_VARIANT: preview
       MOBILE_VERSION_POLICY: fingerprint
+      T3CODE_EXPO_PUSH_ALERTS: "1"
       NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - name: Check Expo credentials
