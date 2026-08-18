@@ -1,6 +1,7 @@
 import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
+import { PERSONAL_MOBILE_RUNTIME_VERSION } from "../../scripts/lib/personal-mobile-runtime.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
 type AppVariant = "development" | "preview" | "production";
@@ -162,13 +163,13 @@ const config: ExpoConfig = {
   platforms: ["ios", "android"],
   scheme: variant.scheme,
   version: "1.0.4",
-  runtimeVersion: {
-    // Fingerprint (not appVersion) so an OTA only reaches binaries whose native
-    // project — native deps, config plugins, AND patches/ — matches the update.
-    // With appVersion, every 0.1.0 build shares a runtime version, so a JS update
-    // could land on a binary missing the native changes it needs and crash.
-    policy: process.env.MOBILE_VERSION_POLICY ?? "fingerprint",
-  },
+  // The personal preview uses a deliberately pinned runtime so ordinary source
+  // updates remain OTA-compatible. Native changes must bump the shared constant
+  // and produce one new build before updates are published against it.
+  runtimeVersion:
+    APP_VARIANT === "preview"
+      ? PERSONAL_MOBILE_RUNTIME_VERSION
+      : { policy: process.env.MOBILE_VERSION_POLICY ?? "fingerprint" },
   orientation: "portrait",
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
