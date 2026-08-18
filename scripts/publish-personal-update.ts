@@ -534,10 +534,12 @@ async function main(): Promise<void> {
   if (trackedStatus.length > 0) {
     throw new Error("Tracked files are modified. Commit or restore them before publishing.");
   }
-  runCommand("gh.exe", ["auth", "status", "--hostname", "github.com"], {
-    cwd: repoRoot,
-    quiet: true,
-  });
+  if (selection.desktop) {
+    runCommand("gh.exe", ["auth", "status", "--hostname", "github.com"], {
+      cwd: repoRoot,
+      quiet: true,
+    });
+  }
   runCommand("git.exe", ["fetch", "origin", "main", "--tags"], { cwd: repoRoot });
   const sha = captureCommand("git.exe", ["rev-parse", "HEAD"], { cwd: repoRoot, quiet: true });
   const originSha = captureCommand("git.exe", ["rev-parse", "origin/main"], {
