@@ -459,6 +459,39 @@ describe("selectSubagentTranscriptMessages", () => {
     expect(selected).toEqual([]);
   });
 
+  it("omits ciphertext already projected as a child message", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [
+        {
+          id: "message-encrypted",
+          role: "user",
+          text: `gAAAAAB${"x".repeat(88)}==`,
+          agentId: "agent-1",
+          turnId: "turn-1",
+          streaming: false,
+          createdAt: "2026-08-01T10:00:01.000Z",
+          updatedAt: "2026-08-01T10:00:01.000Z",
+        },
+        {
+          id: "message-exact",
+          role: "assistant",
+          text: "Exact child response",
+          agentId: "agent-1",
+          turnId: "turn-1",
+          streaming: false,
+          createdAt: "2026-08-01T10:00:02.000Z",
+          updatedAt: "2026-08-01T10:00:02.000Z",
+        },
+      ] as unknown as ReadonlyArray<OrchestrationMessage>,
+      [],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "assistant", text: "Exact child response" },
+    ]);
+  });
+
   it("renders a later exact child instruction without an encrypted placeholder", () => {
     const selected = selectSubagentTranscriptMessages(
       [],

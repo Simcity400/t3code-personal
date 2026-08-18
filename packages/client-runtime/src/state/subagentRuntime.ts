@@ -1103,9 +1103,13 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function isEncryptedCollabPrompt(value: string): boolean {
+  return /^gAAAAA[A-Za-z0-9_-]{74,}={0,2}$/.test(value.trim());
+}
+
 function asPrompt(value: unknown): string | undefined {
   if (typeof value !== "string" || value.trim().length === 0) return undefined;
-  return /^gAAAAA[A-Za-z0-9_-]{74,}={0,2}$/.test(value.trim()) ? undefined : value;
+  return isEncryptedCollabPrompt(value) ? undefined : value;
 }
 
 function readUserMessagePrompt(item: Record<string, unknown> | undefined): string | undefined {
@@ -1307,7 +1311,9 @@ export function selectSubagentTranscriptMessages(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   agentId: string,
 ): ReadonlyArray<OrchestrationMessage> {
-  const selectedMessages = messages.filter((message) => message.agentId === agentId);
+  const selectedMessages = messages.filter(
+    (message) => message.agentId === agentId && !isEncryptedCollabPrompt(message.text),
+  );
   const firstTranscriptCreatedAt = [
     ...selectedMessages.map((message) => message.createdAt),
     ...selectSubagentTranscriptActivities(activities, agentId).map(
