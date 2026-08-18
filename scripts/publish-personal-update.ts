@@ -8,6 +8,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+import { PERSONAL_MOBILE_RUNTIME_VERSION } from "./lib/personal-mobile-runtime.ts";
+
 const PERSONAL_REPOSITORY = "Simcity400/t3code-personal";
 const DESKTOP_PUBLIC_ENV = {
   T3CODE_CLERK_PUBLISHABLE_KEY: "pk_live_Y2xlcmsudDMuY29kZXMk",
@@ -195,6 +197,38 @@ export function hasCompleteDesktopReleaseAssets(value: unknown): boolean {
     names.includes("nightly.yml") &&
     names.includes("latest.yml")
   );
+}
+
+export function hasCompatibleIphoneRuntimeBuild(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.some((build) => {
+    if (typeof build !== "object" || build === null || Array.isArray(build)) return false;
+    const runtime = (build as Record<string, unknown>).runtime;
+    return (
+      typeof runtime === "object" &&
+      runtime !== null &&
+      !Array.isArray(runtime) &&
+      (runtime as Record<string, unknown>).version === PERSONAL_MOBILE_RUNTIME_VERSION
+    );
+  });
+}
+
+export function iphoneRuntimeBuildListArgs(): ReadonlyArray<string> {
+  return [
+    "build:list",
+    "--platform",
+    "ios",
+    "--build-profile",
+    "preview",
+    "--status",
+    "finished",
+    "--runtime-version",
+    PERSONAL_MOBILE_RUNTIME_VERSION,
+    "--limit",
+    "1",
+    "--json",
+    "--non-interactive",
+  ];
 }
 
 function readDesktopRelease(tag: string, repoRoot: string): unknown | undefined {
@@ -401,7 +435,6 @@ function easCommand(releaseRoot: string, args: ReadonlyArray<string>, capture = 
   const env = {
     ...process.env,
     APP_VARIANT: "preview",
-    MOBILE_VERSION_POLICY: "fingerprint",
     NODE_OPTIONS: "--max-old-space-size=8192",
   };
   const npxPath = NodePath.join(
@@ -429,61 +462,15 @@ function publishIphone(releaseRoot: string, sha: string): boolean {
     easCommand(releaseRoot, ["whoami"]);
   }
   easCommand(releaseRoot, ["env:pull", "preview", "--non-interactive"]);
-  const fingerprintValue = parseJsonOutput(
-    easCommand(
-      releaseRoot,
-      [
-        "fingerprint:generate",
-        "--platform",
-        "ios",
-        "--environment",
-        "preview",
-        "--json",
-        "--non-interactive",
-      ],
-      true,
-    ),
-  );
-  const fingerprintCandidate =
-    typeof fingerprintValue === "object" && fingerprintValue !== null
-      ? (fingerprintValue as Record<string, unknown>).hash
-      : undefined;
-  if (
-    typeof fingerprintValue !== "object" ||
-    fingerprintValue === null ||
-    Array.isArray(fingerprintValue) ||
-    typeof fingerprintCandidate !== "string"
-  ) {
-    throw new Error("EAS did not return a valid iPhone fingerprint.");
-  }
-  const fingerprint = fingerprintCandidate;
-  const buildsValue = parseJsonOutput(
-    easCommand(
-      releaseRoot,
-      [
-        "build:list",
-        "--platform",
-        "ios",
-        "--build-profile",
-        "preview",
-        "--status",
-        "finished",
-        "--fingerprint-hash",
-        fingerprint,
-        "--limit",
-        "1",
-        "--json",
-        "--non-interactive",
-      ],
-      true,
-    ),
-  );
+  const buildsValue = parseJsonOutput(easCommand(releaseRoot, iphoneRuntimeBuildListArgs(), true));
   if (!Array.isArray(buildsValue)) {
     throw new Error("EAS did not return a valid iPhone build list.");
   }
-  const builtNewApp = buildsValue.length === 0;
+  const builtNewApp = !hasCompatibleIphoneRuntimeBuild(buildsValue);
   if (builtNewApp) {
-    console.log(`No compatible iPhone build exists for ${fingerprint}; building one now.`);
+    console.log(
+      `No iPhone build exists for runtime ${PERSONAL_MOBILE_RUNTIME_VERSION}; building one now.`,
+    );
     easCommand(releaseRoot, [
       "build",
       "--platform",
@@ -622,9 +609,6 @@ async function main(): Promise<void> {
     const vpPath = NodePath.join(releaseRoot, "node_modules", "vite-plus", "bin", "vp");
     assertFile(vpPath, "Vite+ executable");
 
-    if (selection.iphone) {
-      builtNewIphoneApp = publishIphone(releaseRoot, sha);
-    }
     if (selection.desktop && !desktopAlreadyPublished) {
       const installed = resolveInstalledDesktopResources();
       assertInstalledNodePtyPackageMatches(releaseRoot, installed.windowsPtyPath);
@@ -641,6 +625,9 @@ async function main(): Promise<void> {
         sha,
         vpPath,
       });
+    }
+    if (selection.iphone) {
+      builtNewIphoneApp = publishIphone(releaseRoot, sha);
     }
   } finally {
     removeReleaseWorktree(repoRoot, releaseRoot);

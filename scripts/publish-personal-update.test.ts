@@ -4,7 +4,9 @@ import {
   assertLinuxX64Elf,
   deriveLocalReleaseMetadata,
   deriveLocalRunNumber,
+  hasCompatibleIphoneRuntimeBuild,
   hasCompleteDesktopReleaseAssets,
+  iphoneRuntimeBuildListArgs,
   parseJsonOutput,
   parseGitCommitCount,
   parsePublishSelection,
@@ -62,6 +64,37 @@ describe("personal local update publisher", () => {
       }),
     ).toBe(false);
     expect(hasCompleteDesktopReleaseAssets(undefined)).toBe(false);
+  });
+
+  it("reuses only an iPhone build with the pinned personal runtime", () => {
+    expect(
+      hasCompatibleIphoneRuntimeBuild([
+        { runtime: { version: "other-runtime" } },
+        { runtime: { version: "346493b9258a61dc18bed1ffc18be830a6f3b2ce" } },
+      ]),
+    ).toBe(true);
+    expect(hasCompatibleIphoneRuntimeBuild([{ runtime: { version: "other-runtime" } }])).toBe(
+      false,
+    );
+    expect(hasCompatibleIphoneRuntimeBuild(undefined)).toBe(false);
+  });
+
+  it("queries EAS directly for the pinned personal runtime", () => {
+    expect(iphoneRuntimeBuildListArgs()).toEqual([
+      "build:list",
+      "--platform",
+      "ios",
+      "--build-profile",
+      "preview",
+      "--status",
+      "finished",
+      "--runtime-version",
+      "346493b9258a61dc18bed1ffc18be830a6f3b2ce",
+      "--limit",
+      "1",
+      "--json",
+      "--non-interactive",
+    ]);
   });
 
   it("accepts only a little-endian Linux x64 ELF seed", () => {
