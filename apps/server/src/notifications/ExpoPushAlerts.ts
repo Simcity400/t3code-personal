@@ -5,7 +5,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as PartitionedSemaphore from "effect/PartitionedSemaphore";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -22,9 +21,22 @@ const EXPO_PUSH_STATE_SECRET = "personal-expo-push-alerts";
 const MAX_REGISTRATIONS = 64;
 const MAX_OBSERVED_THREADS = 512;
 const MAX_INITIAL_NOTIFICATION_AGE_MS = 2 * 60 * 1_000;
+// Expo rejects messages over ~4 KiB; thread and project titles are
+// user-controlled and unbounded, so clamp every display field.
+const MAX_NOTIFICATION_TEXT_LENGTH = 200;
 const persistenceMutex = Semaphore.makeUnsafe(1);
-const deliveryMutex = PartitionedSemaphore.makeUnsafe<ThreadId>({ permits: 1 });
+// Publishes are serialized globally: the relay consumes them through a
+// single-consumer worker, so per-thread permits would not add concurrency.
+const deliveryMutex = Semaphore.makeUnsafe(1);
 const registrationRevision = Effect.runSync(SubscriptionRef.make(0));
+
+export type ExpoPublishOutcome = "sent" | "suppressed" | "failed";
+
+function truncateNotificationText(text: string): string {
+  return text.length <= MAX_NOTIFICATION_TEXT_LENGTH
+    ? text
+    : `${text.slice(0, MAX_NOTIFICATION_TEXT_LENGTH - 1)}…`;
+}
 
 const PersistedRegistration = Schema.Struct({
   clientId: Schema.String,
@@ -112,10 +124,17 @@ export class ExpoPushAlerts extends Context.Service<
     readonly register: (input: ExpoPushNotificationRegistrationInput) => Effect.Effect<boolean>;
     readonly hasRegistrations: Effect.Effect<boolean>;
     readonly registrationChanges: Stream.Stream<number>;
+    /**
+     * Delivers or suppresses the alert for the thread's current state.
+     * "sent" means at least one device accepted the push; "suppressed" means
+     * no send was needed and the persisted observation already reflects the
+     * state; "failed" means a send was attempted but nothing was delivered,
+     * so callers must not treat the state as notified.
+     */
     readonly publish: (input: {
       readonly threadId: ThreadId;
       readonly state: RelayAgentActivityState | null;
-    }) => Effect.Effect<boolean>;
+    }) => Effect.Effect<ExpoPublishOutcome>;
   }
 >()("t3/notifications/ExpoPushAlerts") {}
 
@@ -230,12 +249,15 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const hasRegistrations = persistenceMutex.withPermits(1)(
-    refreshState.pipe(Effect.map((state) => state.registrations.size > 0)),
+  // Served from the in-memory ref: registrations only change through
+  // `register`, which refreshes from disk under the persistence mutex before
+  // mutating. This keeps the per-event publish path free of file reads.
+  const hasRegistrations = Ref.get(stateRef).pipe(
+    Effect.map((state) => state.registrations.size > 0),
   );
 
   const publish: ExpoPushAlerts["Service"]["publish"] = (input) =>
-    deliveryMutex.withPermit(input.threadId)(
+    deliveryMutex.withPermit(
       Effect.gen(function* () {
         const plan = yield* persistenceMutex.withPermits(1)(
           Effect.gen(function* () {
@@ -278,12 +300,17 @@ export const make = Effect.gen(function* () {
               previous === undefined ||
               content === null ||
               previous.phase === state.phase ||
-              !isFresh ||
-              current.registrations.size === 0
+              !isFresh
             ) {
               yield* persist(next);
               yield* Ref.set(stateRef, next);
               return { kind: "complete" as const };
+            }
+            if (current.registrations.size === 0) {
+              // Nothing was delivered and no observation may be recorded:
+              // recording would mark the state as notified and a device that
+              // registers later would never receive it.
+              return { kind: "unreachable" as const };
             }
 
             return {
@@ -296,7 +323,14 @@ export const make = Effect.gen(function* () {
         );
 
         if (plan.kind === "complete") {
-          return true;
+          return "suppressed" as const;
+        }
+        if (plan.kind === "unreachable") {
+          yield* Effect.logWarning("personal Expo push alert skipped; no registered devices", {
+            threadId: input.threadId,
+            phase: input.state?.phase ?? null,
+          });
+          return "failed" as const;
         }
 
         // Network I/O stays outside the persistence lock so a slow Expo request
@@ -305,9 +339,9 @@ export const make = Effect.gen(function* () {
           HttpClientRequest.bodyJson(
             plan.tokens.map((token) => ({
               to: token,
-              title: plan.state.threadTitle,
-              subtitle: plan.content.title,
-              body: plan.content.body,
+              title: truncateNotificationText(plan.state.threadTitle),
+              subtitle: truncateNotificationText(plan.content.title),
+              body: truncateNotificationText(plan.content.body),
               sound: "default",
               priority: "high",
               data: {
@@ -325,46 +359,73 @@ export const make = Effect.gen(function* () {
           Effect.timeout("10 seconds"),
         );
 
-        yield* persistenceMutex.withPermits(1)(
-          Effect.gen(function* () {
-            const current = yield* refreshState;
-            const registrations = new Map(current.registrations);
-            response.data.forEach((ticket, index) => {
-              if (
-                ticket.status === "error" &&
-                ticket.details?.error === "DeviceNotRegistered" &&
-                plan.tokens[index]
-              ) {
-                for (const [clientId, token] of registrations) {
-                  if (token === plan.tokens[index]) registrations.delete(clientId);
+        const acceptedCount = response.data.filter((ticket) => ticket.status === "ok").length;
+        if (acceptedCount === 0) {
+          // Expo answered 200 but rejected every ticket. Leave the observation
+          // untouched so a retry re-attempts the same transition instead of
+          // silently swallowing the alert.
+          yield* Effect.logWarning("personal Expo push alert rejected for every device", {
+            threadId: input.threadId,
+            phase: plan.state.phase,
+            registrationCount: plan.tokens.length,
+            rejections: summarizeRejectedTickets(response.data),
+          });
+          return "failed" as const;
+        }
+
+        yield* persistenceMutex
+          .withPermits(1)(
+            Effect.gen(function* () {
+              const current = yield* refreshState;
+              const registrations = new Map(current.registrations);
+              response.data.forEach((ticket, index) => {
+                if (
+                  ticket.status === "error" &&
+                  ticket.details?.error === "DeviceNotRegistered" &&
+                  plan.tokens[index]
+                ) {
+                  for (const [clientId, token] of registrations) {
+                    if (token === plan.tokens[index]) registrations.delete(clientId);
+                  }
                 }
-              }
-            });
-            const observations = new Map(current.observations);
-            observations.set(input.threadId, {
-              threadId: input.threadId,
-              phase: plan.state.phase,
-              updatedAt: plan.state.updatedAt,
-            });
-            const persisted = { registrations, observations };
-            yield* persist(persisted);
-            yield* Ref.set(stateRef, persisted);
-          }),
-        );
+              });
+              const observations = new Map(current.observations);
+              observations.set(input.threadId, {
+                threadId: input.threadId,
+                phase: plan.state.phase,
+                updatedAt: plan.state.updatedAt,
+              });
+              const persisted = { registrations, observations };
+              yield* persist(persisted);
+              yield* Ref.set(stateRef, persisted);
+            }),
+          )
+          .pipe(
+            // The push was already accepted by at least one device; a failure
+            // recording that fact must not flip the outcome to "failed" or the
+            // relay would re-send a delivered notification. Worst case of
+            // skipping the observation is one redundant dedup baseline later.
+            Effect.catchCause((cause) =>
+              Effect.logWarning("personal Expo push state could not be updated after send", {
+                threadId: input.threadId,
+                cause: String(cause),
+              }),
+            ),
+          );
         yield* Effect.logInfo("personal Expo push alert submitted", {
           threadId: input.threadId,
           phase: plan.state.phase,
           registrationCount: plan.tokens.length,
-          acceptedCount: response.data.filter((ticket) => ticket.status === "ok").length,
+          acceptedCount,
           rejections: summarizeRejectedTickets(response.data),
         });
-        return true;
+        return "sent" as const;
       }).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("personal Expo push alert failed", {
             threadId: input.threadId,
             cause: String(cause),
-          }).pipe(Effect.as(false)),
+          }).pipe(Effect.as("failed" as const)),
         ),
       ),
     );

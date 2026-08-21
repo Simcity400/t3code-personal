@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -132,6 +133,25 @@ export function resolveAgentActivityPublishingStartupState(input: {
 
 const RELAY_AGENT_ACTIVITY_DETAIL_MAX_LENGTH = 160;
 const REDACTED_RELAY_AGENT_FAILURE_DETAIL = "The agent run failed.";
+// Identity maps are process-lifetime; without a cap they retain one entry per
+// thread ever published for the whole server run and the tombstone check pays
+// for all of it.
+const MAX_PUBLISHED_THREAD_IDENTITIES = 512;
+const MAX_EXPO_PUSH_SEND_ATTEMPTS = 3;
+const EXPO_PUSH_RETRY_DELAY_MS = 10_000;
+// Relay link settings live in the secret store and change rarely; the hot
+// per-event publish path reads them through this TTL cache instead of paying
+// a secret-file read per orchestration event.
+const DELIVERY_CONFIG_CACHE_TTL_MS = 15_000;
+
+function setBounded<K, V>(map: Map<K, V>, key: K, value: V, cap: number): void {
+  map.set(key, value);
+  while (map.size > cap) {
+    const oldest = map.keys().next();
+    if (oldest.done) break;
+    map.delete(oldest.value);
+  }
+}
 
 export function sanitizeRelayAgentActivityState(
   state: RelayAgentActivityState | null,
@@ -341,6 +361,29 @@ export const make = Effect.gen(function* () {
     Effect.map(isAgentActivityPublishingEnabled),
   );
 
+  type DeliveryConfig = {
+    readonly publishEnabled: boolean;
+    readonly relayConfig: {
+      readonly url: string;
+      readonly issuer: string;
+      readonly environmentCredential: string;
+    } | null;
+  };
+  let deliveryConfigCache: (DeliveryConfig & { readonly at: number }) | null = null;
+  const readDeliveryConfigCached: Effect.Effect<DeliveryConfig> = Effect.gen(function* () {
+    const nowMs = (yield* DateTime.now).epochMilliseconds;
+    if (deliveryConfigCache && nowMs - deliveryConfigCache.at < DELIVERY_CONFIG_CACHE_TTL_MS) {
+      return deliveryConfigCache;
+    }
+    const [publishEnabled, relayConfig] = yield* Effect.all([
+      readPublishAgentActivityEnabled.pipe(Effect.orElseSucceed(() => false)),
+      readRelayConfig.pipe(Effect.orElseSucceed(() => null)),
+    ]);
+    const cached = { at: nowMs, publishEnabled, relayConfig };
+    deliveryConfigCache = cached;
+    return cached;
+  });
+
   const makeRelayClient = (relayConfig: {
     readonly url: string;
     readonly environmentCredential: string;
@@ -357,12 +400,26 @@ export const make = Effect.gen(function* () {
   // clears the deadline. Assigned after the worker exists.
   const publishConfirmDeadlines = new Map<ThreadId, number>();
   let schedulePublishConfirm: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
+  // Expo send budget per thread, keyed to the identity so each state change
+  // gets a fresh budget and cleared on a successful or intentionally
+  // suppressed delivery. `nextEligibleAtMs` gates retries by time rather than
+  // an in-flight flag: any run (retry timer or ordinary event) that arrives
+  // inside the backoff window skips the network, so timer/event interleaving
+  // cannot double-send. Guarded by expoDeliveryMutex.
+  const expoPushSendAttempts = new Map<
+    ThreadId,
+    { readonly identity: string; attempts: number; nextEligibleAtMs: number }
+  >();
+  // Serializes budget read -> network send -> budget write per thread set;
+  // without it the worker and a concurrent snapshot publish could both pass
+  // the pre-check and undercount attempts.
+  const expoDeliveryMutex = Semaphore.makeUnsafe(1);
+  let scheduleExpoPushRetry: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
 
   const publishThreadUnsafe = Effect.fn("publishThreadUnsafe")(function* (threadId: ThreadId) {
-    const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
-      Effect.orElseSucceed(() => false),
-    );
-    const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
+    const deliveryConfig = yield* readDeliveryConfigCached;
+    const publishAgentActivity = deliveryConfig.publishEnabled;
+    const relayConfig = deliveryConfig.relayConfig;
     const hasExpoPushRegistrations = yield* expoPushAlerts.hasRegistrations;
     const canPublishToRelay = publishAgentActivity && relayConfig !== null;
     if (!canPublishToRelay && !hasExpoPushRegistrations) {
@@ -466,15 +523,17 @@ export const make = Effect.gen(function* () {
     //   instant and sends a spurious Done notification at thread birth.
     // Defer, schedule a re-publish through the ordinary worker queue, and
     // only publish if the projection still holds when it drains.
+    const tombstoneIdentity = agentAwarenessPublishIdentity(null);
+    const publishedIdentityForThread = publishedStateByThread.get(threadId);
+    const expoIdentityForThread = expoStateByThread.get(threadId);
     const requiresConfirmation =
       (snapshot.state === null &&
-        [...publishedStateByThread, ...expoStateByThread].some(
-          ([publishedThreadId, identity]) =>
-            publishedThreadId === threadId && identity !== agentAwarenessPublishIdentity(null),
-        )) ||
+        ((publishedIdentityForThread !== undefined &&
+          publishedIdentityForThread !== tombstoneIdentity) ||
+          (expoIdentityForThread !== undefined && expoIdentityForThread !== tombstoneIdentity))) ||
       (snapshot.state?.phase === "completed" &&
-        !publishedStateByThread.has(threadId) &&
-        !expoStateByThread.has(threadId));
+        publishedIdentityForThread === undefined &&
+        expoIdentityForThread === undefined);
     if (requiresConfirmation) {
       const nowMs = (yield* DateTime.now).epochMilliseconds;
       const deadline = publishConfirmDeadlines.get(threadId);
@@ -527,7 +586,12 @@ export const make = Effect.gen(function* () {
         Effect.tap(() =>
           Ref.update(publishedStateByThreadRef, (publishedStates) => {
             const nextPublishedStates = new Map(publishedStates);
-            nextPublishedStates.set(threadId, publishIdentity);
+            setBounded(
+              nextPublishedStates,
+              threadId,
+              publishIdentity,
+              MAX_PUBLISHED_THREAD_IDENTITIES,
+            );
             return nextPublishedStates;
           }),
         ),
@@ -540,14 +604,66 @@ export const make = Effect.gen(function* () {
       );
     }
     if (deliveryNeeds.expo) {
-      const published = yield* expoPushAlerts.publish({ threadId, state: snapshot.state });
-      if (published) {
-        yield* Ref.update(expoStateByThreadRef, (publishedStates) => {
-          const nextPublishedStates = new Map(publishedStates);
-          nextPublishedStates.set(threadId, publishIdentity);
-          return nextPublishedStates;
-        });
-      }
+      yield* expoDeliveryMutex.withPermit(
+        Effect.gen(function* () {
+          const nowMs = (yield* DateTime.now).epochMilliseconds;
+          // Budget is checked BEFORE sending: an exhausted identity skips the
+          // network entirely, and inside the backoff window the queued retry
+          // is the send attempt — other runs must not fire their own request
+          // on top of it.
+          const recorded = expoPushSendAttempts.get(threadId);
+          const attempts = recorded?.identity === publishIdentity ? recorded.attempts : 0;
+          const eligibleAtMs =
+            recorded?.identity === publishIdentity ? recorded.nextEligibleAtMs : 0;
+          if (attempts >= MAX_EXPO_PUSH_SEND_ATTEMPTS) {
+            yield* Effect.logWarning("personal Expo push alert gave up after retries", {
+              threadId,
+              phase: snapshot.state?.phase ?? null,
+            });
+            return;
+          }
+          if (nowMs < eligibleAtMs) {
+            yield* Effect.logDebug("personal Expo push alert deferred to queued retry", {
+              threadId,
+              phase: snapshot.state?.phase ?? null,
+            });
+            return;
+          }
+          const outcome = yield* expoPushAlerts.publish({ threadId, state: snapshot.state });
+          if (outcome === "sent" || outcome === "suppressed") {
+            expoPushSendAttempts.delete(threadId);
+            yield* Ref.update(expoStateByThreadRef, (publishedStates) => {
+              const nextPublishedStates = new Map(publishedStates);
+              setBounded(
+                nextPublishedStates,
+                threadId,
+                publishIdentity,
+                MAX_PUBLISHED_THREAD_IDENTITIES,
+              );
+              return nextPublishedStates;
+            });
+            return;
+          }
+          // Nothing reached a device. Leave the identity unrecorded so the
+          // state stays eligible for delivery, back off, and re-enqueue
+          // through the ordinary worker — bounded per state change. The
+          // backoff is stamped from AFTER the failed send: the request
+          // itself can hold the mutex (and the clock reading above) for up
+          // to ten seconds.
+          const failedAtMs = (yield* DateTime.now).epochMilliseconds;
+          setBounded(
+            expoPushSendAttempts,
+            threadId,
+            {
+              identity: publishIdentity,
+              attempts: attempts + 1,
+              nextEligibleAtMs: failedAtMs + EXPO_PUSH_RETRY_DELAY_MS,
+            },
+            MAX_PUBLISHED_THREAD_IDENTITIES,
+          );
+          yield* scheduleExpoPushRetry(threadId);
+        }),
+      );
     }
   });
 
@@ -649,6 +765,21 @@ export const make = Effect.gen(function* () {
         Effect.andThen(worker.enqueue(threadId)),
         Effect.catchCause((cause) =>
           Effect.logWarning("deferred agent activity confirmation failed", {
+            threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      ),
+    ).pipe(Effect.asVoid);
+
+  scheduleExpoPushRetry = (threadId) =>
+    Effect.forkDetach(
+      Effect.sleep(`${EXPO_PUSH_RETRY_DELAY_MS} millis`).pipe(
+        // Eligibility is time-gated via nextEligibleAtMs, so extra enqueued
+        // runs (timer + event racing) hit the backoff branch harmlessly.
+        Effect.andThen(worker.enqueue(threadId)),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("deferred Expo push retry failed", {
             threadId,
             cause: Cause.pretty(cause),
           }),
