@@ -533,7 +533,15 @@ function asRuntimeStatus(value: unknown): RuntimeSubagentStatus | undefined {
  */
 export function foldSubagentActivities(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-  options?: { readonly sessionLive?: boolean },
+  options?: {
+    readonly sessionLive?: boolean;
+    /**
+     * Agent ids that must survive the roster cap (e.g. the transcript the
+     * user currently has open). Without this, live activity pushing an old
+     * settled agent past the cap silently slams the open transcript shut.
+     */
+    readonly protectedAgentIds?: ReadonlyArray<string>;
+  },
 ): ReadonlyArray<RuntimeSubagent> {
   const agents = new Map<string, MutableAgent>();
 
@@ -737,13 +745,18 @@ export function foldSubagentActivities(
 
   let roster = Array.from(agents.values());
   if (roster.length > ROSTER_LIMIT) {
-    // Prefer live, then waiting/idle, then newest settled.
+    // Prefer live, then waiting/idle, then newest settled. Protected ids
+    // (the open transcript) always survive the cut.
+    const protectedIds =
+      options?.protectedAgentIds !== undefined && options.protectedAgentIds.length > 0
+        ? new Set(options.protectedAgentIds)
+        : null;
     const rank = (agent: MutableAgent): number =>
       isActiveSubagentStatus(agent.status) ? 0 : agent.status === "idle" ? 1 : 2;
     roster = roster
       .slice()
       .sort((a, b) => rank(a) - rank(b) || b.updatedAt.localeCompare(a.updatedAt))
-      .slice(0, ROSTER_LIMIT);
+      .filter((agent, index) => index < ROSTER_LIMIT || protectedIds?.has(agent.id));
   }
 
   return roster.map((agent) => ({ ...agent }));
@@ -1437,21 +1450,20 @@ export function selectSubagentTranscriptMessages(
   // content shape: a ciphertext-looking assistant reply is still the agent
   // talking.
   const selectedMessages = messages.filter((message) => message.agentId === agentId);
+  const transcriptActivities = selectSubagentTranscriptActivities(activities, agentId);
   const firstTranscriptCreatedAt = [
     ...selectedMessages.map((message) => message.createdAt),
-    ...selectSubagentTranscriptActivities(activities, agentId).map(
-      (activity) => activity.createdAt,
-    ),
+    ...transcriptActivities.map((activity) => activity.createdAt),
   ].sort((left, right) => left.localeCompare(right))[0];
   const promptCandidates = deriveSubagentPromptCandidates(activities, agentId);
   const initialPromptKey = promptCandidates[0]?.key;
+  // Text membership in a Set: this selector runs per tick while a transcript
+  // is open, and a nested scan over every persisted message is quadratic.
+  const persistedUserTexts = new Set(
+    selectedMessages.filter((message) => message.role === "user").map((message) => message.text),
+  );
   const promptMessages = promptCandidates
-    .filter(
-      (candidate) =>
-        !selectedMessages.some(
-          (message) => message.role === "user" && message.text === candidate.text,
-        ),
-    )
+    .filter((candidate) => !persistedUserTexts.has(candidate.text))
     .map<OrchestrationMessage>((candidate) => {
       const createdAt =
         candidate.key === initialPromptKey &&
