@@ -173,10 +173,143 @@ describe.sequential("ExpoPushAlerts", () => {
       expect(requests).toHaveLength(1);
 
       yield* Deferred.succeed(releaseRequest, undefined);
-      expect(yield* Fiber.join(first)).toBe(true);
-      expect(yield* Fiber.join(second)).toBe(true);
+      expect(yield* Fiber.join(first)).toBe("sent");
+      expect(yield* Fiber.join(second)).toBe("suppressed");
       expect(requests).toHaveLength(1);
     });
+  });
+
+  it.effect(
+    "reports failure without recording the observation when every ticket is rejected",
+    () => {
+      const requests: unknown[] = [];
+      const httpLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.gen(function* () {
+            if (request.body._tag === "Uint8Array") {
+              const payload = yield* decodeUnknownJson(
+                new TextDecoder().decode(request.body.body),
+              ).pipe(Effect.orDie);
+              requests.push(payload);
+            }
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                data: [
+                  {
+                    status: "error",
+                    message: "no push key",
+                    details: { error: "InvalidCredentials" },
+                  },
+                ],
+              }),
+            );
+          }),
+        ),
+      );
+      const secretLayer = Layer.succeed(
+        ServerSecretStore.ServerSecretStore,
+        makeMemorySecretStore(),
+      );
+
+      return Effect.gen(function* () {
+        const alerts = yield* ExpoPushAlerts.ExpoPushAlerts;
+        yield* alerts.register({
+          clientId: "mobile-device",
+          registration: { enabled: true, token: "ExponentPushToken[test]" },
+        });
+
+        const updatedAt = DateTime.formatIso(yield* DateTime.now);
+        const running: RelayAgentActivityState = {
+          environmentId: "environment" as RelayAgentActivityState["environmentId"],
+          threadId: "rejected-thread" as RelayAgentActivityState["threadId"],
+          projectTitle: "T3 Code",
+          threadTitle: "Fix notifications",
+          modelTitle: "Codex",
+          phase: "running",
+          headline: "Running",
+          updatedAt,
+          deepLink: "t3code-preview://thread/environment/rejected-thread",
+        };
+        const waiting = {
+          ...running,
+          phase: "waiting_for_input" as const,
+          headline: "Input needed",
+        };
+        // Baseline first, then a rejected transition.
+        yield* alerts.publish({ threadId: running.threadId, state: running });
+        expect(yield* alerts.publish({ threadId: waiting.threadId, state: waiting })).toBe(
+          "failed",
+        );
+        expect(requests).toHaveLength(1);
+
+        // The failed attempt left no observation behind, so a retry of the same
+        // transition is still eligible for delivery.
+        expect(yield* alerts.publish({ threadId: waiting.threadId, state: waiting })).toBe(
+          "failed",
+        );
+        expect(requests).toHaveLength(2);
+      }).pipe(
+        Effect.provide(
+          ExpoPushAlerts.layer.pipe(Layer.provide(Layer.merge(secretLayer, httpLayer))),
+        ),
+      );
+    },
+  );
+
+  it.effect("truncates oversized notification text", () => {
+    const requests: unknown[] = [];
+    const httpLayer = Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) =>
+        Effect.gen(function* () {
+          if (request.body._tag === "Uint8Array") {
+            const payload = yield* decodeUnknownJson(
+              new TextDecoder().decode(request.body.body),
+            ).pipe(Effect.orDie);
+            requests.push(payload);
+          }
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({ data: [{ status: "ok", id: "ticket-1" }] }),
+          );
+        }),
+      ),
+    );
+    const secretLayer = Layer.succeed(ServerSecretStore.ServerSecretStore, makeMemorySecretStore());
+
+    return Effect.gen(function* () {
+      const alerts = yield* ExpoPushAlerts.ExpoPushAlerts;
+      yield* alerts.register({
+        clientId: "mobile-device",
+        registration: { enabled: true, token: "ExponentPushToken[test]" },
+      });
+
+      const updatedAt = DateTime.formatIso(yield* DateTime.now);
+      const running: RelayAgentActivityState = {
+        environmentId: "environment" as RelayAgentActivityState["environmentId"],
+        threadId: "long-title-thread" as RelayAgentActivityState["threadId"],
+        projectTitle: "P".repeat(500),
+        threadTitle: "T".repeat(500),
+        modelTitle: "Codex",
+        phase: "running",
+        headline: "Running",
+        updatedAt,
+        deepLink: "t3code-preview://thread/environment/long-title-thread",
+      };
+      const waiting = { ...running, phase: "waiting_for_input" as const, headline: "Input needed" };
+      yield* alerts.publish({ threadId: running.threadId, state: running });
+      yield* alerts.publish({ threadId: waiting.threadId, state: waiting });
+
+      expect(requests).toHaveLength(1);
+      const message = (requests[0] as Array<Record<string, unknown>>)[0]!;
+      expect((message.title as string).length).toBeLessThanOrEqual(200);
+      expect((message.subtitle as string).length).toBeLessThanOrEqual(200);
+      expect((message.body as string).length).toBeLessThanOrEqual(200);
+    }).pipe(
+      Effect.provide(ExpoPushAlerts.layer.pipe(Layer.provide(Layer.merge(secretLayer, httpLayer)))),
+    );
   });
 
   it.effect("replays registration state and emits registrations made after startup", () => {
