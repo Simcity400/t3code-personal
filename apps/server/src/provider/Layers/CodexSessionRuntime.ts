@@ -40,7 +40,6 @@ import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 import {
-  isEncryptedCollabPrompt,
   scanNativeCollabPromptRollout,
   type NativeCollabPromptRolloutCursor,
 } from "../CodexCollabPromptHistory.ts";
@@ -712,7 +711,10 @@ function readCollabPromptLinksFromItem(item: CodexThreadItem): ReadonlyArray<Col
     return [];
   }
   const prompt = item.prompt;
-  if (typeof prompt !== "string" || prompt.trim().length === 0 || isEncryptedCollabPrompt(prompt)) {
+  // Ciphertext still links parent to child: dropping it left the transcript
+  // with no evidence an instruction was sent. Clients render an encrypted
+  // prompt as a placeholder row, never as if it were the real text.
+  if (typeof prompt !== "string" || prompt.trim().length === 0) {
     return [];
   }
   return item.receiverThreadIds.map((receiverThreadId) => ({

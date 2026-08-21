@@ -160,6 +160,7 @@ describe("projectActivityPayload agent-field survival", () => {
           toolName: "Agent",
           input: {
             description: "Review the database layer",
+            name: "security-reviewer",
             prompt: "Audit every SQL change and report exact file evidence.",
             subagent_type: "code-reviewer",
           },
@@ -168,12 +169,77 @@ describe("projectActivityPayload agent-field survival", () => {
       }),
     );
 
+    // `name` rides along because later follow-ups address the agent by it.
     expect(projected.payload).toEqual({
       itemType: "collab_agent_tool_call",
       itemId: "toolu_agent_1",
       data: {
         toolName: "Agent",
-        input: { prompt: "Audit every SQL change and report exact file evidence." },
+        input: {
+          name: "security-reviewer",
+          prompt: "Audit every SQL change and report exact file evidence.",
+        },
+      },
+    });
+  });
+
+  it("preserves a Claude SendMessage follow-up instruction and its recipient", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "collab_agent_tool_call",
+        itemId: "toolu_send_1",
+        data: {
+          toolName: "SendMessage",
+          input: {
+            to: "code-reviewer",
+            message: "Also check the reopened thread.",
+            summary: "Follow-up",
+          },
+          result: { huge: "x".repeat(5000) },
+        },
+      }),
+    );
+
+    expect(projected.payload).toEqual({
+      itemType: "collab_agent_tool_call",
+      itemId: "toolu_send_1",
+      data: {
+        toolName: "SendMessage",
+        input: {
+          to: "code-reviewer",
+          message: "Also check the reopened thread.",
+          summary: "Follow-up",
+        },
+      },
+    });
+  });
+
+  it("preserves a child agent's user message text and drops the rest", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "user_message",
+        itemId: "child-user-1",
+        agentId: "child-1",
+        data: {
+          type: "userMessage",
+          id: "child-user-1",
+          content: [
+            { type: "text", text: "Review the exact diff." },
+            { type: "image", data: "z".repeat(5000) },
+          ],
+          rawProviderBlob: "y".repeat(5000),
+        },
+      }),
+    );
+
+    expect(projected.payload).toEqual({
+      itemType: "user_message",
+      itemId: "child-user-1",
+      agentId: "child-1",
+      data: {
+        type: "userMessage",
+        id: "child-user-1",
+        content: [{ type: "text", text: "Review the exact diff." }],
       },
     });
   });

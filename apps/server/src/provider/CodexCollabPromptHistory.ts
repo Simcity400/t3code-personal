@@ -111,8 +111,10 @@ function pathMatchesTaskName(agentPath: string, taskName: string): boolean {
 
 /**
  * Codex encrypts collaboration-tool message arguments before writing them to
- * the parent rollout. Those Fernet tokens are linkage evidence, not display
- * text, and must never be projected into a subagent transcript.
+ * the parent rollout when multi-agent v2 is active. Those Fernet tokens are
+ * recovered like any other prompt — they are the only evidence an instruction
+ * was sent — but they are never display text: clients render a placeholder
+ * row for them, and no surface may print the raw token.
  */
 export function isEncryptedCollabPrompt(value: string): boolean {
   return /^gAAAAA[A-Za-z0-9_-]{74,}={0,2}$/.test(value.trim());
@@ -123,7 +125,7 @@ function rememberAgentPrompt(
   agentThreadId: string,
   prompt: string,
 ): void {
-  if (prompt.trim().length > 0 && !isEncryptedCollabPrompt(prompt)) {
+  if (prompt.trim().length > 0) {
     state.promptByAgent.set(agentThreadId, prompt);
   }
 }
@@ -183,7 +185,7 @@ function reduceNativeCollabPromptRolloutLine(
       return;
     }
     const prompt = args.message;
-    if (prompt.trim().length === 0 || isEncryptedCollabPrompt(prompt)) {
+    if (prompt.trim().length === 0) {
       return;
     }
     state.pendingSpawns.set(row.payload.call_id, {

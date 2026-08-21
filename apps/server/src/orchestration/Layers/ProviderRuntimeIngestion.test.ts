@@ -3422,7 +3422,8 @@ describe("ProviderRuntimeIngestion", () => {
       harness.readModel,
       (entry) =>
         entry.activities.some(
-          (activity: ProviderRuntimeTestActivity) => activity.id === "task-prompt:thread-1:child-1",
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.id === "task-prompt:thread-1:child-1:evt-late-prompt",
         ) &&
         entry.activities.some(
           (activity: ProviderRuntimeTestActivity) =>
@@ -3430,13 +3431,129 @@ describe("ProviderRuntimeIngestion", () => {
         ),
     );
     const prompt = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "task-prompt:thread-1:child-1",
+      (activity: ProviderRuntimeTestActivity) =>
+        activity.id === "task-prompt:thread-1:child-1:evt-late-prompt",
     );
 
     expect(prompt?.payload).toMatchObject({
       taskId: "child-1",
       prompt: "Review the exact diff and report findings only.",
     });
+  });
+
+  it("keeps one row per instruction and copies the provider prompt id", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-followup-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      payload: { taskId: "child-1", description: "Reviewer" },
+    });
+    for (const [eventId, promptId, prompt, createdAt] of [
+      ["evt-launch-prompt", "spawn-1", "Review the exact diff.", "2026-01-01T00:00:01.000Z"],
+      ["evt-followup-prompt", "send-1", "Check again.", "2026-01-01T00:00:02.000Z"],
+      // Same text as the previous instruction: only the prompt id separates
+      // them, so both rows must survive.
+      ["evt-followup-prompt-2", "send-2", "Check again.", "2026-01-01T00:00:03.000Z"],
+      // Re-report of the launch instruction (historical recovery): same
+      // prompt id, so it upserts instead of adding a row.
+      ["evt-launch-prompt-again", "spawn-1", "Review the exact diff.", "2026-01-01T00:00:04.000Z"],
+    ] as const) {
+      harness.emit({
+        type: "task.progress",
+        eventId: asEventId(eventId),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        payload: { taskId: "child-1", description: "Reviewer", prompt, promptId },
+      });
+    }
+
+    const promptActivityIds = (entry: { activities: ReadonlyArray<ProviderRuntimeTestActivity> }) =>
+      entry.activities
+        .filter((activity) => activity.id.startsWith("task-prompt:thread-1:child-1:"))
+        .map((activity) => activity.id);
+    // Four prompt events to drain, so this one waits longer than the default:
+    // the poll deadline is wall-clock and this suite shares a loaded machine.
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => promptActivityIds(entry).length === 3,
+      10_000,
+    );
+
+    expect(promptActivityIds(thread).toSorted()).toEqual([
+      "task-prompt:thread-1:child-1:send-1",
+      "task-prompt:thread-1:child-1:send-2",
+      "task-prompt:thread-1:child-1:spawn-1",
+    ]);
+    expect(
+      thread.activities.find(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "task-prompt:thread-1:child-1:send-2",
+      )?.payload,
+    ).toMatchObject({ taskId: "child-1", prompt: "Check again.", promptId: "send-2" });
+  });
+
+  it("persists a child agent's own user message as transcript evidence", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-child-user-item"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      itemId: asItemId("child-user-1"),
+      payload: {
+        itemType: "user_message",
+        status: "completed",
+        agentId: "child-1",
+        data: {
+          type: "userMessage",
+          content: [{ type: "text", text: "Review the exact diff." }],
+        },
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-parent-user-item"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      itemId: asItemId("parent-user-1"),
+      payload: {
+        itemType: "user_message",
+        status: "completed",
+        data: {
+          type: "userMessage",
+          content: [{ type: "text", text: "Parent prompt, already a message." }],
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-child-user-item",
+      ),
+    );
+
+    expect(
+      thread.activities.find(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-child-user-item",
+      )?.payload,
+    ).toMatchObject({ itemType: "user_message", agentId: "child-1" });
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-parent-user-item",
+      ),
+    ).toBe(false);
   });
 
   it("titles task activities with the task description, including on completion", async () => {

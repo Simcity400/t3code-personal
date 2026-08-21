@@ -801,6 +801,74 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("classifies SendMessage as a subagent instruction and keeps its input", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-1",
+        uuid: "stream-send-1",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "toolu_send_1",
+            name: "SendMessage",
+            input: {
+              to: "code-reviewer",
+              message: "Also check the reopened thread.",
+            },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-1",
+        uuid: "result-send-1",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const started = runtimeEvents.find((event) => event.type === "item.started");
+      assert.equal(started?.type, "item.started");
+      if (started?.type === "item.started") {
+        // Without this classification the projection drops data.input and the
+        // follow-up instruction never reaches the subagent transcript.
+        assert.equal(started.payload.itemType, "collab_agent_tool_call");
+        assert.deepEqual((started.payload.data as { input: unknown }).input, {
+          to: "code-reviewer",
+          message: "Also check the reopened thread.",
+        });
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("maps Claude stream/runtime messages to canonical provider runtime events", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

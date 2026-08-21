@@ -5,6 +5,7 @@ import {
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
 import {
+  ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER,
   deriveSubagentTranscript,
   deriveAgentPanelModel,
   foldSubagentActivities,
@@ -189,6 +190,28 @@ describe("deriveSubagentTranscript", () => {
     });
 
     expect(transcript).toEqual([]);
+  });
+
+  it("renders a child user item as the parent's instruction, not a tool card", () => {
+    const transcript = deriveSubagentTranscript({
+      agentId: "agent-1",
+      messages: [],
+      activities: [
+        activity("tool.completed", {
+          agentId: "agent-1",
+          itemId: "child-user-1",
+          itemType: "user_message",
+          data: {
+            type: "userMessage",
+            content: [{ type: "text", text: "Review the exact diff." }],
+          },
+        }),
+      ],
+    });
+
+    expect(transcript).toMatchObject([
+      { kind: "message", role: "user", text: "Review the exact diff." },
+    ]);
   });
 });
 
@@ -437,7 +460,7 @@ describe("selectSubagentTranscriptMessages", () => {
     ]);
   });
 
-  it("omits an older prompt when the provider persisted only ciphertext", () => {
+  it("marks a prompt the provider persisted only as ciphertext", () => {
     const encryptedPrompt = `gAAAAA${"x".repeat(90)}`;
     const selected = selectSubagentTranscriptMessages(
       [],
@@ -456,16 +479,45 @@ describe("selectSubagentTranscriptMessages", () => {
       "agent-1",
     );
 
-    expect(selected).toEqual([]);
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER },
+    ]);
   });
 
-  it("omits ciphertext already projected as a child message", () => {
+  it("keeps two distinct ciphertext instructions as two markers", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: `gAAAAA${"a".repeat(90)}`, promptId: "spawn-1" },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: `gAAAAA${"b".repeat(90)}`, promptId: "send-1" },
+          "2026-08-01T10:00:02.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER },
+      { role: "user", text: ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER },
+    ]);
+  });
+
+  it("keeps an agent message whose text looks like a Fernet token", () => {
+    // Only assistant output is ever agent-attributed, so content shape may
+    // never decide whether a child message is shown.
+    const ciphertextShaped = `gAAAAAB${"x".repeat(88)}==`;
     const selected = selectSubagentTranscriptMessages(
       [
         {
-          id: "message-encrypted",
-          role: "user",
-          text: `gAAAAAB${"x".repeat(88)}==`,
+          id: "message-token",
+          role: "assistant",
+          text: ciphertextShaped,
           agentId: "agent-1",
           turnId: "turn-1",
           streaming: false,
@@ -488,11 +540,12 @@ describe("selectSubagentTranscriptMessages", () => {
     );
 
     expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "assistant", text: ciphertextShaped },
       { role: "assistant", text: "Exact child response" },
     ]);
   });
 
-  it("renders a later exact child instruction without an encrypted placeholder", () => {
+  it("retires one ciphertext marker per decrypted child instruction", () => {
     const selected = selectSubagentTranscriptMessages(
       [],
       [
@@ -523,8 +576,274 @@ describe("selectSubagentTranscriptMessages", () => {
       "agent-1",
     );
 
+    // Two instructions were sent and only the second one's plaintext survived,
+    // so the first must still be visible as a marker instead of vanishing.
     expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER },
       { role: "user", text: "Check the collapsed composer again." },
+    ]);
+  });
+
+  it("keeps a pending follow-up marker when only the launch was decrypted", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: `gAAAAA${"a".repeat(90)}`, promptId: "spawn-1" },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "tool.completed",
+          {
+            agentId: "agent-1",
+            itemId: "child-user-1",
+            itemType: "user_message",
+            data: {
+              type: "userMessage",
+              content: [{ type: "text", text: "The launch instruction, in the clear." }],
+            },
+          },
+          "2026-08-01T10:00:02.000Z",
+        ),
+        // The child has not echoed this one yet: its marker is all we have.
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: `gAAAAA${"b".repeat(90)}`, promptId: "send-1" },
+          "2026-08-01T10:00:03.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: "The launch instruction, in the clear." },
+      { role: "user", text: ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER },
+    ]);
+  });
+
+  it("does not double-render an instruction whose marker lands after the child echo", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        // Rollout recovery is polled, so the child's plaintext echo can be
+        // persisted before the parent-side ciphertext marker.
+        activity(
+          "tool.completed",
+          {
+            agentId: "agent-1",
+            itemId: "child-user-1",
+            itemType: "user_message",
+            data: {
+              type: "userMessage",
+              content: [{ type: "text", text: "Review the exact diff." }],
+            },
+          },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: `gAAAAA${"a".repeat(90)}`, promptId: "spawn-1" },
+          "2026-08-01T10:00:02.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: "Review the exact diff." },
+    ]);
+  });
+
+  it("keeps ciphertext markers for instructions whose plaintext never arrived", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: `gAAAAA${"a".repeat(90)}`, promptId: "spawn-1" },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: `gAAAAA${"b".repeat(90)}`, promptId: "send-1" },
+          "2026-08-01T10:00:02.000Z",
+        ),
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: `gAAAAA${"c".repeat(90)}`, promptId: "send-2" },
+          "2026-08-01T10:00:03.000Z",
+        ),
+        activity(
+          "tool.completed",
+          {
+            agentId: "agent-1",
+            itemId: "child-user-1",
+            itemType: "user_message",
+            data: {
+              type: "userMessage",
+              content: [{ type: "text", text: "The third instruction, in the clear." }],
+            },
+          },
+          "2026-08-01T10:00:04.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    // Three instructions were sent; one decrypted copy survives. The other two
+    // stay as markers rather than being erased along with it.
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER },
+      { role: "user", text: ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER },
+      { role: "user", text: "The third instruction, in the clear." },
+    ]);
+  });
+
+  it("keeps identical instructions recovered within the same millisecond", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "task.updated",
+          { taskId: "agent-1", prompt: "Check again.", promptId: "send-1" },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "task.updated",
+          { taskId: "agent-1", prompt: "Check again.", promptId: "send-2" },
+          "2026-08-01T10:00:01.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: "Check again." },
+      { role: "user", text: "Check again." },
+    ]);
+  });
+
+  it("keeps every follow-up instruction, including repeats of the same text", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: "Launch instruction.", promptId: "spawn-1" },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: "Check again.", promptId: "send-1" },
+          "2026-08-01T10:00:02.000Z",
+        ),
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: "Check again.", promptId: "send-2" },
+          "2026-08-01T10:00:03.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: "Launch instruction." },
+      { role: "user", text: "Check again." },
+      { role: "user", text: "Check again." },
+    ]);
+  });
+
+  it("collapses a reopened thread's replay onto the original instruction row", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "task.progress",
+          { taskId: "agent-1", prompt: "Launch instruction.", promptId: "spawn-1" },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "tool.completed",
+          { agentId: "agent-1", itemId: "command-1", itemType: "command_execution" },
+          "2026-08-01T10:00:02.000Z",
+        ),
+        // Resume replays the same instruction, stamped with the resume time.
+        activity(
+          "task.updated",
+          { taskId: "agent-1", prompt: "Launch instruction.", promptId: "spawn-1" },
+          "2026-08-02T09:00:00.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    // One row, still at the moment it was sent - not dragged to the end of the
+    // transcript by the resume.
+    expect(selected.map(({ role, text, createdAt }) => ({ role, text, createdAt }))).toEqual([
+      {
+        role: "user",
+        text: "Launch instruction.",
+        createdAt: "2026-08-01T10:00:01.000Z",
+      },
+    ]);
+  });
+
+  it("shows a Claude SendMessage follow-up addressed to the agent", () => {
+    const selected = selectSubagentTranscriptMessages(
+      [],
+      [
+        activity(
+          "task.started",
+          { taskId: "agent-1", title: "Review authentication", toolUseId: "toolu_launch" },
+          "2026-08-01T10:00:00.000Z",
+        ),
+        activity(
+          "tool.completed",
+          {
+            itemId: "toolu_launch",
+            itemType: "collab_agent_tool_call",
+            data: {
+              toolName: "Agent",
+              input: { name: "security-reviewer", prompt: "Launch instruction." },
+            },
+          },
+          "2026-08-01T10:00:01.000Z",
+        ),
+        activity(
+          "tool.completed",
+          {
+            itemId: "toolu_send",
+            itemType: "collab_agent_tool_call",
+            data: {
+              toolName: "SendMessage",
+              input: { to: "security-reviewer", message: "Also check the reopened thread." },
+            },
+          },
+          "2026-08-01T10:00:02.000Z",
+        ),
+        activity(
+          "tool.completed",
+          {
+            itemId: "toolu_other",
+            itemType: "collab_agent_tool_call",
+            data: {
+              toolName: "SendMessage",
+              // Addressed by the task description, which is prose and not an
+              // address: it must not pull another agent's work into this
+              // transcript.
+              input: { to: "Review authentication", message: "Not for this agent." },
+            },
+          },
+          "2026-08-01T10:00:03.000Z",
+        ),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: "Launch instruction." },
+      { role: "user", text: "Also check the reopened thread." },
     ]);
   });
 
