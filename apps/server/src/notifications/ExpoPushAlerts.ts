@@ -65,6 +65,19 @@ const ExpoPushResponse = Schema.Struct({
   data: Schema.Array(ExpoPushTicket),
 });
 
+// Expo answers 200 even when every ticket is rejected (missing APNs key,
+// unregistered device, ...). Surface the reason so "acceptedCount: 0" is
+// diagnosable from the log alone.
+export function summarizeRejectedTickets(
+  tickets: ReadonlyArray<typeof ExpoPushTicket.Type>,
+): ReadonlyArray<{ readonly error: string | null; readonly message: string }> {
+  return tickets.flatMap((ticket) =>
+    ticket.status === "error"
+      ? [{ error: ticket.details?.error ?? null, message: ticket.message }]
+      : [],
+  );
+}
+
 type NotificationContent = {
   readonly title: string;
   readonly body: string;
@@ -343,6 +356,7 @@ export const make = Effect.gen(function* () {
           phase: plan.state.phase,
           registrationCount: plan.tokens.length,
           acceptedCount: response.data.filter((ticket) => ticket.status === "ok").length,
+          rejections: summarizeRejectedTickets(response.data),
         });
         return true;
       }).pipe(

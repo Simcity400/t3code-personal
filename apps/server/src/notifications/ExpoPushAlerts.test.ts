@@ -213,3 +213,18 @@ describe.sequential("ExpoPushAlerts", () => {
     );
   });
 });
+
+describe("summarizeRejectedTickets", () => {
+  it("keeps only rejected tickets with their reason", () => {
+    expect(
+      ExpoPushAlerts.summarizeRejectedTickets([
+        { status: "ok", id: "a" },
+        { status: "error", message: "no push key", details: { error: "InvalidCredentials" } },
+        { status: "error", message: "bad" },
+      ]),
+    ).toEqual([
+      { error: "InvalidCredentials", message: "no push key" },
+      { error: null, message: "bad" },
+    ]);
+  });
+});
