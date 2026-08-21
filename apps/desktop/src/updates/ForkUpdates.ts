@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Path from "effect/Path";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
@@ -75,12 +76,21 @@ const INITIAL_STATE: ForkUpdateState = {
   supported: false,
   status: "idle",
   commitsBehind: 0,
-  personalCommitsBehind: 0,
   latestSummary: null,
   step: null,
   message: null,
   checkedAt: null,
 };
+
+const STATUSES: ReadonlyArray<ForkUpdateState["status"]> = [
+  "idle",
+  "checking",
+  "update-available",
+  "updating",
+  "restarting",
+  "conflict",
+  "error",
+];
 
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -92,19 +102,39 @@ export const make = Effect.gen(function* () {
   const repoRoot = environment.rootDir;
   const stateRef = yield* Ref.make<ForkUpdateState>(INITIAL_STATE);
 
-  const emitState = Ref.get(stateRef).pipe(
-    Effect.flatMap((state) => electronWindow.sendAll(IpcChannels.FORK_UPDATE_STATE_CHANNEL, state)),
-  );
+  const sendState = (state: ForkUpdateState) =>
+    electronWindow.sendAll(IpcChannels.FORK_UPDATE_STATE_CHANNEL, state);
 
+  // Compare-and-set state transition: writes only when the current status is
+  // one of `expected`, reports whether it wrote, and emits exactly the state
+  // this call touched — never a newer one read back after the fact. Without
+  // the CAS, a check that passed its guard before an apply started would
+  // clobber "updating" on its way out and admit a second apply.
+  const transitionState = (
+    expected: ReadonlyArray<ForkUpdateState["status"]>,
+    patch: (state: ForkUpdateState) => ForkUpdateState,
+  ): Effect.Effect<{ readonly written: boolean; readonly state: ForkUpdateState }> =>
+    Ref.modify(
+      stateRef,
+      (
+        current,
+      ): readonly [
+        { readonly written: boolean; readonly state: ForkUpdateState },
+        ForkUpdateState,
+      ] => {
+        if (!expected.includes(current.status)) {
+          return [{ written: false, state: current }, current];
+        }
+        const next = patch(current);
+        return [{ written: true, state: next }, next];
+      },
+    ).pipe(Effect.tap((result) => sendState(result.state)));
+
+  // Unconditional write for fibers that already hold the apply mutex.
   const updateState = (
     f: (state: ForkUpdateState) => ForkUpdateState,
   ): Effect.Effect<ForkUpdateState> =>
-    Ref.get(stateRef).pipe(
-      Effect.flatMap((state) => {
-        const nextState = f(state);
-        return Ref.set(stateRef, nextState).pipe(Effect.andThen(emitState), Effect.as(nextState));
-      }),
-    );
+    transitionState([...STATUSES], f).pipe(Effect.map((result) => result.state));
 
   // Exit code of a command run at the repo root. Output is discarded — the
   // repo working tree is the source of truth, not the command output.
@@ -144,6 +174,10 @@ export const make = Effect.gen(function* () {
 
   const performCheck: Effect.Effect<ForkUpdateState> = Effect.gen(function* () {
     const state = yield* Ref.get(stateRef);
+    // Deliberately NOT re-checkable from "error": a post-reset failure has
+    // HEAD at origin/main, so a check would see zero commits behind and
+    // clear the error without finishing the update. Recovery from "error" is
+    // the pill's retry button, which resumes the apply itself.
     if (
       !state.supported ||
       (state.status !== "idle" &&
@@ -152,7 +186,16 @@ export const make = Effect.gen(function* () {
     ) {
       return state;
     }
-    yield* updateState((s) => ({ ...s, status: "checking" }));
+    // CAS on the way in: if an apply flipped to "updating" after the guard
+    // above read the ref, this check must not clobber it — and two checks
+    // racing the same eligible state must not both proceed.
+    const attempt = yield* transitionState(["idle", "update-available", "conflict"], (s) => ({
+      ...s,
+      status: "checking",
+    }));
+    if (!attempt.written) {
+      return attempt.state;
+    }
 
     const outcome = yield* Effect.gen(function* () {
       // GitHub is authoritative: the only question is whether origin/main has
@@ -198,7 +241,11 @@ export const make = Effect.gen(function* () {
       // Transient failure (offline, origin unreachable): stay quiet and let
       // the next poll retry rather than surfacing an error pill.
       yield* logForkWarning("fork update check failed; will retry on next poll");
-      return yield* updateState((s) => ({ ...s, status: "idle", checkedAt }));
+      return yield* transitionState(["checking"], (s) => ({
+        ...s,
+        status: "idle",
+        checkedAt,
+      })).pipe(Effect.map((result) => result.state));
     }
 
     const { commitsBehind, syncConflict, summary, updateAvailable } = outcome.value;
@@ -206,46 +253,63 @@ export const make = Effect.gen(function* () {
       // GitHub's sync hit an upstream conflict; surface it until the marker
       // branch disappears (fork-sync.yml deletes it after a resolved push).
       yield* logForkWarning("fork sync conflict marker present on origin");
-      return yield* updateState((s) => ({
+      return yield* transitionState(["checking"], (s) => ({
         ...s,
         status: "conflict",
         commitsBehind,
-        personalCommitsBehind: 0,
         latestSummary: summary,
         checkedAt,
         message: CONFLICT_MESSAGE,
-      }));
+      })).pipe(Effect.map((result) => result.state));
     }
     if (updateAvailable) {
       yield* logForkInfo("update available", { commitsBehind, summary });
     }
-    return yield* updateState((s) => ({
+    return yield* transitionState(["checking"], (s) => ({
       ...s,
       status: updateAvailable ? "update-available" : "idle",
       commitsBehind,
-      personalCommitsBehind: 0,
       latestSummary: summary,
       checkedAt,
       message: null,
-    }));
+    })).pipe(Effect.map((result) => result.state));
   }).pipe(Effect.withSpan("desktop.forkUpdates.check"));
 
-  const beginApply: Effect.Effect<boolean> = Effect.gen(function* () {
-    const state = yield* Ref.get(stateRef);
-    if (!state.supported || state.status !== "update-available") return false;
-    yield* updateState((s) => ({
-      ...s,
-      status: "updating",
-      step: "Preparing update…",
-      message: null,
-    }));
-    return true;
-  });
+  // Serializes apply pipelines: each IPC invoke detaches its own fiber, so
+  // without this a double-activate would run two concurrent git/pnpm flows.
+  const applyMutex = Semaphore.makeUnsafe(1);
+
+  // Check-and-set in one atomic operation so two rapid invokes can never both
+  // observe an applicable state and fork concurrent applies. "error" is
+  // accepted: runApply is idempotent once the tree matches origin/main (the
+  // backup is skipped when clean and the ff-only merge no-ops), so retrying a
+  // failed install/build finishes the update instead of waiting for origin to
+  // move again.
+  const beginApply: Effect.Effect<boolean> = transitionState(
+    ["update-available", "error"],
+    (s) => ({ ...s, status: "updating", step: "Preparing update…", message: null }),
+  ).pipe(Effect.map((result) => result.written));
 
   const setStep = (step: string) => updateState((s) => ({ ...s, step }));
 
-  const failApply = (message: string) =>
-    updateState((s) => ({ ...s, status: "error", step: null, message })).pipe(Effect.as(false));
+  // Survives restarts: a failure AFTER the tree snapped to origin/main leaves
+  // zero commits behind, so no check will ever re-offer the update. The
+  // marker (inside .git, so it never dirties status) re-arms the error pill
+  // on the next launch until a retry finishes the install/build.
+  const resumeMarkerPath = path.join(repoRoot, ".git", "fork-update-resume");
+  const writeResumeMarker = fileSystem
+    .writeFile(resumeMarkerPath, new TextEncoder().encode("resume"))
+    .pipe(Effect.ignore);
+  const clearResumeMarker = fileSystem.remove(resumeMarkerPath).pipe(Effect.ignore);
+
+  const failApply = (message: string, options?: { readonly resumable?: boolean }) =>
+    // The marker is only ever cleared by a successful apply — a later failure
+    // (even a fetch blip during a retry) must not un-arm recovery for a tree
+    // that may already have snapped to origin/main.
+    (options?.resumable ? writeResumeMarker : Effect.void).pipe(
+      Effect.andThen(updateState((s) => ({ ...s, status: "error", step: null, message }))),
+      Effect.as(false),
+    );
 
   const timedExit = (
     command: string,
@@ -268,10 +332,13 @@ export const make = Effect.gen(function* () {
     }
 
     // GitHub is authoritative. A machine with stray local commits or edits
-    // never merges them: they're preserved on an origin backup branch (and a
-    // local branch as a fallback), then the machine snaps to origin/main.
+    // never merges them: tracked modifications are preserved on an origin
+    // backup branch (and a local branch as a fallback), then the machine
+    // snaps to origin/main. Untracked files are deliberately excluded from
+    // the backup — they are private to this machine, and `reset --hard`
+    // leaves them in place anyway.
     const dirty =
-      (yield* runCapture("git", ["status", "--porcelain"]).pipe(
+      (yield* runCapture("git", ["status", "--porcelain", "--untracked-files=no"]).pipe(
         Effect.orElseSucceed(() => ""),
       )).trim() !== "";
     const aheadRaw = yield* runCapture("git", ["rev-list", "--count", "origin/main..HEAD"]).pipe(
@@ -283,27 +350,46 @@ export const make = Effect.gen(function* () {
       yield* setStep("Backing up this machine's local changes…");
       const backupName = `backup/${(yield* currentIsoTimestamp).replaceAll(":", "-")}`;
       if (dirty) {
-        yield* timedExit("git", ["add", "-A"]).pipe(Effect.ignore);
-        yield* timedExit("git", [
+        // Stage tracked modifications only (`-u`, never `-A`) so untracked
+        // local files are never committed or uploaded.
+        const addExit = yield* timedExit("git", ["add", "-u"]);
+        if (addExit !== 0) {
+          return yield* failApply(
+            "Couldn't stage your local changes for backup, so nothing was changed. Commit or stash them manually, then press update again.",
+          );
+        }
+        const commitExit = yield* timedExit("git", [
           "commit",
           "-m",
           "backup: local changes before matching GitHub",
-        ]).pipe(Effect.ignore);
+        ]);
+        if (commitExit !== 0) {
+          return yield* failApply(
+            "Couldn't commit a backup of your local changes. Your edits are untouched in the working tree. Check that git has a user name and email configured, then press update again.",
+          );
+        }
       }
       // Local branch first so the work survives even when the push fails.
-      yield* timedExit("git", ["branch", "--force", backupName]).pipe(Effect.ignore);
+      // Both steps must succeed before anything destructive happens: the
+      // reset below is only safe once the backup ref exists locally.
+      const branchExit = yield* timedExit("git", ["branch", "--force", backupName]);
+      if (branchExit !== 0) {
+        return yield* failApply(
+          "Couldn't create the local backup branch, so the update was stopped before any files changed. Open a terminal in the project folder and run git status for details.",
+        );
+      }
       yield* timedExit("git", ["push", "origin", `HEAD:refs/heads/${backupName}`]).pipe(
         Effect.ignore,
       );
       yield* logForkInfo("backed up local changes before reset", { backupName, commitsAhead });
       if ((yield* timedExit("git", ["reset", "--hard", "origin/main"])) !== 0) {
         return yield* failApply(
-          "Couldn't match this machine to GitHub. Run the Update file in the project folder to see details.",
+          `Couldn't match this machine to GitHub. Your local changes are safe on the "${backupName}" branch. Try again, or open a terminal in the project folder and run git status for details.`,
         );
       }
     } else if ((yield* timedExit("git", ["merge", "--ff-only", "origin/main"])) !== 0) {
       return yield* failApply(
-        "Couldn't match this machine to GitHub. Run the Update file in the project folder to see details.",
+        "Couldn't fast-forward to GitHub's latest. Try again, or open a terminal in the project folder and run git status for details.",
       );
     }
 
@@ -314,7 +400,8 @@ export const make = Effect.gen(function* () {
     });
     if (installExit !== 0) {
       return yield* failApply(
-        "Installing dependencies failed. Run the Update file in the project folder to see details.",
+        "Installing dependencies failed. The source is updated but the app wasn't rebuilt — press update to try again.",
+        { resumable: true },
       );
     }
 
@@ -323,7 +410,8 @@ export const make = Effect.gen(function* () {
     const buildExit = yield* timedExit(build.command, build.args, { shell: build.shell });
     if (buildExit !== 0) {
       return yield* failApply(
-        "Rebuilding the app failed. Run the Update file in the project folder to see details.",
+        "Rebuilding the app failed. The source is updated but the app wasn't rebuilt — press update to try again.",
+        { resumable: true },
       );
     }
 
@@ -339,6 +427,7 @@ export const make = Effect.gen(function* () {
     yield* timedExit(warmup.command, warmup.args, { shell: warmup.shell }).pipe(Effect.ignore);
 
     yield* logForkInfo("official update applied; restarting");
+    yield* clearResumeMarker;
     yield* updateState((s) => ({
       ...s,
       status: "restarting",
@@ -351,7 +440,9 @@ export const make = Effect.gen(function* () {
     Effect.catchCause((cause) =>
       logForkError("fork update apply failed", { cause: String(cause) }).pipe(
         Effect.andThen(
-          failApply("The update hit an unexpected error. Your current version keeps working."),
+          failApply("The update hit an unexpected error. Your current version keeps working.", {
+            resumable: true,
+          }),
         ),
       ),
     ),
@@ -375,6 +466,23 @@ export const make = Effect.gen(function* () {
     yield* logForkInfo("fork updater enabled", { repoRoot });
     yield* updateState((s) => ({ ...s, supported: true }));
 
+    // A previous session's install/build may have failed after the tree
+    // snapped to origin/main; no check will ever re-offer that update, so
+    // re-arm the resumable error pill from the marker.
+    const hasResumeMarker = yield* fileSystem
+      .exists(resumeMarkerPath)
+      .pipe(Effect.orElseSucceed(() => false));
+    if (hasResumeMarker) {
+      yield* logForkWarning("resuming an unfinished fork update from a previous session");
+      yield* transitionState(STATUSES, (s) => ({
+        ...s,
+        status: "error",
+        step: null,
+        message:
+          "The last update didn't finish installing. Press update to finish it — this is safe to retry.",
+      }));
+    }
+
     yield* Effect.sleep(FORK_CHECK_STARTUP_DELAY).pipe(
       Effect.andThen(performCheck),
       Effect.catchCause(() => logForkWarning("fork update startup check failed")),
@@ -393,7 +501,7 @@ export const make = Effect.gen(function* () {
     configure,
     check: performCheck,
     beginApply,
-    runApply,
+    runApply: applyMutex.withPermit(runApply),
   });
 });
 

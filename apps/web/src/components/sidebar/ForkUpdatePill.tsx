@@ -2,6 +2,7 @@ import { DownloadIcon, RotateCwIcon, TriangleAlertIcon, XIcon } from "lucide-rea
 import { useCallback, useState } from "react";
 import { isElectron } from "../../env";
 import { useForkUpdateState } from "../../hooks/useForkUpdate";
+import { ensureLocalApi } from "../../localApi";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
@@ -15,25 +16,69 @@ export function ForkUpdatePill() {
   const handleUpdate = useCallback(() => {
     const bridge = window.desktopBridge;
     if (!bridge || typeof bridge.applyForkUpdate !== "function") return;
-    const confirmed = window.confirm(
-      "T3 Code will merge the latest official changes with your customizations, rebuild, and restart. This can take a few minutes. Update now?",
-    );
-    if (!confirmed) return;
-    void bridge.applyForkUpdate().catch(() => undefined);
+    void ensureLocalApi()
+      .dialogs.confirm(
+        "T3 Code will merge the latest official changes with your customizations, rebuild, and restart. This can take a few minutes. Update now?",
+      )
+      .then((confirmed) => {
+        if (confirmed) void bridge.applyForkUpdate().catch(() => undefined);
+      })
+      .catch(() => undefined);
   }, []);
 
-  if (!isElectron || !state?.supported || dismissed) return null;
+  const handleRetry = useCallback(() => {
+    const bridge = window.desktopBridge;
+    // Retry goes through the apply flow, not a re-check: after a failed
+    // install/build the tree already matches origin/main, so a check would
+    // see zero commits behind and clear the error without finishing. The
+    // updater treats an apply from "error" as resume.
+    if (!bridge || typeof bridge.applyForkUpdate !== "function") return;
+    void ensureLocalApi()
+      .dialogs.confirm("Retry the update? This resumes where it failed.")
+      .then((confirmed) => {
+        if (confirmed) void bridge.applyForkUpdate().catch(() => undefined);
+      })
+      .catch(() => undefined);
+  }, []);
 
-  if (state.status === "conflict" || state.status === "error") {
+  if (!isElectron || !state?.supported) return null;
+
+  // The error branch deliberately ignores `dismissed`: a dismissal from an
+  // earlier state must never hide the retry button that is the only recovery
+  // path for a failed apply.
+  if (state.status === "error") {
     return (
       <Alert
         variant="warning"
         className="relative rounded-2xl border-warning/40 bg-warning/8 text-xs"
       >
         <TriangleAlertIcon />
-        <AlertTitle>
-          {state.status === "conflict" ? "Update needs attention" : "Update failed"}
-        </AlertTitle>
+        <AlertTitle>Update failed</AlertTitle>
+        <AlertDescription>
+          {state.message ?? "Something went wrong while updating."}
+        </AlertDescription>
+        <button
+          type="button"
+          aria-label="Retry update"
+          className="absolute top-2 right-2 inline-flex size-5 items-center justify-center rounded-md text-warning/70 transition-colors hover:text-warning"
+          onClick={handleRetry}
+        >
+          <RotateCwIcon className="size-3.5" />
+        </button>
+      </Alert>
+    );
+  }
+
+  if (dismissed) return null;
+
+  if (state.status === "conflict") {
+    return (
+      <Alert
+        variant="warning"
+        className="relative rounded-2xl border-warning/40 bg-warning/8 text-xs"
+      >
+        <TriangleAlertIcon />
+        <AlertTitle>Update needs attention</AlertTitle>
         <AlertDescription>
           {state.message ?? "Something went wrong while updating."}
         </AlertDescription>
@@ -62,26 +107,10 @@ export function ForkUpdatePill() {
 
   if (state.status !== "update-available") return null;
 
-  // Official part: commitsBehind 0 with update-available means a nightly
-  // release shipped without new upstream commits (updating re-pins the
-  // version). Personal part: commits another machine pushed to the private
-  // backup repo.
-  const parts: string[] = [];
-  if (state.commitsBehind > 0) {
-    parts.push(
-      state.commitsBehind === 1
-        ? "1 new official change"
-        : `${state.commitsBehind} new official changes`,
-    );
-  }
-  if (state.personalCommitsBehind > 0) {
-    parts.push(
-      state.personalCommitsBehind === 1
-        ? "1 change from your other computer"
-        : `${state.personalCommitsBehind} changes from your other computer`,
-    );
-  }
-  const changeCount = parts.length > 0 ? parts.join(" and ") : "New official release";
+  const changeCount =
+    state.commitsBehind === 1
+      ? "1 new official change"
+      : `${state.commitsBehind} new official changes`;
   const tooltip = `${changeCount}${
     state.latestSummary ? ` — latest: ${state.latestSummary}` : ""
   }. Click to update and restart.`;
@@ -99,11 +128,7 @@ export function ForkUpdatePill() {
               onClick={handleUpdate}
             >
               <DownloadIcon className="size-3.5" />
-              <span>
-                {state.commitsBehind === 0 && state.personalCommitsBehind > 0
-                  ? "Update from your other computer"
-                  : "Official update available"}
-              </span>
+              <span>Official update available</span>
             </button>
           }
         />

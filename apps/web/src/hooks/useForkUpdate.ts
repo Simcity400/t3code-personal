@@ -10,6 +10,7 @@ export function useForkUpdateState(): ForkUpdateState | null {
   useEffect(() => {
     const bridge = window.desktopBridge;
     if (!bridge || typeof bridge.onForkUpdateState !== "function") return;
+    let cancelled = false;
     let receivedPush = false;
     const unsubscribe = bridge.onForkUpdateState((next) => {
       receivedPush = true;
@@ -18,10 +19,13 @@ export function useForkUpdateState(): ForkUpdateState | null {
     void bridge
       .getForkUpdateState()
       .then((initial) => {
-        if (!receivedPush) setState(initial);
+        if (!cancelled && !receivedPush) setState(initial);
       })
       .catch(() => undefined);
-    return unsubscribe;
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, []);
 
   return state;
