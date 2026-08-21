@@ -3,6 +3,7 @@ import {
   isActiveSubagentStatus,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import { memo } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
@@ -63,14 +64,14 @@ export function AgentStatus({
   );
 }
 
-export function AgentCard({
+function AgentCardImpl({
   agent,
   clock,
   onOpen,
 }: {
   readonly agent: RuntimeSubagent;
   readonly clock: AgentStatusClockSnapshot;
-  readonly onOpen: () => void;
+  readonly onOpen: (agentId: string) => void;
 }) {
   const title = formatSubagentTitle(agent.title);
   const status = agentStatusPresentation(agent, clock);
@@ -78,7 +79,7 @@ export function AgentCard({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`Open ${title} transcript. ${status.accessibilityLabel}`}
-      onPress={onOpen}
+      onPress={() => onOpen(agent.id)}
       className="rounded-xl bg-card px-3 py-3 active:opacity-70"
     >
       <View className="flex-row items-center justify-between gap-3">
@@ -93,3 +94,15 @@ export function AgentCard({
     </Pressable>
   );
 }
+
+// The status clock publishes a new snapshot every second while any agent is
+// active; without this guard every card in the list re-renders each tick.
+// Settled cards render their elapsed time from completedAt/updatedAt, so they
+// can ignore clock ticks entirely.
+export const AgentCard = memo(
+  AgentCardImpl,
+  (prev, next) =>
+    prev.agent === next.agent &&
+    prev.onOpen === next.onOpen &&
+    (!isActiveSubagentStatus(next.agent.status) || prev.clock.tick === next.clock.tick),
+);

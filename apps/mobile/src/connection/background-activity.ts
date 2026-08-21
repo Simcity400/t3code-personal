@@ -98,6 +98,11 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
           try: readPersonalExpoPushRegistration,
           catch: (cause) => cause,
         }).pipe(
+          // The token read performs a network round-trip to Expo; without a
+          // bound it would stall the whole heartbeat (presence reports, lease
+          // reassertions) behind it. A timed-out read leaves the slot empty —
+          // the next pass retries it.
+          Effect.timeout("5 seconds"),
           Effect.tapError(() => Effect.sync(() => setPersonalExpoPushRegistrationStatus("failed"))),
           Effect.orElseSucceed(() => undefined),
         );
