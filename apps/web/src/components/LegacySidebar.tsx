@@ -3302,7 +3302,14 @@ export default function LegacySidebar() {
   }, []);
 
   const visibleThreads = useMemo(
-    () => sidebarThreads.filter((thread) => thread.archivedAt === null),
+    () =>
+      sidebarThreads.filter(
+        (thread) =>
+          thread.archivedAt === null &&
+          // Unpromoted side chats stay out of the sidebar everywhere else
+          // (sorting recency, jump slots); mirror that here.
+          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+      ),
     [sidebarThreads],
   );
   const sortedProjects = useMemo(() => {
@@ -3342,7 +3349,9 @@ export default function LegacySidebar() {
       sortedProjects.flatMap((project) => {
         const projectThreads = sortThreads(
           (threadsByProjectKey.get(project.projectKey) ?? []).filter(
-            (thread) => thread.archivedAt === null,
+            (thread) =>
+              thread.archivedAt === null &&
+              (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
           ),
           sidebarThreadSortOrder,
         );

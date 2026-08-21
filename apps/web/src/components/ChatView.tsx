@@ -242,12 +242,12 @@ import {
 import { vcsEnvironment } from "../state/vcs";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
+  useAttachedSideChats,
   useProject,
   useProjects,
   useThread,
   useThreadRefs,
   useThreadShell,
-  useThreadShells,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
@@ -1302,7 +1302,6 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const timestampFormat = settings.timestampFormat;
   const navigate = useNavigate();
-  const allThreadShells = useThreadShells();
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
   const composerRuntimeMode = useComposerDraftStore(
@@ -1529,6 +1528,11 @@ function ChatViewContent(props: ChatViewProps) {
   // depend on which route is mounted.
   const isServerThread = activeServerThread !== null;
   const activeThread = activeServerThread ?? localDraftThread;
+  // Scoped to this thread's parent ref: a global shell-list subscription here
+  // re-rendered the whole chat view on every thread update in any environment.
+  const attachedSideChats = useAttachedSideChats(
+    activeThread ? { environmentId: activeThread.environmentId, threadId: activeThread.id } : null,
+  );
   const threadError = isServerThread
     ? (localServerError ?? activeServerThread?.session?.lastError ?? null)
     : localDraftError;
@@ -2227,13 +2231,19 @@ function ChatViewContent(props: ChatViewProps) {
   // until orchestration-v2 lands (source precedence lives in the derive).
   // sessionLive derives interruption for agents orphaned by session death.
   const agentSessionLive = phase !== "disconnected";
-  const agentPanelModel = useMemo(
-    () =>
-      deriveAgentPanelModel({
-        agents: foldSubagentActivities(threadActivities, { sessionLive: agentSessionLive }),
+  const agentsPanelSelectedIdRef = useRef<string | null>(null);
+  const agentPanelModel = useMemo(() => {
+    const openAgentId = agentsPanelSelectedIdRef.current;
+    return deriveAgentPanelModel({
+      agents: foldSubagentActivities(threadActivities, {
+        sessionLive: agentSessionLive,
+        // Read at fold time: the panel reports its open transcript id
+        // through this ref so a roster-cap eviction can never slam the
+        // transcript shut mid-read.
+        ...(openAgentId ? { protectedAgentIds: [openAgentId] } : {}),
       }),
-    [agentSessionLive, threadActivities],
-  );
+    });
+  }, [agentSessionLive, threadActivities]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -5450,10 +5460,14 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     if (failure !== null) {
-      if (sideChatCommand) {
+      // A failure after the turn was accepted must not delete the thread: the
+      // turn is live on the server and deleting would destroy a running run.
+      // Only pre-start failures are cleaned up by removing the side chat.
+      if (sideChatCommand && !turnStartSucceeded) {
         await deleteThread({ environmentId, input: { threadId: threadIdForSend } });
       }
       if (
+        !turnStartSucceeded &&
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0 &&
@@ -5491,10 +5505,20 @@ function ChatViewContent(props: ChatViewProps) {
       }
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
-        setThreadError(
-          sideChatCommand ? activeThread.id : threadIdForSend,
-          error instanceof Error ? error.message : "Failed to send message.",
-        );
+        // When the turn already started, only the handoff (waiting for the
+        // server thread or navigating to it) failed — the work is running and
+        // reachable from the parent's side-chats strip.
+        if (sideChatCommand && turnStartSucceeded) {
+          setThreadError(
+            activeThread.id,
+            "The side chat was created, but opening it failed. You can find it in this thread's side chats.",
+          );
+        } else {
+          setThreadError(
+            sideChatCommand ? activeThread.id : threadIdForSend,
+            error instanceof Error ? error.message : "Failed to send message.",
+          );
+        }
       }
     }
     sendInFlightRef.current = false;
@@ -6181,12 +6205,6 @@ function ChatViewContent(props: ChatViewProps) {
 
   const isUnpromotedSideChat =
     activeThread.forkedFromThreadId != null && activeThread.sideChatPromotedAt == null;
-  const attachedSideChats = allThreadShells.filter(
-    (thread) =>
-      thread.environmentId === activeThread.environmentId &&
-      thread.forkedFromThreadId === activeThread.id &&
-      thread.sideChatPromotedAt == null,
-  );
   const promoteSideChat = async () => {
     if (promotingSideChatId === activeThread.id || closingSideChatId === activeThread.id) return;
     setPromotingSideChatId(activeThread.id);
@@ -6383,6 +6401,7 @@ function ChatViewContent(props: ChatViewProps) {
         skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
         resolvedTheme={resolvedTheme}
         timestampFormat={timestampFormat}
+        selectedAgentIdRef={agentsPanelSelectedIdRef}
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&

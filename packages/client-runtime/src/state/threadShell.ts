@@ -172,6 +172,28 @@ export function createEnvironmentThreadShellAtoms(input: {
     return previousThreadShells;
   }).pipe(Atom.withLabel("environment-thread-shell-list"));
 
+  // Side chats forked from one parent thread. Scoped per parent so a chat
+  // view subscribed to its own side chats does not re-render on unrelated
+  // thread updates elsewhere; the reference-stable previous-value pattern
+  // keeps subscribers quiet unless the filtered membership actually changes.
+  const attachedSideChatsAtomFamily = Atom.family((key: string) => {
+    const ref = parseThreadKey(key);
+    let previous: ReadonlyArray<EnvironmentThreadShell> = [];
+    return Atom.make((get) => {
+      const next = get(threadShellsAtom).filter(
+        (thread) =>
+          thread.environmentId === ref.environmentId &&
+          thread.forkedFromThreadId === ref.threadId &&
+          thread.sideChatPromotedAt == null,
+      );
+      if (arrayElementsEqual(previous, next)) {
+        return previous;
+      }
+      previous = next;
+      return previous;
+    }).pipe(Atom.withLabel(`attached-side-chats:${key}`));
+  });
+
   return {
     environmentThreadsAtom,
     environmentThreadIndexAtom,
@@ -179,6 +201,7 @@ export function createEnvironmentThreadShellAtoms(input: {
     environmentThreadRefsByProjectAtom,
     threadRefsAtom,
     threadShellsAtom,
+    attachedSideChatsAtom: (ref: ScopedThreadRef) => attachedSideChatsAtomFamily(threadKey(ref)),
     threadShellsForProjectRefsAtom: (refs: ReadonlyArray<ScopedProjectRef>) =>
       threadShellsForProjectRefsAtomFamily(projectRefCollectionKey(refs)),
     threadShellAtom: (ref: ScopedThreadRef) => threadShellAtomFamily(threadKey(ref)),

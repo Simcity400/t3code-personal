@@ -40,7 +40,7 @@ import type {
   TimestampFormat,
 } from "@t3tools/contracts";
 import { ArrowLeft, Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 
 import { deriveTimelineEntries, deriveWorkLogEntries } from "~/session-logic";
 import type { TurnDiffSummary } from "~/types";
@@ -846,6 +846,7 @@ export function AgentsPanel({
   skills = [],
   resolvedTheme = "light",
   timestampFormat = "locale",
+  selectedAgentIdRef,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
@@ -857,8 +858,20 @@ export function AgentsPanel({
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   resolvedTheme?: "light" | "dark";
   timestampFormat?: TimestampFormat;
+  /** Reported to the owner's fold so the open transcript survives roster-cap eviction. */
+  selectedAgentIdRef?: MutableRefObject<string | null>;
 }) {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  useEffect(() => {
+    if (selectedAgentIdRef) {
+      selectedAgentIdRef.current = selectedAgentId;
+    }
+    return () => {
+      if (selectedAgentIdRef) {
+        selectedAgentIdRef.current = null;
+      }
+    };
+  }, [selectedAgentId, selectedAgentIdRef]);
   const [idleOpen, setIdleOpen] = useState(true);
   const [workflowOpenById, setWorkflowOpenById] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(model.workflows.map((group) => [group.workflow.id, workflowIsLive(group)])),
