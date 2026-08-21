@@ -6,14 +6,8 @@ import {
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
-import {
-  agentStatusAccessibilityLabel,
-  formatAgentElapsed,
-  workingDotOpacities,
-} from "./ThreadAgentsRouteScreen.logic";
+import { agentStatusAccessibilityLabel, formatAgentElapsed } from "./ThreadAgentsRouteScreen.logic";
 import type { AgentStatusClockSnapshot } from "./agentStatusClock";
-
-const WORKING_DOT_SLOTS = ["first", "second", "third"] as const;
 
 function agentStatusLabel(agent: RuntimeSubagent): string {
   switch (agent.status) {
@@ -46,7 +40,6 @@ function agentStatusPresentation(agent: RuntimeSubagent, clock: AgentStatusClock
     elapsed,
     status,
     accessibilityLabel: agentStatusAccessibilityLabel(status, elapsed),
-    dotOpacities: workingDotOpacities(clock.tick, clock.reduceMotion),
   };
 }
 
@@ -65,15 +58,6 @@ export function AgentStatus({
       className="text-xs tabular-nums text-foreground-muted"
     >
       {presentation.status}
-      {presentation.working ? (
-        <>
-          {WORKING_DOT_SLOTS.map((slot, index) => (
-            <Text key={slot} style={{ opacity: presentation.dotOpacities[index] }}>
-              .
-            </Text>
-          ))}
-        </>
-      ) : null}
       {presentation.elapsed ? ` \u00b7 ${presentation.elapsed}` : ""}
     </Text>
   );

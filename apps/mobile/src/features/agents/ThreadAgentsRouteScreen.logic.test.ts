@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  agentStatusAccessibilityLabel,
-  formatAgentElapsed,
-  workingDotOpacities,
-} from "./ThreadAgentsRouteScreen.logic";
+import { agentStatusAccessibilityLabel, formatAgentElapsed } from "./ThreadAgentsRouteScreen.logic";
 
 describe("formatAgentElapsed", () => {
   const startedAt = "2026-08-17T00:00:00.000Z";
@@ -26,13 +22,6 @@ describe("formatAgentElapsed", () => {
 });
 
 describe("agent status presentation", () => {
-  it("keeps three fixed-width dot slots while animating", () => {
-    expect(workingDotOpacities(0, false)).toEqual([0.18, 0.18, 0.18]);
-    expect(workingDotOpacities(2, false)).toEqual([1, 1, 0.18]);
-    expect(workingDotOpacities(3, true)).toEqual([1, 1, 1]);
-    expect(workingDotOpacities(99, false)).toHaveLength(3);
-  });
-
   it("includes working state and elapsed time in the accessible name", () => {
     expect(agentStatusAccessibilityLabel("Working", "17s")).toBe("Working, 17s");
     expect(agentStatusAccessibilityLabel("Completed", null)).toBe("Completed");
