@@ -18,6 +18,7 @@ export function ComposerEditor({
   textStyle,
   contentInsetVertical = 0,
   singleLineCentered: _singleLineCentered,
+  ownerKey: _ownerKey,
   ...props
 }: ComposerEditorProps) {
   const inputRef = useRef<RNTextInput>(null);
@@ -34,6 +35,9 @@ export function ComposerEditor({
       blur: () => inputRef.current?.blur(),
       setSelection: (nextSelection) =>
         inputRef.current?.setSelection(nextSelection.start, nextSelection.end),
+      // A plain TextInput is fully controlled by React: there is no revision
+      // handshake for the post-submit clear to lose, so nothing to mark.
+      markSubmitted: () => () => {},
     }),
     [],
   );

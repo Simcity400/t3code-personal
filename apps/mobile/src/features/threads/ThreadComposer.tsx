@@ -367,6 +367,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const handleSelectionChange = useCallback((selection: ComposerEditorSelection) => {
     setComposerSelection(selection);
   }, []);
+  // Tells the editor which draft it is editing, so a post-submit reset armed
+  // for one thread does not outlive the composer being pointed at another.
+  const composerThreadKey = useMemo(
+    () => scopedThreadKey(props.environmentId, props.selectedThread.id),
+    [props.environmentId, props.selectedThread.id],
+  );
   useEffect(() => {
     const end = props.draftMessage.length;
     setComposerSelection((selection) => {
@@ -547,9 +553,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const { onChangeDraftMessage, onUpdateInteractionMode, draftMessage, onSendMessage } = props;
 
   const handleSend = useCallback(async () => {
-    const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+    const threadKey = composerThreadKey;
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
+    // Marked before the send, not after it: the draft store clears
+    // synchronously inside `onSendMessage`, so the cleared composer renders
+    // while this call is still awaiting, and the native events the submit
+    // provokes are delivered from here on. Marking afterwards would land past
+    // the blur handoff that provokes the event racing the clear.
+    const finishSubmit = inputRef.current?.markSubmitted();
     try {
       await onSendMessage();
       // Sending a prompt starts agent work: arm the lock-screen card while the
@@ -562,13 +574,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         projectTitle: props.environmentLabel ?? "T3 Code",
       });
     } finally {
+      // Releases the composer's post-submit settle window: a send that bailed
+      // out has no clear coming, and one that cleared asynchronously only just
+      // did, so the window's countdown is measured from here.
+      finishSubmit?.();
       inFlightThreadIdsRef.current.delete(threadKey);
     }
   }, [
+    composerThreadKey,
+    inputRef,
     onSendMessage,
     props.environmentId,
     props.environmentLabel,
-    props.selectedThread.id,
     props.selectedThread.title,
   ]);
   const handleCommandSelect = useCallback(
@@ -815,6 +832,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               value={props.draftMessage}
               skills={selectedProviderStatus?.skills ?? []}
               selection={composerSelection}
+              ownerKey={composerThreadKey}
               onChangeText={props.onChangeDraftMessage}
               onSelectionChange={handleSelectionChange}
               onPasteImages={(uris) => void props.onNativePasteImages(uris)}
