@@ -83,16 +83,26 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          fingerprint="$(eas fingerprint:generate --platform ios --environment preview --json --non-interactive | sed -n '/^{/,$p' | jq -er '.hash | select(type == "string" and length > 0)')"
-          matching="$(eas build:list --platform ios --build-profile preview --status finished --fingerprint-hash "$fingerprint" --limit 1 --json --non-interactive | jq 'length')"
+          # The preview variant pins runtimeVersion to the shared constant
+          # (apps/mobile/app.config.ts -> scripts/lib/personal-mobile-runtime.ts),
+          # so updates are compatible by runtime version, not by fingerprint.
+          # Probing fingerprints here would report "no compatible build" on every
+          # source change and trigger a needless full native build. This matches
+          # iphoneRuntimeBuildListArgs() in scripts/publish-personal-update.ts.
+          runtime="$(node --no-warnings --input-type=module --eval 'import { PERSONAL_MOBILE_RUNTIME_VERSION } from "../../scripts/lib/personal-mobile-runtime.ts"; process.stdout.write(PERSONAL_MOBILE_RUNTIME_VERSION);')"
+          if [ -z "$runtime" ]; then
+            echo "Could not read PERSONAL_MOBILE_RUNTIME_VERSION." >&2
+            exit 1
+          fi
+          matching="$(eas build:list --platform ios --build-profile preview --status finished --runtime-version "$runtime" --limit 1 --json --non-interactive | sed -n '/^[[{]/,$p' | jq 'length')"
 
-          echo "Current iOS fingerprint: $fingerprint"
+          echo "Pinned iOS runtime version: $runtime"
           if [ "$matching" -eq 0 ]; then
             echo "No compatible iPhone build exists. Building one now."
             eas build --platform ios --profile preview --non-interactive
-            echo ":building_construction: Built a new iPhone app for native fingerprint \`$fingerprint\`. Install this build once before expecting over-the-air updates." >> "$GITHUB_STEP_SUMMARY"
+            echo ":building_construction: Built a new iPhone app for runtime version \`$runtime\`. Install this build once before expecting over-the-air updates." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo ":white_check_mark: A compatible iPhone build already exists for fingerprint \`$fingerprint\`." >> "$GITHUB_STEP_SUMMARY"
+            echo ":white_check_mark: A compatible iPhone build already exists for runtime version \`$runtime\`." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Publish iPhone update

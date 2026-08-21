@@ -1,6 +1,7 @@
 import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
+import { resolvePersonalExpoPushAlerts } from "../../scripts/lib/personal-expo-push-alerts.ts";
 import { PERSONAL_MOBILE_RUNTIME_VERSION } from "../../scripts/lib/personal-mobile-runtime.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
@@ -11,6 +12,10 @@ Object.assign(process.env, repoEnv);
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
+const personalExpoPushAlerts = resolvePersonalExpoPushAlerts(
+  APP_VARIANT,
+  repoEnv.T3CODE_EXPO_PUSH_ALERTS,
+);
 
 const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
@@ -342,7 +347,7 @@ const config: ExpoConfig = {
   extra: {
     appVariant: APP_VARIANT,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
-    personalExpoPushAlerts: repoEnv.T3CODE_EXPO_PUSH_ALERTS === "1",
+    personalExpoPushAlerts,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
     },
