@@ -277,8 +277,6 @@ export interface ForkUpdateState {
   supported: boolean;
   status: ForkUpdateStatus;
   commitsBehind: number;
-  /** Commits on the private backup remote (another machine's pushed personal changes). */
-  personalCommitsBehind: number;
   latestSummary: string | null;
   step: string | null;
   message: string | null;
@@ -299,7 +297,6 @@ export const ForkUpdateStateSchema = Schema.Struct({
   supported: Schema.Boolean,
   status: ForkUpdateStatusSchema,
   commitsBehind: Schema.Int,
-  personalCommitsBehind: Schema.Int,
   latestSummary: Schema.NullOr(Schema.String),
   step: Schema.NullOr(Schema.String),
   message: Schema.NullOr(Schema.String),
