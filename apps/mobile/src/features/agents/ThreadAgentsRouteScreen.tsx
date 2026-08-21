@@ -8,7 +8,7 @@ import {
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { EnvironmentId } from "@t3tools/contracts";
 import type { StaticScreenProps } from "@react-navigation/native";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { useSharedValue } from "react-native-reanimated";
 
@@ -39,7 +39,17 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
   const transcriptListRef = useRef<LegendListRef>(null);
   const freeze = useSharedValue(false);
   const contentInsetEndAdjustment = useSharedValue(0);
-  const agents = useMemo(() => (thread ? foldSubagentActivities(thread.activities) : []), [thread]);
+  const agents = useMemo(
+    () =>
+      thread
+        ? foldSubagentActivities(thread.activities, {
+            // Keep the transcript being read alive even when live activity
+            // pushes it past the roster cap.
+            protectedAgentIds: selectedAgentId ? [selectedAgentId] : [],
+          })
+        : [],
+    [thread, selectedAgentId],
+  );
   const model = useMemo(() => deriveAgentPanelModel({ agents, v2Projection: null }), [agents]);
   const allAgents = useMemo(
     () => [
@@ -53,9 +63,16 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
     [model],
   );
   const selectedAgent = allAgents.find((agent) => agent.id === selectedAgentId) ?? null;
-  const activeAgents = allAgents.filter((agent) => subagentPanelSection(agent.status) === "active");
-  const idleAgents = allAgents.filter((agent) => subagentPanelSection(agent.status) === "idle");
+  const activeAgents = useMemo(
+    () => allAgents.filter((agent) => subagentPanelSection(agent.status) === "active"),
+    [allAgents],
+  );
+  const idleAgents = useMemo(
+    () => allAgents.filter((agent) => subagentPanelSection(agent.status) === "idle"),
+    [allAgents],
+  );
   const selectedAgentTitle = selectedAgent ? formatSubagentTitle(selectedAgent.title) : null;
+  const openAgent = useCallback((agentId: string) => setSelectedAgentId(agentId), []);
   const transcript = useMemo(
     () => (thread && selectedAgent ? buildThreadFeed(thread, { agentId: selectedAgent.id }) : []),
     [selectedAgent, thread],
@@ -73,23 +90,34 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
   }, [transcript]);
   const selectedAgentWorking = selectedAgent ? isActiveSubagentStatus(selectedAgent.status) : false;
   const statusClock = useAgentStatusClock(activeAgents.length > 0 || selectedAgentWorking);
-  const transcriptLatestTurn =
-    selectedAgent && transcriptTurnId
-      ? {
-          turnId: transcriptTurnId,
-          state: selectedAgentWorking
-            ? ("running" as const)
-            : selectedAgent.status === "failed"
-              ? ("error" as const)
-              : selectedAgent.status === "cancelled" || selectedAgent.status === "interrupted"
-                ? ("interrupted" as const)
-                : ("completed" as const),
-          startedAt: selectedAgent.startedAt,
-          completedAt: selectedAgentWorking
-            ? null
-            : (selectedAgent.completedAt ?? selectedAgent.updatedAt),
-        }
-      : null;
+  // The status clock re-renders this screen every second while agents are
+  // active; a fresh latestTurn object here would defeat ThreadFeed's memo and
+  // reconcile the whole transcript list on every tick.
+  const transcriptLatestTurn = useMemo(() => {
+    if (!selectedAgent || !transcriptTurnId) {
+      return null;
+    }
+    const working = isActiveSubagentStatus(selectedAgent.status);
+    return {
+      turnId: transcriptTurnId,
+      state: working
+        ? ("running" as const)
+        : selectedAgent.status === "failed"
+          ? ("error" as const)
+          : selectedAgent.status === "cancelled" || selectedAgent.status === "interrupted"
+            ? ("interrupted" as const)
+            : ("completed" as const),
+      startedAt: selectedAgent.startedAt,
+      completedAt: working ? null : (selectedAgent.completedAt ?? selectedAgent.updatedAt),
+    };
+  }, [
+    selectedAgent,
+    transcriptTurnId,
+    selectedAgent?.status,
+    selectedAgent?.startedAt,
+    selectedAgent?.completedAt,
+    selectedAgent?.updatedAt,
+  ]);
   const selectedProviderSkills = useMemo(
     () =>
       thread
@@ -172,12 +200,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
                   <Text className="text-xs text-foreground-muted">{activeAgents.length}</Text>
                 </View>
                 {activeAgents.map((agent) => (
-                  <AgentCard
-                    key={agent.id}
-                    agent={agent}
-                    clock={statusClock}
-                    onOpen={() => setSelectedAgentId(agent.id)}
-                  />
+                  <AgentCard key={agent.id} agent={agent} clock={statusClock} onOpen={openAgent} />
                 ))}
               </View>
             ) : null}
@@ -208,7 +231,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
                         key={agent.id}
                         agent={agent}
                         clock={statusClock}
-                        onOpen={() => setSelectedAgentId(agent.id)}
+                        onOpen={openAgent}
                       />
                     ))}
                   </View>

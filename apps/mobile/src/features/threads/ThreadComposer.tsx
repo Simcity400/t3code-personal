@@ -116,7 +116,9 @@ export interface ThreadComposerProps {
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
-  readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onSendMessage: () => Promise<
+    { readonly messageId: MessageId | null } | MessageId | null
+  >;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
@@ -563,16 +565,24 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     // the blur handoff that provokes the event racing the clear.
     const finishSubmit = inputRef.current?.markSubmitted();
     try {
-      await onSendMessage();
+      const sent = await onSendMessage();
       // Sending a prompt starts agent work: arm the lock-screen card while the
       // app is foregrounded and the activity token can be registered. Armed
       // after the send so its preference read and native Activity start don't
-      // contend with the queued-message feedback on the tap frame.
-      armAgentAwarenessLiveActivityForLocalWork({
-        environmentId: props.environmentId,
-        threadTitle: props.selectedThread.title,
-        projectTitle: props.environmentLabel ?? "T3 Code",
-      });
+      // contend with the queued-message feedback on the tap frame. Only a send
+      // that actually started work arms it — a bailed-out or empty submit
+      // must not leave a phantom "agent working" card on the lock screen.
+      // Two send paths feed this composer: the route screen passes the
+      // composer state's { messageId } result, the detail screen unwraps to a
+      // bare id.
+      const sentMessageId = typeof sent === "string" ? sent : sent?.messageId;
+      if (sentMessageId != null) {
+        armAgentAwarenessLiveActivityForLocalWork({
+          environmentId: props.environmentId,
+          threadTitle: props.selectedThread.title,
+          projectTitle: props.environmentLabel ?? "T3 Code",
+        });
+      }
     } finally {
       // Releases the composer's post-submit settle window: a send that bailed
       // out has no clear coming, and one that cleared asynchronously only just
