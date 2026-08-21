@@ -291,6 +291,51 @@ validationLayer("CodexAdapterLive validation", (it) => {
   );
 });
 
+const unreadableCatalogRuntimeFactory = makeRuntimeFactory();
+const unreadableCatalogLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      const codexConfig = decodeCodexSettings({});
+      return yield* makeCodexAdapter(codexConfig, {
+        makeRuntime: unreadableCatalogRuntimeFactory.factory,
+        plaintextCollabCatalog: {
+          modelCatalogHomePath: NodePath.join(
+            process.cwd(),
+            "does-not-exist-plaintext-collab-home",
+          ),
+          instanceId: ProviderInstanceId.make("codex"),
+        },
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+unreadableCatalogLayer("CodexAdapterLive plaintext collaboration catalog", (it) => {
+  it.effect("starts the session when the model catalog cannot be read", () =>
+    Effect.gen(function* () {
+      unreadableCatalogRuntimeFactory.factory.mockClear();
+      const adapter = yield* CodexAdapter;
+
+      // The override only makes Codex log subagent instructions in plaintext;
+      // failing to write it must never cost the user their session.
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-catalog-1"),
+        runtimeMode: "full-access",
+      });
+
+      NodeAssert.equal(unreadableCatalogRuntimeFactory.factory.mock.calls.length, 1);
+      NodeAssert.equal(unreadableCatalogRuntimeFactory.factory.mock.calls[0]?.[0]?.launchArgs, "");
+    }),
+  );
+});
+
 const sessionRuntimeFactory = makeRuntimeFactory();
 const sessionErrorLayer = it.layer(
   Layer.effect(
@@ -544,6 +589,87 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         "Review the exact diff and report findings only.",
       );
       NodeAssert.equal(firstEvent.value.payload.promptId, "spawn-1");
+    }),
+  );
+
+  it.effect("never surfaces an encrypted collaboration prompt as item detail", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-encrypted-spawn"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        payload: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          completedAtMs: 1,
+          item: {
+            type: "collabAgentToolCall",
+            id: "spawn-encrypted",
+            tool: "spawnAgent",
+            status: "completed",
+            senderThreadId: "thread-1",
+            receiverThreadIds: ["child-thread-1"],
+            prompt: `gAAAAA${"x".repeat(90)}`,
+            agentsStates: {},
+          },
+        },
+      } as unknown as ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      NodeAssert.equal(firstEvent._tag === "Some" && firstEvent.value.type, "item.completed");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "item.completed") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.payload.itemType, "collab_agent_tool_call");
+      // The Fernet token is linkage, not text: the work log must not print it.
+      NodeAssert.equal(firstEvent.value.payload.detail, undefined);
+    }),
+  );
+
+  it.effect("keeps an assistant message whose own text looks like a Fernet token", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      const tokenShapedAnswer = `gAAAAA${"y".repeat(90)}`;
+
+      yield* runtime.emit({
+        id: asEventId("evt-token-shaped-answer"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        payload: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          completedAtMs: 1,
+          item: {
+            type: "agentMessage",
+            id: "assistant-1",
+            text: tokenShapedAnswer,
+          },
+        },
+      } as unknown as ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      NodeAssert.equal(firstEvent._tag === "Some" && firstEvent.value.type, "item.completed");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "item.completed") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.payload.itemType, "assistant_message");
+      // Ingestion finalizes an assistant message from this detail, so masking
+      // it by shape would silently blank real output.
+      NodeAssert.equal(firstEvent.value.payload.detail, tokenShapedAnswer);
     }),
   );
 

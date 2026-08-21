@@ -10,6 +10,7 @@ import {
   classifyTaskAgentKind,
   EventId,
   isToolLifecycleItemType,
+  type ItemLifecyclePayload,
   ThreadId,
   type ThreadTokenUsageSnapshot,
   TurnId,
@@ -351,6 +352,9 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     "effort",
     "toolUseId",
     "prompt",
+    // Without the provider's prompt id, two identical follow-up instructions
+    // are indistinguishable on the client and collapse into one row.
+    "promptId",
     "parentAgentId",
     "workflowName",
     "agentIndex",
@@ -371,6 +375,41 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     }
   }
   return fields;
+}
+
+/**
+ * Stable id for the row that carries one exact parent instruction.
+ *
+ * Activities upsert by id, so a per-task id made every follow-up overwrite the
+ * launch prompt. Keying on the provider's prompt id instead gives each
+ * instruction its own row while still collapsing the same instruction when a
+ * live session reports it more than once.
+ */
+function taskPromptActivityId(input: {
+  readonly threadId: string;
+  readonly taskId: string;
+  readonly promptId: unknown;
+  readonly eventId: string;
+}): EventId {
+  const suffix = typeof input.promptId === "string" ? input.promptId : input.eventId;
+  return EventId.make(`task-prompt:${input.threadId}:${input.taskId}:${suffix}`);
+}
+
+/**
+ * Item lifecycle rows worth persisting as activities.
+ *
+ * Tool items always are. A child agent's own `user_message` item is too: it
+ * is the only plaintext record of an instruction the parent sent to that
+ * agent (Codex encrypts the parent-side collaboration tool arguments), and
+ * the shared transcript selector already keeps such rows out of tool-card
+ * lists and out of the parent work log (they carry `agentId`). Unattributed
+ * user messages stay out — the parent's own prompt is already a message.
+ */
+function isPersistedItemLifecycle(payload: ItemLifecyclePayload): boolean {
+  return (
+    isToolLifecycleItemType(payload.itemType) ||
+    (payload.itemType === "user_message" && payload.agentId !== undefined)
+  );
 }
 
 export function runtimeEventToActivities(
@@ -608,11 +647,14 @@ export function runtimeEventToActivities(
                 // progress is latest-state and must not erase the exact
                 // parent instruction when the provider reports it after the
                 // child task was registered.
-                id: EventId.make(
-                  hasPrompt
-                    ? `task-prompt:${event.threadId}:${event.payload.taskId}`
-                    : `task-progress:${event.threadId}:${event.payload.taskId}`,
-                ),
+                id: hasPrompt
+                  ? taskPromptActivityId({
+                      threadId: event.threadId,
+                      taskId: event.payload.taskId,
+                      promptId: linkage.promptId,
+                      eventId: event.eventId,
+                    })
+                  : EventId.make(`task-progress:${event.threadId}:${event.payload.taskId}`),
                 createdAt: event.createdAt,
                 tone: "info" as const,
                 kind: "task.progress" as const,
@@ -666,6 +708,12 @@ export function runtimeEventToActivities(
     case "task.updated": {
       return [
         {
+          // Reopened-thread prompt recovery also arrives as task.updated, but
+          // it deliberately does NOT share the live prompt row's id: a resume
+          // stamps `createdAt` with the resume time, so upserting would drag
+          // every recovered instruction to the end of the transcript. The
+          // client folds the replay onto the original row by promptId and
+          // keeps the original timestamp instead.
           id: event.eventId,
           createdAt: event.createdAt,
           tone: event.payload.status === "failed" ? "error" : "info",
@@ -804,7 +852,7 @@ export function runtimeEventToActivities(
     }
 
     case "item.updated": {
-      if (!isToolLifecycleItemType(event.payload.itemType)) {
+      if (!isPersistedItemLifecycle(event.payload)) {
         return [];
       }
       // A streaming update's `data` carries the full tool output accumulated
@@ -840,7 +888,7 @@ export function runtimeEventToActivities(
     }
 
     case "item.completed": {
-      if (!isToolLifecycleItemType(event.payload.itemType)) {
+      if (!isPersistedItemLifecycle(event.payload)) {
         return [];
       }
       return [
@@ -869,7 +917,7 @@ export function runtimeEventToActivities(
     }
 
     case "item.started": {
-      if (!isToolLifecycleItemType(event.payload.itemType)) {
+      if (!isPersistedItemLifecycle(event.payload)) {
         return [];
       }
       return [

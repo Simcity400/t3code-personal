@@ -276,7 +276,7 @@ describe("readCollabPromptLinks", () => {
     );
   });
 
-  it("rejects encrypted collaboration arguments as transcript text", () => {
+  it("keeps encrypted collaboration arguments as prompt linkage", () => {
     const notification = {
       method: "item/completed",
       params: {
@@ -296,7 +296,15 @@ describe("readCollabPromptLinks", () => {
       },
     } as Parameters<typeof readCollabPromptLinks>[0];
 
-    NodeAssert.deepStrictEqual(readCollabPromptLinks(notification), []);
+    // Ciphertext is the only record that an instruction was sent; clients
+    // render it as a placeholder row, never as the parent's words.
+    NodeAssert.deepStrictEqual(readCollabPromptLinks(notification), [
+      {
+        receiverThreadId: "child-1",
+        prompt: `gAAAAA${"x".repeat(90)}`,
+        promptId: "spawn-encrypted",
+      },
+    ]);
   });
 });
 

@@ -60,7 +60,7 @@ describe("native Codex collaboration prompt history", () => {
     ]);
   });
 
-  it("does not expose encrypted rollout arguments as transcript prompts", async () => {
+  it("recovers encrypted rollout arguments as prompt linkage", async () => {
     const rows = [
       line(
         {
@@ -88,7 +88,11 @@ describe("native Codex collaboration prompt history", () => {
 
     const scanned = await scanNativeCollabPromptRollout(fixturePath);
 
-    expect(scanned?.links).toEqual([]);
+    // The client turns ciphertext into a placeholder row: dropping it here
+    // left a reopened transcript with no sign an instruction was ever sent.
+    expect(scanned?.links).toEqual([
+      { receiverThreadId: "child-encrypted", prompt: `gAAAAA${"x".repeat(90)}` },
+    ]);
   });
 
   it("keeps repeated task paths paired when outputs are interleaved", async () => {

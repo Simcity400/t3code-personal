@@ -257,11 +257,26 @@ function projectMcpToolCallData(data: Record<string, unknown>): Record<string, u
  * metadata. Keep only the fields required to associate the exact prompt with
  * its child while continuing to drop the rest of the provider payload.
  *
- * Claude shape: `{ toolName, input: { prompt } }`, linked by the activity's
- * top-level itemId to task.*.toolUseId.
+ * Claude launch shape: `{ toolName, input: { prompt } }`, linked by the
+ * activity's top-level itemId to task.*.toolUseId.
+ * Claude follow-up shape: `{ toolName: "SendMessage", input: { to, message } }`,
+ * linked by the recipient name/id carried in `to`.
  * Codex shape: `{ item: { ..., prompt, receiverThreadIds } }`, linked directly
  * to the child provider thread id.
  */
+const COLLAB_TOOL_INPUT_KEPT_FIELDS = [
+  "prompt",
+  // The name the launching call gave the agent. Follow-ups address the agent
+  // by that name, so without it a SendMessage cannot be linked to its target.
+  "name",
+  // SendMessage (Claude follow-up instruction): recipient plus body.
+  "to",
+  "agent_id",
+  "agentId",
+  "message",
+  "summary",
+] as const;
+
 function projectCollabAgentToolCallData(data: Record<string, unknown>): Record<string, unknown> {
   const projectedData: Record<string, unknown> = {};
   const item = asRecord(data.item);
@@ -281,13 +296,48 @@ function projectCollabAgentToolCallData(data: Record<string, unknown>): Record<s
     projectedData.toolName = data.toolName;
   }
   const input = asRecord(data.input);
-  if (input && "prompt" in input) {
-    projectedData.input = { prompt: input.prompt };
+  if (input) {
+    const projectedInput: Record<string, unknown> = {};
+    for (const key of COLLAB_TOOL_INPUT_KEPT_FIELDS) {
+      if (key in input) {
+        projectedInput[key] = input[key];
+      }
+    }
+    if (Object.keys(projectedInput).length > 0) {
+      projectedData.input = projectedInput;
+    }
   }
   if ("toolCallId" in data) {
     projectedData.toolCallId = data.toolCallId;
   }
 
+  return projectedData;
+}
+
+/**
+ * A child agent's own user message is the exact instruction its parent sent
+ * to it — the only plaintext copy when the provider encrypts the parent-side
+ * collaboration tool arguments. Keep the identity and the text parts in full
+ * (like collaboration prompts) and drop everything else.
+ */
+function projectUserMessageData(data: Record<string, unknown>): Record<string, unknown> {
+  const projectedData: Record<string, unknown> = {};
+  for (const key of ["type", "id"] as const) {
+    if (key in data) {
+      projectedData[key] = data[key];
+    }
+  }
+  const content = Array.isArray(data.content)
+    ? data.content.flatMap((entry) => {
+        const part = asRecord(entry);
+        return part?.type === "text" && typeof part.text === "string"
+          ? [{ type: "text", text: part.text }]
+          : [];
+      })
+    : [];
+  if (content.length > 0) {
+    projectedData.content = content;
+  }
   return projectedData;
 }
 
@@ -379,6 +429,16 @@ export function projectActivityPayload(
       payload: {
         ...payload,
         data: projectCollabAgentToolCallData(data),
+      },
+    };
+  }
+
+  if (payload.itemType === "user_message") {
+    return {
+      ...activity,
+      payload: {
+        ...payload,
+        data: projectUserMessageData(data),
       },
     };
   }

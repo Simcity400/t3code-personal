@@ -55,6 +55,7 @@ import {
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { isEncryptedCollabPrompt } from "../CodexCollabPromptHistory.ts";
 import { materializePlaintextCollabModelCatalog } from "../CodexPlaintextCollabCatalog.ts";
 import {
   CodexResumeCursorSchema,
@@ -299,6 +300,13 @@ function itemDetail(itemType: CanonicalItemType, item: CodexLifecycleItem): stri
   for (const candidate of candidates) {
     const trimmed = typeof candidate === "string" ? trimText(candidate) : undefined;
     if (!trimmed) continue;
+    // An encrypted collaboration prompt is linkage, not text. Printing the
+    // Fernet token as a work-log detail is worse than printing nothing; the
+    // subagent transcript renders a proper placeholder for it instead. Scoped
+    // to collaboration calls: an assistant message that merely LOOKS like a
+    // token is real output, and ingestion finalizes such messages from this
+    // detail.
+    if (itemType === "collab_agent_tool_call" && isEncryptedCollabPrompt(trimmed)) continue;
     return trimmed;
   }
   return undefined;
@@ -1752,21 +1760,27 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         );
         const plaintextCollabModelCatalogPath =
           options?.plaintextCollabCatalog && !hasCodexModelCatalogOverride(configuredLaunchArgs)
-            ? yield* materializePlaintextCollabModelCatalog({
+            ? // Best-effort: the override only makes Codex record subagent
+              // instructions in plaintext. A missing or unreadable model
+              // cache must not block the session — clients still recover
+              // instructions from the child's own user items, and an
+              // encrypted prompt renders as a placeholder row.
+              yield* materializePlaintextCollabModelCatalog({
                 ...options.plaintextCollabCatalog,
                 outputDirectory: serverConfig.providerStatusCacheDir,
               }).pipe(
                 Effect.provideService(FileSystem.FileSystem, fileSystem),
                 Effect.provideService(Path.Path, path),
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderAdapterProcessError({
-                      provider: PROVIDER,
+                Effect.catch((cause) =>
+                  Effect.logWarning(
+                    "Codex plaintext collaboration catalog unavailable; subagent instructions may be encrypted.",
+                  ).pipe(
+                    Effect.annotateLogs({
                       threadId: input.threadId,
-                      detail:
-                        "Could not enable exact subagent instructions; Codex was not started because it would encrypt them.",
-                      cause,
+                      cause: String(cause),
                     }),
+                    Effect.as(undefined),
+                  ),
                 ),
               )
             : undefined;

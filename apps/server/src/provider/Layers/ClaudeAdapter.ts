@@ -702,6 +702,11 @@ function classifyToolItemType(toolName: string): CanonicalItemType {
   if (
     normalized === "task" ||
     normalized === "agent" ||
+    // Follow-up instructions to an already-running agent. Matched exactly so
+    // an MCP tool that happens to send messages (mcp__slack__send_message)
+    // keeps its own classification.
+    normalized === "sendmessage" ||
+    normalized === "send_message" ||
     normalized.includes("subagent") ||
     normalized.includes("sub-agent")
   ) {

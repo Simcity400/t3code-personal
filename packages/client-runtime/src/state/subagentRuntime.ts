@@ -1095,6 +1095,13 @@ interface SubagentPromptCandidate {
   readonly activityId: string;
   readonly promptId: string | undefined;
   readonly childUserMessage: boolean;
+  /**
+   * The provider only kept ciphertext for this instruction, so `text` is a
+   * placeholder describing that an instruction was sent — never real content.
+   */
+  readonly encryptedFallback: boolean;
+  /** Ciphertext for encrypted fallbacks, otherwise the prompt itself. */
+  readonly dedupeKey: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -1110,6 +1117,28 @@ function isEncryptedCollabPrompt(value: string): boolean {
 function asPrompt(value: unknown): string | undefined {
   if (typeof value !== "string" || value.trim().length === 0) return undefined;
   return isEncryptedCollabPrompt(value) ? undefined : value;
+}
+
+/**
+ * Shown in place of an instruction the provider only persisted as ciphertext.
+ * A visible marker beats an empty transcript: the reader learns an
+ * instruction was sent and that the text — not the row — is missing.
+ */
+export const ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER =
+  "Instruction sent to subagent. Codex encrypted the original text.";
+
+/** "/root/marlow" -> "marlow": the name a parent addresses the agent by. */
+function agentPathLeaf(value: unknown): string | undefined {
+  const path = asString(value);
+  if (!path) return undefined;
+  const segments = path.split("/").filter((segment) => segment.length > 0);
+  return segments[segments.length - 1];
+}
+
+function asEncryptedPrompt(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return isEncryptedCollabPrompt(trimmed) ? trimmed : undefined;
 }
 
 function readUserMessagePrompt(item: Record<string, unknown> | undefined): string | undefined {
@@ -1136,6 +1165,11 @@ function deriveSubagentPromptCandidates(
 ): ReadonlyArray<SubagentPromptCandidate> {
   const launchingToolIds = new Set<string>();
   const directCandidates: SubagentPromptCandidate[] = [];
+  // Names the parent can address this agent by in a follow-up tool call: its
+  // id, its Codex agent-path leaf, and the name given at launch. The task
+  // description is deliberately NOT an alias — it is prose, and two agents
+  // launched with the same description would both claim the instruction.
+  const agentAliases = new Set<string>([agentId.toLowerCase()]);
 
   for (const activity of activities) {
     if (!activity.kind.startsWith("task.")) continue;
@@ -1143,17 +1177,24 @@ function deriveSubagentPromptCandidates(
     if (!payload || asString(payload.taskId) !== agentId) continue;
     const toolUseId = asString(payload.toolUseId);
     if (toolUseId) launchingToolIds.add(toolUseId);
+    const pathAlias = agentPathLeaf(payload.agentPath);
+    if (pathAlias) agentAliases.add(pathAlias.toLowerCase());
     const prompt = asPrompt(payload.prompt);
-    if (prompt) {
+    const encryptedPrompt = asEncryptedPrompt(payload.prompt);
+    if (prompt || encryptedPrompt) {
       directCandidates.push({
         key: `task:${activity.id}`,
         source: "task",
-        text: prompt,
+        text: prompt ?? ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER,
         createdAt: activity.createdAt,
         turnId: activity.turnId,
         activityId: activity.id,
         promptId: asString(payload.promptId),
         childUserMessage: false,
+        encryptedFallback: prompt === undefined,
+        // Ciphertext keys the fold so two different encrypted instructions
+        // stay two rows instead of collapsing into one placeholder.
+        dedupeKey: prompt ?? encryptedPrompt!,
       });
     }
   }
@@ -1164,6 +1205,8 @@ function deriveSubagentPromptCandidates(
       prompt: string | undefined;
       tool: string | undefined;
       receiverThreadIds: Set<string>;
+      /** Lower-cased agent names/ids a follow-up tool call addressed. */
+      recipients: Set<string>;
       createdAt: string;
       turnId: OrchestrationMessage["turnId"];
       activityId: string;
@@ -1197,15 +1240,34 @@ function deriveSubagentPromptCandidates(
     if (asString(payload.agentId) === agentId && payload.itemType === "user_message") {
       receiverThreadIds.add(agentId);
     }
+    // Claude's SendMessage addresses a running agent by name or id rather
+    // than by provider thread id, and carries the instruction in `message`.
+    // Only collaboration tools are read this way: an unrelated MCP tool with
+    // `to`/`message` arguments must never become a transcript instruction.
+    const recipients = new Set(existing?.recipients ?? []);
+    if (payload.itemType === "collab_agent_tool_call") {
+      for (const key of ["to", "agentId", "agent_id"] as const) {
+        const recipient = asString(input?.[key]);
+        if (recipient) recipients.add(recipient.toLowerCase());
+      }
+      // The launching call names the agent; later follow-ups address it by
+      // that name rather than by its provider id.
+      if (launchingToolIds.has(itemId)) {
+        const launchName = asString(input?.name);
+        if (launchName) agentAliases.add(launchName.toLowerCase());
+      }
+    }
     tools.set(itemId, {
       prompt:
         existing?.prompt ??
         asPrompt(input?.prompt) ??
+        (recipients.size > 0 ? asPrompt(input?.message) : undefined) ??
         asPrompt(item?.prompt) ??
         readUserMessagePrompt(item) ??
         asPrompt(payload.prompt),
       tool: existing?.tool ?? asString(item?.tool) ?? asString(data?.toolName),
       receiverThreadIds,
+      recipients,
       createdAt:
         existing && existing.createdAt.localeCompare(activity.createdAt) <= 0
           ? existing.createdAt
@@ -1227,23 +1289,29 @@ function deriveSubagentPromptCandidates(
       }
       continue;
     }
-    const existing = directWithoutPromptIdByText.get(candidate.text);
+    const existing = directWithoutPromptIdByText.get(candidate.dedupeKey);
     if (!existing || candidate.createdAt.localeCompare(existing.createdAt) < 0) {
-      directWithoutPromptIdByText.set(candidate.text, candidate);
+      directWithoutPromptIdByText.set(candidate.dedupeKey, candidate);
     }
   }
   const uniqueDirectCandidates = [
     ...directByPromptId.values(),
     ...directWithoutPromptIdByText.values(),
   ];
-  const directPromptTexts = new Set(uniqueDirectCandidates.map((candidate) => candidate.text));
+  const directPromptTexts = new Set(uniqueDirectCandidates.map((candidate) => candidate.dedupeKey));
   const directPromptIds = new Set(
     uniqueDirectCandidates.flatMap((candidate) => (candidate.promptId ? [candidate.promptId] : [])),
   );
 
   const toolCandidates = Array.from(tools.entries()).flatMap<SubagentPromptCandidate>(
     ([itemId, tool]) => {
-      if (!tool.prompt || (!launchingToolIds.has(itemId) && !tool.receiverThreadIds.has(agentId))) {
+      const addressedToAgent = Array.from(tool.recipients).some((recipient) =>
+        agentAliases.has(recipient),
+      );
+      if (
+        !tool.prompt ||
+        (!launchingToolIds.has(itemId) && !tool.receiverThreadIds.has(agentId) && !addressedToAgent)
+      ) {
         return [];
       }
       if (directPromptIds.has(itemId)) {
@@ -1265,6 +1333,8 @@ function deriveSubagentPromptCandidates(
           activityId: tool.activityId,
           promptId: itemId,
           childUserMessage: tool.itemType === "user_message" && tool.activityAgentId === agentId,
+          encryptedFallback: false,
+          dedupeKey: tool.prompt,
         },
       ];
     },
@@ -1278,6 +1348,49 @@ function deriveSubagentPromptCandidates(
       (remainingChildMirrorsByText.get(candidate.text) ?? 0) + 1,
     );
   }
+  // The child's own user items are the decrypted copy of what the parent sent,
+  // so each one retires exactly ONE ciphertext marker — never all of them, or
+  // a single decrypted instruction would erase the agent's whole history.
+  // Providers give the two no shared id, so pair each plaintext item with the
+  // newest still-unpaired marker at or before it: a marker that has no
+  // plaintext yet (the child is still mid-turn) is always newer, and survives.
+  const decryptedChildMirrorTimes = toolCandidates
+    .filter((candidate) => candidate.childUserMessage && !directPromptTexts.has(candidate.text))
+    .map((candidate) => candidate.createdAt)
+    .sort((left, right) => left.localeCompare(right));
+  const encryptedCandidates = [...uniqueDirectCandidates]
+    .filter((candidate) => candidate.encryptedFallback)
+    .sort(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.key.localeCompare(right.key),
+    );
+  const suppressedEncryptedKeys = new Set<string>();
+  const pairEncryptedMarker = (mirrorTime: string): void => {
+    for (let index = encryptedCandidates.length - 1; index >= 0; index -= 1) {
+      const encrypted = encryptedCandidates[index];
+      if (
+        encrypted &&
+        !suppressedEncryptedKeys.has(encrypted.key) &&
+        encrypted.createdAt.localeCompare(mirrorTime) <= 0
+      ) {
+        suppressedEncryptedKeys.add(encrypted.key);
+        return;
+      }
+    }
+    // Rollout recovery is polled, so a marker can be persisted after the child
+    // already echoed the instruction. Fall forward to the oldest unpaired
+    // marker rather than leaving the pair unmatched and printing both the
+    // instruction and a placeholder for it.
+    for (const encrypted of encryptedCandidates) {
+      if (!suppressedEncryptedKeys.has(encrypted.key)) {
+        suppressedEncryptedKeys.add(encrypted.key);
+        return;
+      }
+    }
+  };
+  for (const mirrorTime of decryptedChildMirrorTimes) {
+    pairEncryptedMarker(mirrorTime);
+  }
   // Mobile Hermes does not provide the ES2023 change-by-copy array methods.
   return [...uniqueDirectCandidates, ...toolCandidates]
     .sort(
@@ -1285,6 +1398,9 @@ function deriveSubagentPromptCandidates(
         left.createdAt.localeCompare(right.createdAt) || left.key.localeCompare(right.key),
     )
     .filter((candidate) => {
+      if (suppressedEncryptedKeys.has(candidate.key)) {
+        return false;
+      }
       if (candidate.childUserMessage) {
         const remainingMirrors = remainingChildMirrorsByText.get(candidate.text) ?? 0;
         if (remainingMirrors > 0) {
@@ -1292,7 +1408,12 @@ function deriveSubagentPromptCandidates(
           return false;
         }
       }
-      const fingerprint = `${candidate.createdAt}\u0000${candidate.text}`;
+      // Two instructions can share text AND millisecond (historical recovery
+      // replays them in a tight loop), so identity wins whenever the provider
+      // supplied one; text+time only backstops candidates that have none.
+      const fingerprint = candidate.promptId
+        ? `id\u0000${candidate.promptId}`
+        : `${candidate.createdAt}\u0000${candidate.text}`;
       if (seen.has(fingerprint)) return false;
       seen.add(fingerprint);
       return true;
@@ -1311,9 +1432,11 @@ export function selectSubagentTranscriptMessages(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   agentId: string,
 ): ReadonlyArray<OrchestrationMessage> {
-  const selectedMessages = messages.filter(
-    (message) => message.agentId === agentId && !isEncryptedCollabPrompt(message.text),
-  );
+  // Every agent-attributed message is assistant output (the server never
+  // stamps agentId on a user message), so nothing here may be dropped on
+  // content shape: a ciphertext-looking assistant reply is still the agent
+  // talking.
+  const selectedMessages = messages.filter((message) => message.agentId === agentId);
   const firstTranscriptCreatedAt = [
     ...selectedMessages.map((message) => message.createdAt),
     ...selectSubagentTranscriptActivities(activities, agentId).map(
@@ -1441,7 +1564,14 @@ export function deriveSubagentTranscript({
       continue;
     }
     const payload = activity.payload as Record<string, unknown>;
-    if (asString(payload.agentId) !== agentId || payload.itemType === "assistant_message") {
+    // Message items are already represented as transcript messages
+    // (assistant text by the message projection, the parent's instruction by
+    // the prompt selector above), so they must not also become tool cards.
+    if (
+      asString(payload.agentId) !== agentId ||
+      payload.itemType === "assistant_message" ||
+      payload.itemType === "user_message"
+    ) {
       continue;
     }
     const itemId = asString(payload.itemId) ?? activity.id;
