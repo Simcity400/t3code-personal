@@ -264,6 +264,9 @@ function linksFromState(
 }
 
 const BOUNDARY_BYTES = 4096;
+// Cap on newline-less bytes carried between chunks while scanning a rollout;
+// a corrupt file must not buffer gigabytes in memory.
+const MAX_ROLLOUT_TRAILING_BYTES = 1024 * 1024;
 
 async function readBoundaryHash(filePath: string, offset: number): Promise<string> {
   if (offset === 0) {
@@ -343,7 +346,10 @@ export async function scanNativeCollabPromptRollout(
       const data = trailing.length === 0 ? chunk : Buffer.concat([trailing, chunk]);
       const lastNewline = data.lastIndexOf(10);
       if (lastNewline < 0) {
-        trailing = data;
+        // A corrupt/truncated rollout can be newline-less for gigabytes; drop
+        // the unparseable run instead of buffering it all in memory. bytesRead
+        // already counts it, so the cursor offset still advances past it.
+        trailing = data.length > MAX_ROLLOUT_TRAILING_BYTES ? Buffer.alloc(0) : data;
         continue;
       }
       const complete = data.subarray(0, lastNewline).toString("utf8");

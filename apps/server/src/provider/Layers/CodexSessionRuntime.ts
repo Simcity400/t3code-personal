@@ -56,6 +56,8 @@ const BENIGN_ERROR_LOG_SNIPPETS = [
   "state db record_discrepancy: find_thread_path_by_id_str_in_subdir, falling_back",
 ];
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
+// Cap on the newline-less stderr carry-over between chunks.
+const MAX_STDERR_REMAINDER_CHARS = 1024 * 1024;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
   "missing thread",
@@ -2035,7 +2037,14 @@ export const makeCodexSessionRuntime = (
           const combined = current + chunk;
           const lines = combined.split("\n");
           const remainder = lines.pop() ?? "";
-          return [lines.map((line) => line.replace(/\r$/, "")), remainder] as const;
+          // A wedged child emitting newline-less garbage must not grow this
+          // carry-over without bound; past the cap, drop the unclassifiable
+          // prefix and keep the newest tail.
+          const boundedRemainder =
+            remainder.length > MAX_STDERR_REMAINDER_CHARS
+              ? remainder.slice(-MAX_STDERR_REMAINDER_CHARS)
+              : remainder;
+          return [lines.map((line) => line.replace(/\r$/, "")), boundedRemainder] as const;
         }).pipe(
           Effect.flatMap((lines) =>
             Effect.forEach(

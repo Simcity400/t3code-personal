@@ -15,6 +15,7 @@ export function hasCodexModelCatalogOverride(launchArgs: string): boolean {
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === undefined) continue;
+    // clap also accepts the attached short form `-cmodel_catalog_json=…`.
     const configValue =
       argument === "--config" || argument === "-c"
         ? args[index + 1]
@@ -22,7 +23,9 @@ export function hasCodexModelCatalogOverride(launchArgs: string): boolean {
           ? argument.slice("--config=".length)
           : argument.startsWith("-c=")
             ? argument.slice("-c=".length)
-            : undefined;
+            : argument.startsWith("-c") && argument.includes("=")
+              ? argument.slice(2)
+              : undefined;
     if (configValue !== undefined && /^\s*model_catalog_json\s*=/.test(configValue)) {
       return true;
     }
