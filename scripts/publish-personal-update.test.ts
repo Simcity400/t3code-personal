@@ -10,6 +10,7 @@ import {
   parseJsonOutput,
   parseGitCommitCount,
   parsePublishSelection,
+  personalPublishEnv,
 } from "./publish-personal-update.ts";
 
 describe("personal local update publisher", () => {
@@ -95,6 +96,16 @@ describe("personal local update publisher", () => {
       "--json",
       "--non-interactive",
     ]);
+  });
+
+  it("publishes with the personal preview variant and direct Expo push alerts enabled", () => {
+    const env = personalPublishEnv({ PATH: "/usr/bin", APP_VARIANT: "production" });
+    expect(env.APP_VARIANT).toBe("preview");
+    // Without this the published OTA carries extra.personalExpoPushAlerts=false
+    // and the app never requests an Expo push token, so no alert can arrive.
+    expect(env.T3CODE_EXPO_PUSH_ALERTS).toBe("1");
+    expect(env.NODE_OPTIONS).toBe("--max-old-space-size=8192");
+    expect(env.PATH).toBe("/usr/bin");
   });
 
   it("accepts only a little-endian Linux x64 ELF seed", () => {

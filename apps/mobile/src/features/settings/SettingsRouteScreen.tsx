@@ -7,7 +7,7 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { SymbolView } from "../../components/AppSymbol";
 import * as Effect from "effect/Effect";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Alert, AppState, Linking, Platform, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -25,7 +25,11 @@ import {
   supportsRemoteAgentAwarenessLiveActivities,
   usesPersonalExpoPushAlerts,
 } from "../agent-awareness/capabilities";
-import { requestPersonalExpoPushRegistrationRefresh } from "../agent-awareness/expoPushRegistration";
+import {
+  getPersonalExpoPushRegistrationStatus,
+  requestPersonalExpoPushRegistrationRefresh,
+  subscribePersonalExpoPushRegistrationStatus,
+} from "../agent-awareness/expoPushRegistration";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import {
@@ -52,7 +56,9 @@ import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import {
   resolveAgentAwarenessPlatformPresentation,
+  resolveLiveActivityRowSubtitle,
   resolveLiveActivitySwitchValue,
+  resolveNotificationRowSubtitle,
   resolveNotificationSwitchValue,
 } from "./SettingsRouteScreen.logic";
 
@@ -150,6 +156,12 @@ function ConfiguredSettingsRouteScreen() {
   const { savedConnectionsById } = useSavedRemoteConnections();
   const [notificationStatus, setNotificationStatus] = useState<NotificationStatus>("checking");
   const [liveActivityStatus, setLiveActivityStatus] = useState<LiveActivityStatus>("checking");
+  // Registration is the half of the pipeline the permission switch cannot show.
+  const pushRegistrationStatus = useSyncExternalStore(
+    subscribePersonalExpoPushRegistrationStatus,
+    getPersonalExpoPushRegistrationStatus,
+    getPersonalExpoPushRegistrationStatus,
+  );
   const hasLoadedLiveActivitiesPreference = AsyncResult.isSuccess(preferencesResult);
   const liveActivitiesPreferenceEnabled = hasLoadedLiveActivitiesPreference
     ? preferencesResult.value.liveActivitiesEnabled !== false
@@ -176,6 +188,17 @@ function ConfiguredSettingsRouteScreen() {
     }
     setNotificationStatus(result.value.granted ? "enabled" : "disabled");
   }, []);
+
+  // Opening Settings is when a failed registration should be retried. The
+  // background reporter already re-reads the token on every foreground
+  // transition, so this only covers arriving at this screen while the app is
+  // already active — and it fires once, not on every AppState change, so it
+  // cannot race that reporter into acquiring an Expo token twice.
+  useEffect(() => {
+    if (!personalExpoPushAlerts) return;
+    if (getPersonalExpoPushRegistrationStatus() !== "failed") return;
+    requestPersonalExpoPushRegistrationRefresh();
+  }, [personalExpoPushAlerts]);
 
   useEffect(() => {
     void refreshNotifications();
@@ -494,11 +517,12 @@ function ConfiguredSettingsRouteScreen() {
               notificationStatus === "checking" ||
               notificationStatus === "unsupported"
             }
-            subtitle={
-              personalExpoPushAlerts
-                ? "Delivered directly by each connected T3 Code environment."
-                : agentAwarenessPlatform.subtitle
-            }
+            subtitle={resolveNotificationRowSubtitle({
+              personalExpoPushAlerts,
+              platformSubtitle: agentAwarenessPlatform.subtitle,
+              permissionStatus: notificationStatus,
+              registrationStatus: pushRegistrationStatus,
+            })}
             // iOS permission is the durable user setting. Registration is an
             // operational state that retries in the background and must not
             // make an enabled switch visually turn itself off.
@@ -519,11 +543,10 @@ function ConfiguredSettingsRouteScreen() {
             }
             icon="bolt.circle"
             label="Live Activity Updates"
-            subtitle={
-              personalExpoPushAlerts
-                ? "Remote updates require a personal APNs relay and are unavailable in this build."
-                : agentAwarenessPlatform.subtitle
-            }
+            subtitle={resolveLiveActivityRowSubtitle({
+              personalExpoPushAlerts,
+              platformSubtitle: agentAwarenessPlatform.subtitle,
+            })}
             // The preference is durable; relay registration is transient and
             // reports failures separately without rewriting the switch.
             value={resolveLiveActivitySwitchValue({

@@ -430,13 +430,26 @@ function publishDesktop(input: {
   console.log(`Published desktop release ${input.metadata.tag}.`);
 }
 
-function easCommand(releaseRoot: string, args: ReadonlyArray<string>, capture = false): string {
-  const cwd = NodePath.join(releaseRoot, "apps", "mobile");
-  const env = {
-    ...process.env,
+// EAS runs in a detached worktree with no .env of its own, so every value the
+// mobile app config reads at publish time has to come from this environment.
+// T3CODE_EXPO_PUSH_ALERTS controls extra.personalExpoPushAlerts, which decides
+// whether the app registers an Expo push token at all; app.config.ts also
+// defaults it on for the preview variant, and stating it here keeps the
+// publisher self-describing instead of depending on that default.
+export function personalPublishEnv(
+  baseEnv: Readonly<Record<string, string | undefined>>,
+): Record<string, string | undefined> {
+  return {
+    ...baseEnv,
     APP_VARIANT: "preview",
+    T3CODE_EXPO_PUSH_ALERTS: "1",
     NODE_OPTIONS: "--max-old-space-size=8192",
   };
+}
+
+function easCommand(releaseRoot: string, args: ReadonlyArray<string>, capture = false): string {
+  const cwd = NodePath.join(releaseRoot, "apps", "mobile");
+  const env = personalPublishEnv(process.env);
   const npxPath = NodePath.join(
     NodePath.dirname(process.execPath),
     "node_modules",
