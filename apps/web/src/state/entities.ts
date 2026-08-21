@@ -44,6 +44,10 @@ const EMPTY_THREAD_REFS_ATOM = Atom.make(EMPTY_THREAD_REFS).pipe(
 const EMPTY_THREAD_SHELL_ATOM = Atom.make<EnvironmentThreadShell | null>(null).pipe(
   Atom.withLabel("web-thread-shell:empty"),
 );
+const EMPTY_ATTACHED_SIDE_CHATS: ReadonlyArray<EnvironmentThreadShell> = Object.freeze([]);
+const EMPTY_ATTACHED_SIDE_CHATS_ATOM = Atom.make(EMPTY_ATTACHED_SIDE_CHATS).pipe(
+  Atom.withLabel("web-attached-side-chats:empty"),
+);
 const EMPTY_THREAD_DETAIL_ATOM = Atom.make<EnvironmentThread | null>(null).pipe(
   Atom.withLabel("web-thread-detail:empty"),
 );
@@ -118,6 +122,16 @@ export function useServerConfigs(): ReadonlyMap<EnvironmentId, ServerConfig> {
 
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
   return useAtomValue(environmentThreadShells.threadShellsAtom);
+}
+
+export function useAttachedSideChats(
+  ref: ScopedThreadRef | null,
+): ReadonlyArray<EnvironmentThreadShell> {
+  return useAtomValue(
+    ref === null
+      ? EMPTY_ATTACHED_SIDE_CHATS_ATOM
+      : environmentThreadShells.attachedSideChatsAtom(ref),
+  );
 }
 
 export function useAllEnvironmentShellsBootstrapped(): boolean {
