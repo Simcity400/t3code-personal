@@ -55,6 +55,11 @@ import Migration0039 from "./Migrations/039_ProjectionProjectsDefaultThreadEnvMo
 import Migration0040 from "./Migrations/040_ProjectionProjectFaviconPath.ts";
 import Migration0041 from "./Migrations/041_ProjectionThreadMessageAgentId.ts";
 import Migration0042 from "./Migrations/042_ProjectionThreadSideChats.ts";
+// Fork note: upstream shipped this as migration 041, but ids 041/042 are already
+// recorded in every fork database (the fork added its own two first). The migrator
+// only runs ids greater than the highest recorded one, so upstream's migration is
+// renumbered to 043 here — otherwise it would silently never run on fork machines.
+import Migration0043 from "./Migrations/043_AuthSessionClientConnection.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -109,6 +114,7 @@ export const migrationEntries = [
   [40, "ProjectionProjectFaviconPath", Migration0040],
   [41, "ProjectionThreadMessageAgentId", Migration0041],
   [42, "ProjectionThreadSideChats", Migration0042],
+  [43, "AuthSessionClientConnection", Migration0043],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
