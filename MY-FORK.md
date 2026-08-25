@@ -122,6 +122,23 @@ machine.
   diagnostics were silently unavailable. A copy from the installed app lives at
   `apps/desktop/resources/resource-monitor/` (gitignored). If it goes missing, re-copy
   it from `%LOCALAPPDATA%\Programs\t3code\resources\resource-monitor\`.
+- **Automatic upstream sync without Actions** (2026-08-25): `scripts/local-fork-sync.ts` is the
+  local stand-in for the billing-blocked `fork-sync.yml`. Double-click
+  `scripts
+egister-local-fork-sync.cmd` once to create the Windows Task Scheduler job
+  "T3 Personal Fork Sync"; it runs every 2 hours while you are logged on (interactive token, no
+  stored password). Each run compares npm's `t3` nightly dist-tag with the version pinned on
+  `origin/main` and stops immediately unless the nightly moved or a `needs-merge-help` marker is
+  waiting. When there is work it refuses to touch anything unless the tracked tree is clean and the
+  checkout is on `main` — it never stashes, resets, or discards local work — then merges
+  `upstream/main`, auto-resolves conflicts confined to the four version-pinned package.json files,
+  re-pins them to the nightly, pushes `main`, clears the marker, and runs
+  `node scripts/publish-personal-update.ts`. Genuine code conflicts abort the merge and force-push
+  the `needs-merge-help` branch exactly like the workflow did, so the in-app pill still appears. A
+  checkout that is behind `origin/main` is fast-forwarded; one that is ahead is only pushed when
+  the sync itself made those commits and failed to push them earlier. Runs are serialized by a lock
+  directory and logged with timestamps to `.logs/local-fork-sync.log` (gitignored, last 20 runs /
+  8 MB). Remove the job with `schtasks /delete /tn "T3 Personal Fork Sync" /f`.
 - **Nightly version pin**: `version` in `apps/server`, `apps/desktop`, `apps/web`, and
   `packages/contracts` package.json is pinned to the published npm nightly so the app
   identifies as Nightly and device connections install a matching published
