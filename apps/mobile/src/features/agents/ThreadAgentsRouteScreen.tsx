@@ -170,6 +170,8 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
           listRef={transcriptListRef}
           freeze={freeze}
           anchorMessageId={null}
+          // Read-only transcript: nothing is ever submitted from this surface.
+          submittedMessageId={null}
           contentInsetEndAdjustment={contentInsetEndAdjustment}
           contentTopInset={0}
           contentBottomInset={18}

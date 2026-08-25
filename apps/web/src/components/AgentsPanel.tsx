@@ -785,7 +785,6 @@ function AgentTranscript({
         <MessagesTimeline
           key={agent.id}
           isWorking={isWorking}
-          activeTurnInProgress={isWorking}
           activeTurnStartedAt={isWorking ? (agent.startedAt ?? agent.firstSeenAt) : null}
           listRef={listRef}
           timelineEntries={timelineEntries}
