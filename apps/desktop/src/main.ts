@@ -82,10 +82,12 @@ if (!Electron.app.isPackaged) {
     return value.length > 0 ? value : undefined;
   };
   const isDevelopment = trimmedEnv("VITE_DEV_SERVER_URL") !== undefined;
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- This block runs before the Effect runtime exists, by design (see the comment above), so HostProcessPlatform is not available yet.
+  const hostPlatform = process.platform;
   const appDataDirectory =
-    process.platform === "win32"
+    hostPlatform === "win32"
       ? (trimmedEnv("APPDATA") ?? NodePath.join(NodeOS.homedir(), "AppData", "Roaming"))
-      : process.platform === "darwin"
+      : hostPlatform === "darwin"
         ? NodePath.join(NodeOS.homedir(), "Library", "Application Support")
         : (trimmedEnv("XDG_CONFIG_HOME") ?? NodePath.join(NodeOS.homedir(), ".config"));
   const legacyPath = NodePath.join(
