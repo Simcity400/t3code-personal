@@ -817,7 +817,6 @@ function AgentTranscript({
             <button
               type="button"
               aria-label="Scroll to end"
-              title="Scroll to end"
               onClick={() => {
                 setLiveFollowEnabled(true);
                 void listRef.current?.scrollToEnd?.({ animated: true });
