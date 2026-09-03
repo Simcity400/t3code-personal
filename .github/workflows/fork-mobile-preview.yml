@@ -2,6 +2,19 @@ name: Personal iPhone Preview
 
 on:
   workflow_dispatch:
+  # fork-sync.yml calls this after it pushes a merged main. A push made with
+  # GITHUB_TOKEN never fires `push` triggers, so without this entry the iPhone
+  # OTA silently stopped tracking main whenever the scheduled sync — rather
+  # than a human — was what moved it.
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact main commit to publish
+        required: true
+        type: string
+    secrets:
+      EXPO_TOKEN:
+        required: true
   push:
     branches: [main]
     paths:
@@ -47,6 +60,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.sha }}
           fetch-depth: 0
 
       - name: Setup Vite+

@@ -239,3 +239,17 @@ jobs:
       ref: ${{ needs.sync.outputs.ref }}
     permissions:
       contents: write
+
+  # Same reason the desktop release is called rather than left to a push
+  # trigger: this job's push used GITHUB_TOKEN, and GitHub does not fire `push`
+  # workflows for those, so the iPhone OTA would otherwise never see a merge
+  # the robot made.
+  mobile:
+    name: Publish the synced iPhone update
+    needs: sync
+    uses: ./.github/workflows/fork-mobile-preview.yml
+    with:
+      ref: ${{ needs.sync.outputs.ref }}
+    secrets: inherit
+    permissions:
+      contents: read

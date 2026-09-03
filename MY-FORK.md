@@ -152,6 +152,11 @@ machine.
   Upstream's `infra/relay/scripts/deploy.test.ts` guard over `release.yml` was dropped
   with it. `fork-release.yml`'s old `sync_upstream` job — a second, weaker copy of the
   same merge — was deleted; `fork-sync.yml` is the only place that merges upstream.
+  Same round: `fork-mobile-preview.yml` gained a `workflow_call` trigger and
+  `fork-sync.yml` now calls it beside `fork-release.yml`. GitHub never fires a `push`
+  workflow for a push made with `GITHUB_TOKEN`, so before this the iPhone OTA silently
+  stopped following `main` whenever the scheduled sync — rather than a person — was what
+  moved it; only the desktop release was being called explicitly.
 - **One-line composer (web)**: retired 2026-09-03 — upstream's "collapse the resting
   composer" (#7855) collapses the desktop composer to a single line at rest and expands
   it on focus, replacing the fork's `min-h-[1lh]` on the composer `ContentEditable` in
