@@ -182,6 +182,7 @@ import { AgentsPanel } from "./AgentsPanel";
 import {
   deriveAgentPanelModel,
   deriveSubagentReplies,
+  flattenAgentPanelRoster,
   foldSubagentActivities,
   formatSubagentTitle,
 } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -2484,16 +2485,24 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveSubagentReplies(threadActivities, activeThread?.messages ?? EMPTY_MESSAGES),
     [activeThread?.messages, threadActivities],
   );
+  // Titles for the whole roster, not just direct spawns: a workflow member
+  // replies to the thread too, and reading its title off `directAgents` alone
+  // left it labelled with a raw task id. Same flattening the Agents panel does.
+  const subagentTitleById = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const agent of flattenAgentPanelRoster(agentPanelModel)) {
+      byId.set(agent.id, agent.title);
+    }
+    return byId;
+  }, [agentPanelModel]);
   const subagentReplyMessages = useMemo(
     () =>
       deriveSubagentReplyMessages(subagentReplies, null, (reply) =>
         formatSubagentTitle(
-          agentPanelModel.directAgents.find((agent) => agent.id === reply.agentId)?.title ??
-            reply.agentTitle ??
-            reply.agentId,
+          subagentTitleById.get(reply.agentId) ?? reply.agentTitle ?? reply.agentId,
         ),
       ),
-    [agentPanelModel.directAgents, subagentReplies],
+    [subagentReplies, subagentTitleById],
   );
   const subagentReplyByMessageId = useMemo(
     () =>

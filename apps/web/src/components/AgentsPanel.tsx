@@ -23,6 +23,7 @@ import {
   formatSubagentTitle,
   formatSubagentTokenCount,
   filterWorkflowForPanelSection,
+  flattenAgentPanelRoster,
   isActiveSubagentStatus,
   deriveSubagentReplies,
   selectSubagentTranscriptActivities,
@@ -1039,13 +1040,7 @@ export function AgentsPanel({
       ),
     ),
   );
-  const allAgents = useMemo(
-    () => [
-      ...model.directAgents,
-      ...model.workflows.flatMap((group) => [group.workflow, ...workflowMembers(group)]),
-    ],
-    [model],
-  );
+  const allAgents = useMemo(() => flattenAgentPanelRoster(model), [model]);
   const sections = useMemo(
     () => ({
       activeWorkflows: model.workflows.flatMap((group) => {

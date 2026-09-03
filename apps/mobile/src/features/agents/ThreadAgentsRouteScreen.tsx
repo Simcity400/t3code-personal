@@ -1,5 +1,6 @@
 import {
   deriveAgentPanelModel,
+  flattenAgentPanelRoster,
   foldSubagentActivities,
   formatSubagentTitle,
   isActiveSubagentStatus,
@@ -53,17 +54,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
     [thread, selectedAgentId],
   );
   const model = useMemo(() => deriveAgentPanelModel({ agents, v2Projection: null }), [agents]);
-  const allAgents = useMemo(
-    () => [
-      ...model.directAgents,
-      ...model.workflows.flatMap((group) => [
-        group.workflow,
-        ...group.phases.flatMap((phase) => phase.members),
-        ...group.unphasedMembers,
-      ]),
-    ],
-    [model],
-  );
+  const allAgents = useMemo(() => flattenAgentPanelRoster(model), [model]);
   const selectedAgent = allAgents.find((agent) => agent.id === selectedAgentId) ?? null;
   const activeAgents = useMemo(
     () => allAgents.filter((agent) => subagentPanelSection(agent.status) === "active"),
