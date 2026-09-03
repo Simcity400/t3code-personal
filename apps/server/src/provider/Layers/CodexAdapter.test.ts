@@ -994,6 +994,48 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("names which wait a child agent is blocked on", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 3)).pipe(
+        Effect.forkChild,
+      );
+
+      const statusEvent = (id: string, activeFlags: ReadonlyArray<string>) => ({
+        id: asEventId(id),
+        kind: "notification" as const,
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "collabAgent/statusChanged",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        payload: {
+          agentThreadId: "child-1",
+          agentPath: "/root/audit",
+          status: { type: "active", activeFlags },
+        },
+      });
+
+      yield* runtime.emit(statusEvent("evt-approval", ["waitingOnApproval"]));
+      yield* runtime.emit(statusEvent("evt-input", ["waitingOnUserInput"]));
+      yield* runtime.emit(statusEvent("evt-busy", ["thinking"]));
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      NodeAssert.deepStrictEqual(
+        events.map((event) =>
+          event.type === "task.updated"
+            ? { status: event.payload.status, waitReason: event.payload.waitReason }
+            : { type: event.type },
+        ),
+        [
+          { status: "waiting", waitReason: "approval" },
+          { status: "waiting", waitReason: "user-input" },
+          { status: "running", waitReason: undefined },
+        ],
+      );
+    }),
+  );
+
   it.effect("maps completed agent message items to canonical item.completed events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

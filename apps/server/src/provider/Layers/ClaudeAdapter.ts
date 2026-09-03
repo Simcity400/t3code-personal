@@ -1284,6 +1284,7 @@ function taskLinkageFor(
     ...(agent.model ? { model: agent.model } : {}),
     ...(agent.effort ? { effort: agent.effort } : {}),
     ...(agent.toolUseId ? { toolUseId: agent.toolUseId } : {}),
+    ...(agent.skipTranscript ? { skipTranscript: true } : {}),
     ...(agent.workflowName ? { workflowName: agent.workflowName } : {}),
     ...(agent.runHandles ? { runHandles: agent.runHandles } : {}),
   };
@@ -4007,6 +4008,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(model ? { model } : {}),
             ...(effort ? { effort } : {}),
             ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),
+            // Ambient housekeeping: the SDK asks clients to keep it out of the
+            // inline transcript but says it "may still appear in a tasks panel".
+            ...(message.skip_transcript === true ? { skipTranscript: true } : {}),
             ...(message.workflow_name ? { workflowName: message.workflow_name } : {}),
           },
         });
@@ -4089,6 +4093,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       case "task_notification": {
         context.liveTaskIds.delete(message.task_id);
         releaseSubagentStream(context, message.task_id);
+        // The terminal row carries its own skip_transcript. A notification
+        // that arrives without a remembered start (task_started missed, or a
+        // reconnect dropped the entry) would otherwise lose the flag and the
+        // ambient row would surface in the chat transcript.
+        if (message.skip_transcript === true) {
+          const remembered = context.taskAgents.get(message.task_id);
+          if (remembered) {
+            remembered.skipTranscript = true;
+          }
+        }
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -4109,6 +4123,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(typedUsage ? { typedUsage } : {}),
             ...(message.output_file ? { outputFile: message.output_file } : {}),
             ...taskLinkageFor(context.taskAgents, message.task_id),
+            ...(message.skip_transcript === true ? { skipTranscript: true } : {}),
           },
         });
         return;

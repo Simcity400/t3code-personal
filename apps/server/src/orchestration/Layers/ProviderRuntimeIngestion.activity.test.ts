@@ -142,3 +142,40 @@ describe("runtimeEventToActivities tool streaming persistence", () => {
     expect(payload.data).toEqual(streamingData);
   });
 });
+
+describe("runtimeEventToActivities task.updated", () => {
+  const updated = (payload: Record<string, unknown>) =>
+    runtimeEventToActivities({
+      ...base,
+      type: "task.updated",
+      eventId: EventId.make("evt-updated"),
+      payload: { taskId: RuntimeTaskId.make("task-1"), ...payload },
+    } as ProviderRuntimeEvent)[0]?.payload as Record<string, unknown>;
+
+  it("persists the status patch so transitions survive a reload", () => {
+    // Guards the linkage bundle: the client folds read payload.status on
+    // task.updated, so dropping it would discard every killed/paused
+    // transition. Covered by taskLinkageActivityFields, not a local copy.
+    expect(updated({ status: "cancelled" }).status).toBe("cancelled");
+    expect(updated({ status: "idle" }).status).toBe("idle");
+  });
+
+  it("persists the provider wait reason alongside the status", () => {
+    const payload = updated({ status: "waiting", waitReason: "approval", error: "boom" });
+    expect(payload.waitReason).toBe("approval");
+    expect(payload.error).toBe("boom");
+  });
+
+  it("omits absent optional fields", () => {
+    const payload = updated({ description: "still going" });
+    expect("status" in payload).toBe(false);
+    expect("waitReason" in payload).toBe(false);
+    expect("error" in payload).toBe(false);
+    expect(payload.detail).toBe("still going");
+  });
+
+  it("carries skipTranscript through the linkage bundle", () => {
+    expect(updated({ status: "running", skipTranscript: true }).skipTranscript).toBe(true);
+    expect(updated({ taskType: "local_bash" }).agentKind).toBe("background");
+  });
+});

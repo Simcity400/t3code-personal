@@ -359,6 +359,7 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     "model",
     "effort",
     "toolUseId",
+    "skipTranscript",
     "prompt",
     // Without the provider's prompt id, two identical follow-up instructions
     // are indistinguishable on the client and collapse into one row.
@@ -749,6 +750,9 @@ export function runtimeEventToActivities(
                 : "Task updated",
           payload: {
             taskId: event.payload.taskId,
+            // status and error already ride the linkage bundle below; only
+            // waitReason needs copying here.
+            ...(event.payload.waitReason ? { waitReason: event.payload.waitReason } : {}),
             ...(event.payload.description
               ? { detail: truncateDetail(event.payload.description) }
               : {}),

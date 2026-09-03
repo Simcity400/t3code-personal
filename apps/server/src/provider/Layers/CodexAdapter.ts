@@ -1035,14 +1035,24 @@ function mapCollabAgentEvent(
       }
       if (statusType === "active") {
         const flags = Array.isArray(status?.activeFlags) ? status.activeFlags : [];
-        const waiting = flags.some(
-          (flag) => flag === "waitingOnApproval" || flag === "waitingOnUserInput",
-        );
+        // Which flag it is answers "what is this child waiting on" — the
+        // panel's whole question. Collapsing both into a bare `waiting` threw
+        // away the only per-agent wait reason any provider reports.
+        const waitReason = flags.includes("waitingOnApproval")
+          ? ("approval" as const)
+          : flags.includes("waitingOnUserInput")
+            ? ("user-input" as const)
+            : undefined;
         return [
           {
             ...base,
             type: "task.updated",
-            payload: { taskId, status: waiting ? "waiting" : "running", ...linkage },
+            payload: {
+              taskId,
+              status: waitReason ? ("waiting" as const) : ("running" as const),
+              ...(waitReason ? { waitReason } : {}),
+              ...linkage,
+            },
           },
         ];
       }
