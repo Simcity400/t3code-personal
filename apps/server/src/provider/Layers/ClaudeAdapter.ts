@@ -1085,12 +1085,6 @@ const CLAUDE_TASK_PATCH_STATUS: Record<string, RuntimeTaskStatus> = {
 };
 
 /**
- * Resolves a stream message's parent_tool_use_id to the owning agent's
- * taskId. The Task tool's tool_use_id is remembered on task_started; any
- * subagent-forwarded block carries that id as its parent. Returns undefined
- * for parent-conversation traffic.
- */
-/**
  * Key for {@link ClaudeSessionContext.inFlightTools}: the owning conversation
  * (the parent, or a child's `parent_tool_use_id`) plus the content block
  * index. Indices are only unique within one conversation's message.
@@ -1112,6 +1106,12 @@ function releaseSubagentStream(context: ClaudeSessionContext, taskId: string): v
   }
 }
 
+/**
+ * Resolves a stream message's parent_tool_use_id to the owning agent's
+ * taskId. The Task tool's tool_use_id is remembered on task_started; any
+ * subagent-forwarded block carries that id as its parent. Returns undefined
+ * for parent-conversation traffic.
+ */
 function agentIdForParentToolUse(
   agents: Map<string, ClaudeTaskAgentState>,
   parentToolUseId: string | null | undefined,
