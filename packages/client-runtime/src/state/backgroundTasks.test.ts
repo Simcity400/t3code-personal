@@ -1,0 +1,829 @@
+import { describe, expect, it } from "vite-plus/test";
+import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tools/contracts";
+
+import { foldSubagentActivities } from "./subagentRuntime.ts";
+import {
+  backgroundTaskKind,
+  deriveAgentWaitReasons,
+  deriveBackgroundedTaskIds,
+  deriveAgentWaitStates,
+  deriveBackgroundTasksPanelModel,
+  deriveOpenRequestWaits,
+  foldBackgroundTasks,
+  formatElapsedBetween,
+  formatElapsedDuration,
+  isActiveBackgroundTaskStatus,
+  isTerminalBackgroundTaskStatus,
+  type RuntimeBackgroundTask,
+} from "./backgroundTasks.ts";
+
+let sequence = 0;
+
+/**
+ * Fixtures model POST-INGESTION rows: ingestion stamps agentKind on every
+ * task.* payload with the same classifier, so the helper stamps too. Pass an
+ * explicit agentKind to model a legacy (pre-stamp) row.
+ */
+function activity(
+  kind: string,
+  payload: Record<string, unknown>,
+  at?: string,
+): OrchestrationThreadActivity {
+  sequence += 1;
+  const stamped =
+    kind.startsWith("task.") && !("agentKind" in payload)
+      ? {
+          ...payload,
+          agentKind: classifyTaskAgentKind({
+            taskType: typeof payload.taskType === "string" ? payload.taskType : undefined,
+            agentId: typeof payload.agentId === "string" ? payload.agentId : undefined,
+          }),
+        }
+      : payload;
+  return {
+    id: `activity-${sequence}`,
+    tone: "info",
+    kind,
+    summary: kind,
+    payload: stamped,
+    turnId: null,
+    createdAt: at ?? `2026-09-03T10:00:${String(sequence % 60).padStart(2, "0")}.000Z`,
+  } as unknown as OrchestrationThreadActivity;
+}
+
+/** A pre-stamp row (legacy thread / old server): no agentKind at all. */
+function legacyActivity(
+  kind: string,
+  payload: Record<string, unknown>,
+): OrchestrationThreadActivity {
+  sequence += 1;
+  return {
+    id: `activity-${sequence}`,
+    tone: "info",
+    kind,
+    summary: kind,
+    payload,
+    turnId: null,
+    createdAt: `2026-09-03T10:00:${String(sequence % 60).padStart(2, "0")}.000Z`,
+  } as unknown as OrchestrationThreadActivity;
+}
+
+function byId(tasks: ReadonlyArray<RuntimeBackgroundTask>, id: string) {
+  const found = tasks.find((task) => task.id === id);
+  if (!found) throw new Error(`no task ${id} in [${tasks.map((task) => task.id).join(", ")}]`);
+  return found;
+}
+
+describe("backgroundTaskKind", () => {
+  it("splits shells back out of the contracts watch-loop set", () => {
+    expect(backgroundTaskKind("local_bash")).toBe("shell");
+    expect(backgroundTaskKind("shell")).toBe("shell");
+    expect(backgroundTaskKind("monitor")).toBe("monitor");
+    expect(backgroundTaskKind("monitor_mcp")).toBe("monitor");
+    expect(backgroundTaskKind("plan")).toBe("plan");
+    expect(backgroundTaskKind("dream")).toBe("plan");
+  });
+
+  it("keeps unknown and absent types visible as 'other'", () => {
+    expect(backgroundTaskKind("brand_new_sdk_type")).toBe("other");
+    expect(backgroundTaskKind(undefined)).toBe("other");
+    expect(backgroundTaskKind(null)).toBe("other");
+  });
+});
+
+describe("foldBackgroundTasks", () => {
+  it("keeps exactly the rows the subagent fold drops", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "sh-1", taskType: "local_bash", detail: "pnpm test" }),
+      activity("task.started", { taskId: "ag-1", taskType: "local_agent", title: "Reviewer" }),
+      activity("task.started", { taskId: "mon-1", taskType: "monitor", detail: "watch build" }),
+    ]);
+    expect(tasks.map((task) => task.id).toSorted()).toEqual(["mon-1", "sh-1"]);
+    expect(byId(tasks, "sh-1").kind).toBe("shell");
+    expect(byId(tasks, "sh-1").label).toBe("pnpm test");
+    expect(byId(tasks, "mon-1").kind).toBe("monitor");
+  });
+
+  it("treats a subagent's own shell as that subagent's background work", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", {
+        taskId: "sh-2",
+        taskType: "local_bash",
+        agentId: "ag-1",
+        detail: "cargo build",
+      }),
+    ]);
+    expect(byId(tasks, "sh-2").ownerAgentId).toBe("ag-1");
+  });
+
+  it("classifies a subagent-launched task of unknown type as background", () => {
+    // classifyTaskAgentKind: agentId set + no taskType => background.
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "x-1", agentId: "ag-1", detail: "unknown work" }),
+    ]);
+    expect(byId(tasks, "x-1").kind).toBe("other");
+    expect(byId(tasks, "x-1").ownerAgentId).toBe("ag-1");
+  });
+
+  it("tracks progress, then a terminal completion with its result", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "sh-1", taskType: "local_bash", detail: "pnpm test" }),
+      activity("task.progress", { taskId: "sh-1", taskType: "local_bash", summary: "42 passed" }),
+      activity("task.completed", {
+        taskId: "sh-1",
+        taskType: "local_bash",
+        status: "completed",
+        summary: "exit 0",
+      }),
+    ]);
+    const task = byId(tasks, "sh-1");
+    expect(task.status).toBe("completed");
+    expect(task.progress).toBe("42 passed");
+    expect(task.result).toBe("exit 0");
+    expect(task.endedAt).not.toBeNull();
+  });
+
+  it("maps a stopped completion to cancelled and a failure to failed", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "a", taskType: "shell", detail: "tail -f log" }),
+      activity("task.completed", { taskId: "a", taskType: "shell", status: "stopped" }),
+      activity("task.started", { taskId: "b", taskType: "shell", detail: "flaky" }),
+      activity("task.completed", {
+        taskId: "b",
+        taskType: "shell",
+        status: "failed",
+        summary: "exit 1",
+      }),
+    ]);
+    expect(byId(tasks, "a").status).toBe("cancelled");
+    expect(byId(tasks, "b").status).toBe("failed");
+    expect(byId(tasks, "b").error).toBe("exit 1");
+    expect(byId(tasks, "b").result).toBeNull();
+  });
+
+  it("applies a task.updated status patch and prefers the provider end time", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "sh-1", taskType: "local_bash", detail: "sleep 999" }),
+      activity("task.updated", {
+        taskId: "sh-1",
+        taskType: "local_bash",
+        status: "cancelled",
+        endedAt: "2026-09-03T09:59:00.000Z",
+      }),
+    ]);
+    const task = byId(tasks, "sh-1");
+    expect(task.status).toBe("cancelled");
+    expect(task.endedAt).toBe("2026-09-03T09:59:00.000Z");
+  });
+
+  it("freezes the first terminal timestamp but still absorbs a later result", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "sh-1", taskType: "local_bash", detail: "build" }),
+      activity("task.updated", { taskId: "sh-1", taskType: "local_bash", status: "completed" }),
+      activity("task.completed", {
+        taskId: "sh-1",
+        taskType: "local_bash",
+        status: "completed",
+        summary: "built in 4s",
+      }),
+    ]);
+    const task = byId(tasks, "sh-1");
+    expect(task.result).toBe("built in 4s");
+    // The terminal task.updated settled it; the completion must not slide it.
+    expect(task.endedAt).toBe(task.updatedAt);
+  });
+
+  it("does not reopen a settled task when a late start row arrives", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.completed", { taskId: "sh-1", taskType: "local_bash", status: "failed" }),
+      activity("task.started", { taskId: "sh-1", taskType: "local_bash", detail: "late row" }),
+    ]);
+    expect(byId(tasks, "sh-1").status).toBe("failed");
+    expect(byId(tasks, "sh-1").label).toBe("late row");
+  });
+
+  it("reopens on an explicit non-terminal status and clears the old outcome", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "m-1", taskType: "monitor", detail: "watch" }),
+      activity("task.completed", { taskId: "m-1", taskType: "monitor", status: "completed" }),
+      activity("task.updated", { taskId: "m-1", taskType: "monitor", status: "running" }),
+    ]);
+    const task = byId(tasks, "m-1");
+    expect(task.status).toBe("running");
+    expect(task.endedAt).toBeNull();
+    expect(task.result).toBeNull();
+  });
+
+  it("settles a task from a terminal row that carries only its type", () => {
+    // Terminal rows are thin — often just taskId, status and the repeated
+    // linkage. As long as the linkage still carries taskType the row stays
+    // background and settles the task in place. (A terminal row stamped
+    // `agent` is the overlap case and belongs to the subagent fold; see the
+    // exclusivity suite.)
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "sh-1", taskType: "local_bash", detail: "pnpm test" }),
+      activity("task.completed", { taskId: "sh-1", taskType: "local_bash", status: "completed" }),
+    ]);
+    expect(byId(tasks, "sh-1").status).toBe("completed");
+  });
+
+  it("marks live tasks interrupted when the session is gone, sparing idle ones", () => {
+    const rows = [
+      activity("task.started", { taskId: "live", taskType: "local_bash", detail: "server" }),
+      activity("task.started", { taskId: "rest", taskType: "monitor", detail: "watch" }),
+      activity("task.updated", { taskId: "rest", taskType: "monitor", status: "idle" }),
+    ];
+    const tasks = foldBackgroundTasks(rows, { sessionLive: false });
+    expect(byId(tasks, "live").status).toBe("interrupted");
+    expect(byId(tasks, "live").endedAt).not.toBeNull();
+    expect(byId(tasks, "rest").status).toBe("idle");
+  });
+
+  it("carries the backgrounded and ambient flags", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", {
+        taskId: "sh-1",
+        taskType: "local_bash",
+        detail: "npm run dev",
+        skipTranscript: true,
+      }),
+      activity("task.updated", {
+        taskId: "sh-1",
+        taskType: "local_bash",
+        isBackgrounded: true,
+      }),
+    ]);
+    expect(byId(tasks, "sh-1").ambient).toBe(true);
+    expect(byId(tasks, "sh-1").backgrounded).toBe(true);
+  });
+
+  it("skips rows without a task id and non-object payloads", () => {
+    expect(
+      foldBackgroundTasks([
+        activity("task.started", { taskType: "local_bash" }),
+        {
+          ...activity("task.started", { taskId: "x" }),
+          payload: null,
+        } as OrchestrationThreadActivity,
+      ]),
+    ).toEqual([]);
+  });
+
+  it("treats a legacy unstamped row as background, matching the subagent fold", () => {
+    const legacy = {
+      id: "legacy-1",
+      tone: "info",
+      kind: "task.started",
+      summary: "task.started",
+      payload: { taskId: "old-1", detail: "old shell" },
+      turnId: null,
+      createdAt: "2026-09-03T10:00:00.000Z",
+    } as unknown as OrchestrationThreadActivity;
+    expect(foldBackgroundTasks([legacy]).map((task) => task.id)).toEqual(["old-1"]);
+  });
+
+  it("orders newest first", () => {
+    const tasks = foldBackgroundTasks([
+      activity(
+        "task.started",
+        { taskId: "old", taskType: "shell", detail: "a" },
+        "2026-09-03T10:00:00.000Z",
+      ),
+      activity(
+        "task.started",
+        { taskId: "new", taskType: "shell", detail: "b" },
+        "2026-09-03T11:00:00.000Z",
+      ),
+    ]);
+    expect(tasks.map((task) => task.id)).toEqual(["new", "old"]);
+  });
+});
+
+describe("deriveOpenRequestWaits", () => {
+  it("opens on request and closes on resolution", () => {
+    const open = deriveOpenRequestWaits([
+      activity("approval.requested", { requestId: "r1", requestKind: "command" }),
+      activity("approval.requested", { requestId: "r2", requestKind: "file-change" }),
+      activity("approval.resolved", { requestId: "r1" }),
+    ]);
+    expect(open.map((request) => request.requestId)).toEqual(["r2"]);
+    expect(open[0]?.label).toBe("File-change approval");
+  });
+
+  it("closes a request the provider has already forgotten", () => {
+    const open = deriveOpenRequestWaits([
+      activity("approval.requested", { requestId: "r1", requestKind: "command" }),
+      activity("provider.approval.respond.failed", {
+        requestId: "r1",
+        detail: "Stale pending approval request",
+      }),
+    ]);
+    expect(open).toEqual([]);
+  });
+
+  it("tracks user-input requests alongside approvals", () => {
+    const open = deriveOpenRequestWaits([
+      activity("user-input.requested", { requestId: "q1", questions: [] }),
+    ]);
+    expect(open[0]?.kind).toBe("user-input");
+    expect(open[0]?.label).toBe("Your answer");
+  });
+
+  it("labels an approval of unknown kind generically", () => {
+    const open = deriveOpenRequestWaits([activity("approval.requested", { requestId: "r1" })]);
+    expect(open[0]?.label).toBe("Approval");
+  });
+});
+
+describe("deriveAgentWaitReasons", () => {
+  it("records a named reason and clears it when the child resumes", () => {
+    expect(
+      deriveAgentWaitReasons([
+        activity("task.updated", { taskId: "c1", status: "waiting", waitReason: "approval" }),
+      ]).get("c1")?.reason,
+    ).toBe("approval");
+    expect(
+      deriveAgentWaitReasons([
+        activity("task.updated", { taskId: "c1", status: "waiting", waitReason: "user-input" }),
+        activity("task.updated", { taskId: "c1", status: "running" }),
+      ]).get("c1"),
+    ).toBeUndefined();
+  });
+
+  it("times the wait from when it began, not from the agent's start", () => {
+    const reasons = deriveAgentWaitReasons([
+      activity("task.updated", { taskId: "c1", status: "running" }, "2026-09-03T10:00:00.000Z"),
+      activity(
+        "task.updated",
+        { taskId: "c1", status: "waiting", waitReason: "approval" },
+        "2026-09-03T10:40:00.000Z",
+      ),
+      // A repeat of the same reason must not restart the clock.
+      activity(
+        "task.updated",
+        { taskId: "c1", status: "waiting", waitReason: "approval" },
+        "2026-09-03T10:41:00.000Z",
+      ),
+    ]);
+    expect(reasons.get("c1")?.since).toBe("2026-09-03T10:40:00.000Z");
+  });
+
+  it("ignores a waiting row that names no reason", () => {
+    expect(
+      deriveAgentWaitReasons([activity("task.updated", { taskId: "c1", status: "waiting" })]).size,
+    ).toBe(0);
+  });
+});
+
+describe("deriveAgentWaitStates", () => {
+  const agent = (id: string, title: string, status: RuntimeBackgroundTask["status"]) => ({
+    id,
+    title,
+    status,
+    startedAt: "2026-09-03T10:00:00.000Z",
+  });
+
+  const task = (
+    id: string,
+    label: string,
+    ownerAgentId: string | null,
+    status: RuntimeBackgroundTask["status"] = "running",
+  ): RuntimeBackgroundTask => ({
+    id,
+    kind: "shell",
+    taskType: "local_bash",
+    label,
+    ownerAgentId,
+    status,
+    startedAt: "2026-09-03T10:05:00.000Z",
+    endedAt: null,
+    progress: null,
+    result: null,
+    error: null,
+    backgrounded: false,
+    ambient: false,
+    firstSeenAt: "2026-09-03T10:05:00.000Z",
+    updatedAt: "2026-09-03T10:05:00.000Z",
+  });
+
+  it("returns nothing when nothing is blocked", () => {
+    expect(deriveAgentWaitStates({ tasks: [], agents: [], requests: [] })).toEqual([]);
+  });
+
+  it("claims no wait for detached work — it blocks nobody", () => {
+    // Claude backgrounding returns the tool call immediately and the turn
+    // carries on, so a backgrounded shell is not a dependency.
+    expect(
+      deriveAgentWaitStates({
+        tasks: [{ ...task("t1", "npm run dev", null), backgrounded: true }],
+        agents: [],
+        requests: [],
+      }),
+    ).toEqual([]);
+  });
+
+  it("does not claim a detached agent blocks main", () => {
+    expect(
+      deriveAgentWaitStates({
+        tasks: [],
+        agents: [agent("a1", "Reviewer", "running")],
+        requests: [],
+        backgroundedIds: new Set(["a1"]),
+      }),
+    ).toEqual([]);
+  });
+
+  it("claims no main wait once the turn has settled", () => {
+    // Whatever is still alive outlived the turn; Tasks reports it without
+    // asserting that main is blocked on it.
+    expect(
+      deriveAgentWaitStates({
+        tasks: [task("t1", "pnpm test", null)],
+        agents: [agent("a1", "Reviewer", "running")],
+        requests: [],
+        mainTurnActive: false,
+      }),
+    ).toEqual([]);
+  });
+
+  it("still surfaces an open request when no turn is running", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [],
+      requests: [
+        {
+          requestId: "r1",
+          kind: "approval",
+          label: "Command approval",
+          since: "2026-09-03T10:09:00.000Z",
+        },
+      ],
+      mainTurnActive: false,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "approval", needsUser: true });
+  });
+
+  it("times a named agent wait from when the wait began", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [agent("a1", "Reviewer", "waiting")],
+      requests: [],
+      agentWaitReasons: new Map([
+        ["a1", { reason: "approval" as const, since: "2026-09-03T10:39:00.000Z" }],
+      ]),
+    });
+    // Main is legitimately blocked on the agent (row 0); the agent's own
+    // named wait carries the wait's start, not the agent's.
+    const agentRow = rows.find((row) => row.ownerId === "a1");
+    expect(agentRow?.since).toBe("2026-09-03T10:39:00.000Z");
+  });
+
+  it("puts an open approval ahead of running work on the main line", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [task("t1", "pnpm test", null)],
+      agents: [agent("a1", "Reviewer", "running")],
+      requests: [
+        {
+          requestId: "r1",
+          kind: "approval",
+          label: "Command approval",
+          since: "2026-09-03T10:09:00.000Z",
+        },
+      ],
+    });
+    expect(rows[0]).toMatchObject({
+      ownerId: null,
+      kind: "approval",
+      label: "Command approval",
+      needsUser: true,
+    });
+  });
+
+  it("names the agents main is waiting on", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [agent("a1", "Reviewer", "running"), agent("a2", "Merger", "running")],
+      requests: [],
+    });
+    expect(rows[0]).toMatchObject({
+      ownerId: null,
+      kind: "agents",
+      label: "Reviewer + 1 more agent",
+    });
+    expect(rows[0]?.blockingIds).toEqual(["a1", "a2"]);
+  });
+
+  it("falls back to main's own tasks when no agent is running", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [task("t1", "pnpm test", null)],
+      agents: [],
+      requests: [],
+    });
+    expect(rows[0]).toMatchObject({ ownerId: null, kind: "tasks", label: "pnpm test" });
+  });
+
+  it("gives each active agent its own line for its own background work", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [task("t1", "cargo build", "a1")],
+      agents: [agent("a1", "Reviewer", "running")],
+      requests: [],
+    });
+    expect(rows.map((row) => row.ownerId)).toEqual([null, "a1"]);
+    expect(rows[1]).toMatchObject({ ownerLabel: "Reviewer", kind: "tasks", label: "cargo build" });
+  });
+
+  it("prefers a provider-named wait reason over the agent's own tasks", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [task("t1", "cargo build", "a1")],
+      agents: [agent("a1", "Reviewer", "waiting")],
+      requests: [],
+      agentWaitReasons: new Map([
+        ["a1", { reason: "user-input" as const, since: "2026-09-03T10:30:00.000Z" }],
+      ]),
+    });
+    expect(rows[1]).toMatchObject({ ownerId: "a1", kind: "user-input", needsUser: true });
+  });
+
+  it("still reports a shell that outlived the subagent that launched it", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [task("t1", "tail -f log", "a1")],
+      agents: [agent("a1", "Reviewer", "completed")],
+      requests: [],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ ownerId: "a1", ownerLabel: "Reviewer", label: "tail -f log" });
+  });
+
+  it("does not attribute a settled task to anyone", () => {
+    expect(
+      deriveAgentWaitStates({
+        tasks: [task("t1", "pnpm test", null, "completed")],
+        agents: [],
+        requests: [],
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("deriveBackgroundTasksPanelModel", () => {
+  const make = (
+    id: string,
+    ownerAgentId: string | null,
+    status: RuntimeBackgroundTask["status"],
+    extra: Partial<RuntimeBackgroundTask> = {},
+  ): RuntimeBackgroundTask => ({
+    id,
+    kind: "shell",
+    taskType: "local_bash",
+    label: id,
+    ownerAgentId,
+    status,
+    startedAt: "2026-09-03T10:00:00.000Z",
+    endedAt: null,
+    progress: null,
+    result: null,
+    error: null,
+    backgrounded: false,
+    ambient: false,
+    firstSeenAt: "2026-09-03T10:00:00.000Z",
+    updatedAt: "2026-09-03T10:00:00.000Z",
+    ...extra,
+  });
+
+  it("is empty for no tasks", () => {
+    expect(deriveBackgroundTasksPanelModel({ tasks: [] }).hasTasks).toBe(false);
+  });
+
+  it("keeps failures visible and collapses successes", () => {
+    const model = deriveBackgroundTasksPanelModel({
+      tasks: [
+        make("live", null, "running"),
+        make("bad", null, "failed"),
+        make("good", null, "completed"),
+        make("gone", null, "cancelled"),
+      ],
+    });
+    expect(model.groups[0]?.tasks.map((task) => task.id)).toEqual(["live", "bad"]);
+    expect(model.finished.map((entry) => entry.task.id)).toEqual(["good", "gone"]);
+    expect(model.activeCount).toBe(1);
+    expect(model.failedCount).toBe(1);
+    expect(model.totalCount).toBe(4);
+  });
+
+  it("groups by owner with main first and names owners from the roster", () => {
+    const model = deriveBackgroundTasksPanelModel({
+      tasks: [
+        make("t1", "a2", "running"),
+        make("t2", null, "running"),
+        make("t3", "a1", "running"),
+      ],
+      agentTitles: new Map([
+        ["a1", "Reviewer"],
+        ["a2", "Merger"],
+      ]),
+    });
+    expect(model.groups.map((group) => group.ownerLabel)).toEqual(["Main", "Merger", "Reviewer"]);
+  });
+
+  it("falls back to the owner id when the agent aged out of the roster", () => {
+    const model = deriveBackgroundTasksPanelModel({ tasks: [make("t1", "ghost", "running")] });
+    expect(model.groups[0]?.ownerLabel).toBe("ghost");
+  });
+
+  it("sorts live work above failures and ambient housekeeping last", () => {
+    const model = deriveBackgroundTasksPanelModel({
+      tasks: [
+        make("ambient", null, "running", { ambient: true }),
+        make("bad", null, "failed"),
+        make("live", null, "running"),
+      ],
+    });
+    expect(model.groups[0]?.tasks.map((task) => task.id)).toEqual(["live", "bad", "ambient"]);
+    expect(model.groups[0]?.activeCount).toBe(2);
+  });
+});
+
+describe("elapsed formatting", () => {
+  it("formats seconds, minutes and hours", () => {
+    expect(formatElapsedDuration(9)).toBe("9s");
+    expect(formatElapsedDuration(63)).toBe("1m 03s");
+    expect(formatElapsedDuration(3600 * 2 + 60 * 14)).toBe("2h 14m");
+    expect(formatElapsedDuration(-5)).toBe("0s");
+  });
+
+  it("measures to now when there is no end, and to the end when there is", () => {
+    const now = Date.parse("2026-09-03T10:42:00.000Z");
+    expect(formatElapsedBetween("2026-09-03T10:00:00.000Z", null, now)).toBe("42m 00s");
+    expect(formatElapsedBetween("2026-09-03T10:00:00.000Z", "2026-09-03T10:00:05.000Z", now)).toBe(
+      "5s",
+    );
+  });
+
+  it("renders nothing for an unparseable timestamp", () => {
+    expect(formatElapsedBetween("not-a-date", null, 0)).toBe("");
+  });
+});
+
+describe("status predicates", () => {
+  it("splits active from terminal, with idle in neither", () => {
+    expect(isActiveBackgroundTaskStatus("running")).toBe(true);
+    expect(isActiveBackgroundTaskStatus("waiting")).toBe(true);
+    expect(isActiveBackgroundTaskStatus("idle")).toBe(false);
+    expect(isTerminalBackgroundTaskStatus("idle")).toBe(false);
+    expect(isTerminalBackgroundTaskStatus("interrupted")).toBe(true);
+  });
+});
+
+describe("fold exclusivity with the subagent fold", () => {
+  /**
+   * The two folds must partition one stream. Per-row stickiness was not
+   * enough: a legacy unstamped start claimed the task here while a later
+   * stamped agent row claimed it in the subagent fold, showing one task in
+   * both sections.
+   */
+  it("yields a task id to the subagent fold when any row stamps it as an agent", () => {
+    const rows = [
+      legacyActivity("task.started", { taskId: "amb-1", detail: "unstamped legacy start" }),
+      activity("task.progress", { taskId: "amb-1", agentKind: "agent", summary: "thinking" }),
+    ];
+    expect(foldBackgroundTasks(rows)).toEqual([]);
+    expect(foldSubagentActivities(rows).map((agent) => agent.id)).toEqual(["amb-1"]);
+  });
+
+  it("keeps a purely background task id out of the subagent fold", () => {
+    const rows = [
+      activity("task.started", { taskId: "sh-1", taskType: "local_bash", detail: "pnpm test" }),
+      activity("task.completed", { taskId: "sh-1", taskType: "local_bash", status: "completed" }),
+    ];
+    expect(foldBackgroundTasks(rows).map((task) => task.id)).toEqual(["sh-1"]);
+    expect(foldSubagentActivities(rows)).toEqual([]);
+  });
+
+  it("never lists the same id in both folds across a mixed stream", () => {
+    const rows = [
+      activity("task.started", { taskId: "sh-1", taskType: "local_bash", detail: "shell" }),
+      activity("task.started", { taskId: "ag-1", taskType: "local_agent", title: "Reviewer" }),
+      legacyActivity("task.started", { taskId: "old-1", detail: "legacy" }),
+      activity("task.progress", { taskId: "ag-1", agentKind: "agent", summary: "working" }),
+    ];
+    const background = new Set(foldBackgroundTasks(rows).map((task) => task.id));
+    const agents = new Set(foldSubagentActivities(rows).map((agent) => agent.id));
+    expect([...background].filter((id) => agents.has(id))).toEqual([]);
+    expect(background).toEqual(new Set(["sh-1", "old-1"]));
+    expect(agents).toEqual(new Set(["ag-1"]));
+  });
+});
+
+describe("foldBackgroundTasks timing", () => {
+  it("gives a progress-only task an origin so its timer is not blank", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.progress", {
+        taskId: "sh-1",
+        taskType: "local_bash",
+        summary: "still running",
+      }),
+    ]);
+    expect(byId(tasks, "sh-1").startedAt).not.toBeNull();
+  });
+
+  it("times a restarted task from its new run, not the original start", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "m-1", taskType: "monitor" }, "2026-09-03T10:00:00.000Z"),
+      activity(
+        "task.completed",
+        { taskId: "m-1", taskType: "monitor", status: "completed" },
+        "2026-09-03T10:05:00.000Z",
+      ),
+      activity(
+        "task.updated",
+        { taskId: "m-1", taskType: "monitor", status: "running" },
+        "2026-09-03T11:00:00.000Z",
+      ),
+    ]);
+    expect(byId(tasks, "m-1").startedAt).toBe("2026-09-03T11:00:00.000Z");
+    expect(byId(tasks, "m-1").endedAt).toBeNull();
+  });
+
+  it("keeps the first terminal outcome when two terminal rows disagree", () => {
+    const viaUpdate = foldBackgroundTasks([
+      activity("task.started", { taskId: "a", taskType: "shell" }),
+      activity("task.updated", { taskId: "a", taskType: "shell", status: "failed" }),
+      activity("task.updated", { taskId: "a", taskType: "shell", status: "cancelled" }),
+    ]);
+    expect(byId(viaUpdate, "a").status).toBe("failed");
+
+    // The same precedence regardless of which event kind arrives second.
+    const viaCompleted = foldBackgroundTasks([
+      activity("task.started", { taskId: "b", taskType: "shell" }),
+      activity("task.updated", { taskId: "b", taskType: "shell", status: "failed" }),
+      activity("task.completed", { taskId: "b", taskType: "shell", status: "completed" }),
+    ]);
+    expect(byId(viaCompleted, "b").status).toBe("failed");
+  });
+
+  it("keeps live work and failures when far more than the cap arrives", () => {
+    const rows = [];
+    for (let index = 0; index < 260; index += 1) {
+      rows.push(
+        activity(
+          "task.started",
+          { taskId: `idle-${index}`, taskType: "monitor" },
+          `2026-09-03T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
+        ),
+        activity("task.updated", { taskId: `idle-${index}`, taskType: "monitor", status: "idle" }),
+      );
+    }
+    rows.push(
+      activity("task.started", { taskId: "live-1", taskType: "local_bash", detail: "server" }),
+      activity("task.started", { taskId: "bad-1", taskType: "local_bash", detail: "build" }),
+      activity("task.updated", { taskId: "bad-1", taskType: "local_bash", status: "failed" }),
+    );
+    const tasks = foldBackgroundTasks(rows);
+    const ids = new Set(tasks.map((task) => task.id));
+    expect(ids.has("live-1")).toBe(true);
+    expect(ids.has("bad-1")).toBe(true);
+    expect(tasks.length).toBeLessThanOrEqual(200);
+  });
+});
+
+describe("deriveBackgroundedTaskIds", () => {
+  it("tracks detachment and undetachment", () => {
+    expect(
+      deriveBackgroundedTaskIds([
+        activity("task.updated", { taskId: "t1", isBackgrounded: true }),
+      ]).has("t1"),
+    ).toBe(true);
+    expect(
+      deriveBackgroundedTaskIds([
+        activity("task.updated", { taskId: "t1", isBackgrounded: true }),
+        activity("task.updated", { taskId: "t1", isBackgrounded: false }),
+      ]).has("t1"),
+    ).toBe(false);
+  });
+});
+
+describe("deriveOpenRequestWaits failure handling", () => {
+  it("keeps the request open when the response failed for a transient reason", () => {
+    const open = deriveOpenRequestWaits([
+      activity("approval.requested", { requestId: "r1", requestKind: "command" }),
+      activity("provider.approval.respond.failed", {
+        requestId: "r1",
+        detail: "WebSocket closed before the reply was delivered",
+      }),
+    ]);
+    // The answer card is still on screen; the strip must not disappear.
+    expect(open.map((request) => request.requestId)).toEqual(["r1"]);
+  });
+
+  it("closes it only when the provider says it no longer knows the request", () => {
+    const open = deriveOpenRequestWaits([
+      activity("approval.requested", { requestId: "r1", requestKind: "command" }),
+      activity("provider.approval.respond.failed", {
+        requestId: "r1",
+        detail: "Unknown pending approval request r1",
+      }),
+    ]);
+    expect(open).toEqual([]);
+  });
+});
