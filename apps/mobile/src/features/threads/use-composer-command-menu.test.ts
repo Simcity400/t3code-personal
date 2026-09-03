@@ -100,4 +100,43 @@ describe("mobile slash commands", () => {
       }),
     ).toEqual({ text: "/plan ", cursor: 6, interactionMode: null });
   });
+
+  // Fork feature: `/side` lives inside the upstream-owned builder, so it is
+  // the first thing an upstream refactor of that function can drop silently.
+  it.each([false, true])(
+    "offers the fork's /side command with legacy mode enabled=%s",
+    (allowInteractionMode) => {
+      const items = buildComposerSlashCommandItems({
+        query: "sid",
+        atMessageStart: true,
+        hasThread: true,
+        allowInteractionMode,
+        selectedProviderStatus: antigravity,
+      });
+
+      expect(items.map((entry) => entry.id)).toEqual(["cmd:side"]);
+      const item = items[0];
+      if (!item) throw new Error("Expected the side-chat command");
+      expect(
+        resolveComposerCommandSelection({
+          draftMessage: "/sid",
+          trigger: { rangeStart: 0, rangeEnd: 4 },
+          item,
+          allowInteractionMode,
+        }),
+      ).toEqual({ text: "/side ", cursor: 6, interactionMode: null });
+    },
+  );
+
+  it("keeps /side listed inside the message, where provider commands are gated", () => {
+    expect(
+      buildComposerSlashCommandItems({
+        query: "side",
+        atMessageStart: false,
+        hasThread: false,
+        allowInteractionMode: false,
+        selectedProviderStatus: antigravity,
+      }).map((entry) => entry.id),
+    ).toEqual(["cmd:side"]);
+  });
 });
