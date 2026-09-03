@@ -5,9 +5,13 @@ import {
   ProviderRequestKind,
 } from "@t3tools/contracts";
 import {
+  deriveSubagentReplies,
+  formatSubagentTitle,
+  selectSubagentRepliesFor,
   selectSubagentTranscriptActivities,
   selectSubagentTranscriptMessages,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import { MessageId } from "@t3tools/contracts";
 import type {
   OrchestrationLatestTurn,
   OrchestrationThread,
@@ -131,6 +135,12 @@ type RawThreadFeedEntry =
       readonly id: string;
       readonly createdAt: string;
       readonly message: OrchestrationThread["messages"][number];
+      /**
+       * Set when this message is a report a subagent sent BACK to the
+       * conversation being read. The row renders a "From <agent>" header so
+       * the reader can tell the agent's words from the main agent's.
+       */
+      readonly fromAgentLabel?: string;
     }
   | {
       readonly type: "activity";
@@ -1841,6 +1851,12 @@ export function buildThreadFeed(
   const messages = options?.localMessages
     ? [...loadedMessages, ...options.localMessages]
     : loadedMessages;
+  // Reports this conversation RECEIVED from its subagents. Same persisted rows
+  // as web, so both clients show the same exchange.
+  const subagentReplies = selectSubagentRepliesFor(
+    deriveSubagentReplies(thread.activities),
+    transcriptAgentId ?? null,
+  );
   const oldestLoadedMessageCreatedAt =
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
   const workLogEntries = deriveWorkLogEntries(
@@ -1855,6 +1871,22 @@ export function buildThreadFeed(
         id: message.id,
         createdAt: message.createdAt,
         message,
+      })),
+      ...subagentReplies.map<RawThreadFeedEntry>((reply) => ({
+        type: "message",
+        id: reply.id,
+        createdAt: reply.createdAt,
+        fromAgentLabel: formatSubagentTitle(reply.agentTitle ?? reply.agentId),
+        message: {
+          id: MessageId.make(reply.id),
+          role: "assistant" as const,
+          text: reply.text,
+          agentId: reply.agentId,
+          turnId: reply.turnId,
+          streaming: false,
+          createdAt: reply.createdAt,
+          updatedAt: reply.createdAt,
+        },
       })),
       ...workLogEntries
         .filter((entry) => {

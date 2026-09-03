@@ -1666,6 +1666,13 @@ function renderFeedEntry(
         className={cn(showAssistantMeta ? "mb-5 px-1" : "mb-1 px-1")}
         {...(enterAnimated ? { entering: FadeIn.duration(220) } : {})}
       >
+        {/* A report a subagent sent back: attributed, so it never reads as the
+            main agent's own words. */}
+        {entry.fromAgentLabel ? (
+          <Text className="mb-1 font-t3-medium text-xs text-neutral-600 dark:text-neutral-400">
+            From {entry.fromAgentLabel}
+          </Text>
+        ) : null}
         {renderedText.trim().length > 0 ? (
           <AssistantMarkdownContent
             markdown={renderedText}
