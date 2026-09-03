@@ -18,6 +18,22 @@ name: Fork Sync
 # log is the place to look. After a resolved main is pushed, the next sync run
 # deletes the marker automatically.
 #
+# That promise is now total for every way the sync can stop BEFORE main lands.
+# Each of the four `run:` steps — the gate's nightly check, the merge, the pin
+# and the push — carries an EXIT trap that raises the marker and prints an
+# explicit diagnostic on any failure it does not already handle, including ones
+# nobody anticipated. Review found two such holes: a submodule gitlink under
+# .github/workflows that `rm -f` could not delete, killing the merge step before
+# its guard; and the gate job, which runs before any checkout and so raises the
+# marker through the API rather than git. If even the marker cannot be raised,
+# every path says "no in-app pill will appear" in the log rather than failing
+# quietly.
+#
+# The `release` and `mobile` jobs deliberately do NOT raise the pill. They run
+# only after main has been pushed, so a failure there is a failed publish, not a
+# stopped sync; the pill says "finish the upstream merge", which would be a lie.
+# Those show up as a red run.
+#
 # Workflow allowlist. This fork keeps exactly three workflows of its own —
 # fork-sync.yml, fork-release.yml and fork-mobile-preview.yml. Every other
 # `.github/workflows/*` file upstream ships is deleted here: they need T3's
@@ -82,6 +98,45 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # This job decides whether the sync runs at all, so a persistent
+          # failure here — the npm dist-tags endpoint changing shape, `gh api`
+          # hitting an auth or rate limit, a missing tool — is the worst
+          # silence of the lot: a red run every two hours, forever, and no pill,
+          # because the sync job never starts and its traps never load.
+          #
+          # There is no checkout in this job, so the marker cannot be raised
+          # with git. It is created through the API instead. This self-heals:
+          # the marker makes the NEXT run's gate take the proceed=true branch
+          # below, and a successful sync push then deletes it.
+          raise_marker() {
+            local sha out
+            if ! sha="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha 2>/dev/null)"                || [ -z "$sha" ]; then
+              echo "::error::Could not read main to raise the needs-merge-help marker, so no in-app pill will appear; this red run is the only notice."
+              return 1
+            fi
+            if out="$(gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs"                         -f ref=refs/heads/needs-merge-help -f sha="$sha" 2>&1)"; then
+              return 0
+            fi
+            # Already there is success: the pill is up, which is all that matters.
+            case "$out" in
+              *"Reference already exists"*) return 0 ;;
+            esac
+            echo "$out"
+            echo "::error::Could not raise the needs-merge-help marker, so no in-app pill will appear; this red run is the only notice."
+            return 1
+          }
+          # No `handled` flag: this step has no explicit non-zero exit whose own
+          # diagnostic would need to win. The ordinary "nothing to do" path
+          # falls off the end with status 0, so the trap stays quiet there.
+          on_unexpected_exit() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              raise_marker || true
+              echo "::error::The sync could not check for a new nightly, so no merge was attempted. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
+            fi
+            exit "$status"
+          }
+          trap on_unexpected_exit EXIT
           nightly="$(curl -fsSL https://registry.npmjs.org/-/package/t3/dist-tags | jq -r '.nightly // empty')"
           pinned="$(gh api "repos/$GITHUB_REPOSITORY/contents/apps/desktop/package.json?ref=main" --jq .content | base64 -d | jq -r '.version // empty')"
           marker="$(gh api "repos/$GITHUB_REPOSITORY/branches/needs-merge-help" --jq .name 2>/dev/null || true)"
