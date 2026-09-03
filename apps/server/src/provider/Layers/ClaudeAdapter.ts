@@ -1305,8 +1305,16 @@ const ROSTER_TASK_TYPES: Readonly<Record<string, string>> = {
 
 /**
  * Refills task identity from a background_tasks_changed roster snapshot.
+ *
  * Fill-if-missing only: a live entry already holds richer identity than the
- * summary does, and must not be overwritten by it.
+ * summary does, and must not be overwritten by it. A later real task_started
+ * replaces the seed wholesale, so a seed cannot go stale.
+ *
+ * The seed is deliberately partial. BackgroundTaskSummary carries no parent,
+ * so a rehydrated task that a subagent had launched groups under the main
+ * agent until a live row supplies `agentId`, and skipTranscript stays false
+ * until a row carries it (the terminal notification does, which is the case
+ * that matters). Both degrade presentation, not classification.
  */
 function rehydrateTaskAgentsFromRoster(
   context: { readonly taskAgents: Map<string, ClaudeTaskAgentState> },
