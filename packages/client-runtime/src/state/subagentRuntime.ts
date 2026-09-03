@@ -1664,7 +1664,7 @@ export interface SubagentReplyEntry {
 }
 
 function normalizedReplyKey(agentId: string, text: string): string {
-  return `${agentId} ${text.trim()}`;
+  return `${agentId}\u0000${text.trim()}`;
 }
 
 /**
