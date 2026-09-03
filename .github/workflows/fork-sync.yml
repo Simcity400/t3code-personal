@@ -319,6 +319,48 @@ jobs:
           NIGHTLY: ${{ needs.gate.outputs.nightly }}
         run: |
           set -euo pipefail
+          # This step sits BETWEEN the merge and the push, so a failure here
+          # aborts the job with the merge made but main unpushed and no marker
+          # raised — the same silence the merge and push steps trap against.
+          #
+          # Unlike the gitlink the merge step's trap was added for, no NATURAL
+          # trigger for that is known here. The obvious candidate does not work:
+          # the manifest list below is hard-coded and `readFileSync` does throw
+          # ENOENT on a missing one, but upstream deleting a pinned manifest is
+          # a modify/delete conflict against the fork's own pin, so the merge
+          # step stops and raises the marker one step earlier (scenario e6).
+          # This trap is therefore defence in depth for the unanticipated — a
+          # clean merge that yields malformed JSON, a future edit to that list —
+          # not a fix for a demonstrated reachable bug. It is tested with an
+          # injected failure (scenario e7).
+          #
+          # Three inline copies of the helper rather than a shared script: a
+          # GitHub step is its own shell, and a helper file under
+          # .github/workflows/ would be deleted by this very workflow and could
+          # not be pushed by GITHUB_TOKEN anyway.
+          raise_marker() {
+            if git push origin HEAD:refs/heads/needs-merge-help --force; then
+              return 0
+            fi
+            if git push origin "$(git rev-parse origin/main)":refs/heads/needs-merge-help --force; then
+              return 0
+            fi
+            echo "::error::Could not raise the needs-merge-help marker, so no in-app pill will appear; this red run is the only notice."
+            return 1
+          }
+          # No `handled` flag here, unlike the other two steps: this one has no
+          # explicit non-zero exit whose own diagnostic would need to win.
+          on_unexpected_exit() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              raise_marker || true
+              # Deliberately not worded as a merge conflict: the merge itself
+              # succeeded, and what needs a human here is the version pin.
+              echo "::error::The sync merged upstream but could not re-pin the nightly version, so main was not pushed. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
+            fi
+            exit "$status"
+          }
+          trap on_unexpected_exit EXIT
           if [[ -z "$NIGHTLY" ]]; then
             echo "No nightly version resolved; skipping pin."
             exit 0
