@@ -56,7 +56,11 @@ import {
   deriveTimelineEntries,
   deriveWorkLogEntries,
 } from "~/session-logic";
-import { deriveLatestContextWindowSnapshot, type ContextWindowSnapshot } from "~/lib/contextWindow";
+import {
+  deriveContextWindowSnapshotsByAgent,
+  deriveLatestContextWindowSnapshot,
+  type ContextWindowSnapshot,
+} from "~/lib/contextWindow";
 import { ContextWindowMeter } from "~/components/chat/ContextWindowMeter";
 import type { TurnDiffSummary } from "~/types";
 import { cn } from "~/lib/utils";
@@ -179,8 +183,8 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
  * three components deep (section → workflow → phase → row), and this data is
  * read only by the leaf.
  */
-const EMPTY_AGENT_CONTEXT_WINDOWS: ReadonlyMap<string, ContextWindowSnapshot> = new Map();
-const AgentContextWindowCtx = createContext<ReadonlyMap<string, ContextWindowSnapshot>>(
+const EMPTY_AGENT_CONTEXT_WINDOWS: ReadonlyMap<string | null, ContextWindowSnapshot> = new Map();
+const AgentContextWindowCtx = createContext<ReadonlyMap<string | null, ContextWindowSnapshot>>(
   EMPTY_AGENT_CONTEXT_WINDOWS,
 );
 
@@ -753,6 +757,7 @@ const NOOP_IMAGE_EXPAND = () => {};
 
 function AgentTranscript({
   agent,
+  model,
   messages,
   activities,
   cwd,
@@ -761,8 +766,12 @@ function AgentTranscript({
   resolvedTheme,
   timestampFormat,
   onBack,
+  onOpenAgent,
 }: {
   agent: RuntimeSubagent;
+  /** The whole roster: nested-agent rows read their live state from it, the
+   * same way the main chat's spawn rows do. */
+  model: AgentPanelModel;
   messages: ReadonlyArray<OrchestrationMessage>;
   activities: ReadonlyArray<OrchestrationThreadActivity>;
   cwd?: string | undefined;
@@ -771,6 +780,8 @@ function AgentTranscript({
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
   onBack: () => void;
+  /** Opens another agent's transcript (a nested spawn row, or a reply header). */
+  onOpenAgent: (agentId: string) => void;
 }) {
   const title = formatSubagentTitle(agent.title);
   const listRef = useRef<LegendListRef | null>(null);
@@ -817,14 +828,44 @@ function AgentTranscript({
     () => deriveLatestContextWindowSnapshot(transcriptActivities),
     [transcriptActivities],
   );
+  // The step the agent is on, derived from its OWN plan exactly as the main
+  // chat derives the thread's — otherwise the working row here is the only
+  // one in the app that cannot say what it is doing.
+  const workingStepLabel = useMemo(() => {
+    const plan = turnPlans.at(-1)?.plan;
+    if (!plan) {
+      return null;
+    }
+    return (
+      plan.steps.find((step) => step.status === "inProgress")?.step ??
+      plan.steps.find((step) => step.status === "pending")?.step ??
+      null
+    );
+  }, [turnPlans]);
   const timelineEntries = useMemo(
     () => deriveTimelineEntries(transcriptMessages, [], workLogEntries),
     [transcriptMessages, workLogEntries],
   );
-  const turnId =
-    transcriptMessages.find((message) => message.turnId !== null)?.turnId ??
-    transcriptActivities.find((activity) => activity.turnId !== null)?.turnId ??
-    null;
+  // The agent's CURRENT turn, not its first. A resumed agent runs across
+  // several turns, and anchoring on the oldest one made turn folding, the
+  // elapsed timer and the working row describe a turn that had long finished.
+  const turnId = useMemo(() => {
+    let latest: (typeof transcriptMessages)[number]["turnId"] = null;
+    let latestAt = "";
+    for (const message of transcriptMessages) {
+      if (message.turnId !== null && message.createdAt >= latestAt) {
+        latest = message.turnId;
+        latestAt = message.createdAt;
+      }
+    }
+    for (const activity of transcriptActivities) {
+      if (activity.turnId !== null && activity.createdAt >= latestAt) {
+        latest = activity.turnId;
+        latestAt = activity.createdAt;
+      }
+    }
+    return latest;
+  }, [transcriptActivities, transcriptMessages]);
   const isWorking = isActiveSubagentStatus(agent.status);
   const latestTurn =
     turnId === null
@@ -871,6 +912,13 @@ function AgentTranscript({
           listRef={listRef}
           timelineEntries={timelineEntries}
           subagentReplyByMessageId={subagentReplyByMessageId}
+          // Same roster and callbacks the main chat passes, so a nested spawn
+          // row shows live counts and opens, instead of reading an empty model
+          // and clicking into a no-op.
+          agentPanelModel={model}
+          onOpenAgents={() => onOpenAgent(agent.id)}
+          onOpenAgent={onOpenAgent}
+          workingStepLabel={workingStepLabel}
           latestTurn={latestTurn}
           runningTurnId={isWorking ? turnId : null}
           turnDiffSummaryByAssistantMessageId={EMPTY_TURN_DIFFS}
@@ -1053,21 +1101,16 @@ export function AgentsPanel({
   const selectedAgent = allAgents.find((agent) => agent.id === selectedAgentId) ?? null;
   // One pass over the thread's activities yields every agent's meter; each row
   // then reads its own by id instead of re-walking the list per agent.
-  const contextWindowByAgentId = useMemo(() => {
-    const byAgentId = new Map<string, ContextWindowSnapshot>();
-    for (const agent of allAgents) {
-      const usage = deriveLatestContextWindowSnapshot(activities, agent.id);
-      if (usage) {
-        byAgentId.set(agent.id, usage);
-      }
-    }
-    return byAgentId;
-  }, [activities, allAgents]);
+  const contextWindowByAgentId = useMemo(
+    () => deriveContextWindowSnapshotsByAgent(activities),
+    [activities],
+  );
 
   if (selectedAgent && threadRef) {
     return (
       <AgentTranscript
         agent={selectedAgent}
+        model={model}
         messages={messages}
         activities={activities}
         cwd={cwd}
@@ -1076,6 +1119,7 @@ export function AgentsPanel({
         resolvedTheme={resolvedTheme}
         timestampFormat={timestampFormat}
         onBack={() => setSelectedAgentId(null)}
+        onOpenAgent={setSelectedAgentId}
       />
     );
   }

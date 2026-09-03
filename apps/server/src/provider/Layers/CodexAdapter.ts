@@ -869,12 +869,19 @@ function mapCollabAgentEvent(
   // Identity repeated on every status patch so rows are self-describing when
   // the start row ages out of activity retention (review finding: a
   // reconstructed agent had a UUID name and no role/path).
+  // The owning conversation rides every row, not just task.started. Client
+  // folds resolve a nested child's transcript and its replies from this, and a
+  // status patch is often the only row that survives activity retention — a
+  // linkage that dropped it sent a grandchild's report to the root thread.
+  const parentThreadId =
+    typeof payload.parentThreadId === "string" ? payload.parentThreadId : undefined;
   const linkage = {
     role,
     ...(knownName ? { title: knownName } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
     ...(agentPath ? { agentPath } : {}),
+    ...(parentThreadId ? { parentAgentId: parentThreadId } : {}),
     timelineBypass: true,
   } as const;
 
