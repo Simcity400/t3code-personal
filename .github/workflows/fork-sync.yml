@@ -24,9 +24,20 @@ name: Fork Sync
 # Before this allowlist existed, the sync therefore broke silently every time
 # upstream touched a workflow. So the merge step below (a) treats a conflict in
 # a non-allowlisted workflow as "delete it", (b) deletes any non-allowlisted
-# workflow the merge brought in cleanly, and (c) refuses to continue — before
-# anything is pushed — if the resulting branch would still carry a workflow
-# change GITHUB_TOKEN cannot push.
+# workflow a clean merge brought in — both BEFORE the merge is committed, so the
+# commit this job creates never carries a workflow change at all — and (c)
+# refuses to continue, before anything is pushed, if the pushed range's diff
+# still shows ANY workflow path, the fork's own three included.
+#
+# UNTESTED, and it cannot be tested without attempting a push: whether GitHub
+# judges a push by its net old..new diff or by each commit in it. (c) is the
+# net-diff check, which is necessary either way; (b) folding into the merge
+# commit costs nothing and helps under the stricter reading. If the stricter
+# reading holds, an upstream commit that edits a workflow anywhere in the range
+# would still be refused at `git push`, which fails this job loudly — the
+# marker/human path then applies as usual. No bot merge in this fork's history
+# has ever had a workflow-touching commit in its range, so neither reading has
+# been exercised here.
 #
 # Costs almost nothing: the gate job is seconds without a checkout, and the
 # full sync only runs when a new nightly is actually out (~once a day).
@@ -109,7 +120,12 @@ jobs:
             apps/web/package.json \
             packages/contracts/package.json)"
 
-          if ! git merge --no-edit upstream/main; then
+          # --no-commit so the workflow cleanup below lands INSIDE the merge
+          # commit: the commit this job creates then never adds a file
+          # GITHUB_TOKEN may not push, rather than adding one and deleting it in
+          # a follow-up. --no-ff keeps that commit existing even in the
+          # degenerate no-fork-commits case.
+          if ! git merge --no-commit --no-ff --no-edit upstream/main; then
             # Two conflict classes resolve themselves:
             #   * the four version-pinned manifests, which conflict on every sync
             #     by construction (upstream bumps the line the fork pins) and are
@@ -153,7 +169,7 @@ jobs:
                   rm -f -- "$f"
                 done < "$drop_file"
               fi
-              if [ "$step_failed" = false ] && git commit --no-edit; then
+              if [ "$step_failed" = false ]; then
                 resolved=true
               fi
             fi
@@ -172,26 +188,35 @@ jobs:
           fi
 
           # A brand-new upstream workflow does not conflict — it just appears in
-          # the merged tree, and its push would then be rejected. Drop every
-          # non-allowlisted workflow the merge left behind, in its own commit so
-          # the merge commit stays a plain merge (fast-forward merges have no
-          # merge commit to fold into).
-          stray="$(git ls-files .github/workflows | grep -vxF -f <(printf '%s\n' "$fork_workflows") || true)"
-          if [ -n "$stray" ]; then
-            printf '%s\n' "$stray" | xargs -r git rm -q --
-            git commit -q -m "chore(fork): drop upstream-only workflows"
-            echo "Dropped upstream-only workflows:"
-            printf '%s\n' "$stray"
-          fi
+          # the merged tree. Drop every non-allowlisted workflow before the merge
+          # is committed, so the commit that gets pushed never adds one. Read
+          # line by line rather than through xargs: git does not quote a path
+          # that merely contains a space, and xargs would split it in two.
+          tracked_workflows="$(mktemp)"
+          git ls-files .github/workflows > "$tracked_workflows"
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if printf '%s\n' "$fork_workflows" | grep -qxF -- "$f"; then
+              continue
+            fi
+            git rm -q --cached -f -- "$f"
+            rm -f -- "$f"
+            echo "Dropped upstream-only workflow: $f"
+          done < "$tracked_workflows"
 
-          # Last line of defence, before anything is pushed: GITHUB_TOKEN cannot
-          # push a commit that adds or modifies any .github/workflows file, so a
-          # branch that still carries one would fail the push (historically:
-          # silently, leaving the sync broken until someone noticed).
-          pushable="$(git diff --name-only origin/main..HEAD -- .github/workflows | grep -vxF -f <(printf '%s\n' "$fork_workflows") || true)"
-          if [ -n "$pushable" ]; then
-            echo "$pushable"
-            echo "::error::sync would push non-fork workflow changes (GITHUB_TOKEN cannot)"
+          git commit --no-edit
+
+          # Last line of defence, before anything is pushed. GITHUB_TOKEN has no
+          # `workflows` permission, so a push that changes any
+          # .github/workflows file is rejected — the fork's own three included.
+          # A correct run leaves this diff empty: upstream-only workflows are
+          # already absent on both sides, and anything else (say upstream
+          # cleanly editing a file that shares a name with one of ours) is
+          # exactly what must stop here rather than fail at the push.
+          changed_workflows="$(git diff --name-only origin/main..HEAD -- .github/workflows)"
+          if [ -n "$changed_workflows" ]; then
+            printf '%s\n' "$changed_workflows"
+            echo "::error::sync would push workflow changes (GITHUB_TOKEN cannot); resolve this by hand"
             exit 1
           fi
 
