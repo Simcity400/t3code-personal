@@ -116,12 +116,16 @@ machine.
   id into `import.meta.env` and permanently failed the two "not configured" cases
   in `connectCliAuth.test.ts` on every fork machine.
 - **Shared profile with the installed app**: `apps/desktop/src/main.ts` pins the
-  Electron userData profile (`%APPDATA%\t3code`) synchronously at startup, so this
-  from-source build uses the same Windows encryption key as the installed T3 Code and
-  can read the shared logins/device connections in `~\.t3\userdata`. Without it, the
-  key is loaded from the default `%APPDATA%\Electron` profile and every saved
-  connection shows up as missing. **Caveat**: because both apps now share the same
-  profile and data, don't run this build and the installed T3 Code at the same time.
+  Electron userData profile synchronously at startup, so an unpackaged build uses a real
+  T3 Code profile instead of the default `%APPDATA%\Electron` one, where the Windows
+  encryption key differs and every saved connection shows up as missing.
+  **Which profile depends on how you launch it**: the pin keys off `VITE_DEV_SERVER_URL`,
+  which `scripts/dev-runner.ts` sets, so ordinary `pnpm dev:desktop` development gets its
+  own `%APPDATA%\t3code-dev` (or the legacy `T3 Code (Dev)`) and does **not** share logins
+  with the installed app. Only a non-development unpackaged launch — no
+  `VITE_DEV_SERVER_URL` — lands on `%APPDATA%\t3code` and shares the installed app's key
+  and the device connections in `~\.t3\userdata`. **Caveat** for that case only: two apps
+  sharing one profile must not run at the same time.
 - **One user-facing Windows app**: the installed personal Nightly build is the normal
   launcher. A publish run after each push to `origin/main` builds a private Windows
   release and surfaces it through the packaged app's update button — see **Get updates**
