@@ -1943,6 +1943,67 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       }),
   );
 
+  it.effect("gives a Codex collaboration child its own context-window meter", () =>
+    Effect.gen(function* () {
+      // The child's tokenUsage notification IS a thread/tokenUsage/updated
+      // payload, so its window is describable exactly the way the parent's is.
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* runtime.emit({
+        id: asEventId("evt-codex-collab-token-usage"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "collabAgent/tokenUsage",
+        payload: {
+          agentThreadId: "child-thread-1",
+          agentPath: "/root/marlow",
+          tokenUsage: {
+            total: {
+              inputTokens: 40_000,
+              cachedInputTokens: 0,
+              outputTokens: 1_000,
+              reasoningOutputTokens: 0,
+              totalTokens: 41_000,
+            },
+            last: {
+              inputTokens: 30_000,
+              cachedInputTokens: 0,
+              outputTokens: 500,
+              reasoningOutputTokens: 0,
+              totalTokens: 30_500,
+            },
+            modelContextWindow: 258_400,
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const usage = events.find((event) => event.type === "thread.token-usage.updated");
+      NodeAssert.equal(usage?.type, "thread.token-usage.updated");
+      if (usage?.type !== "thread.token-usage.updated") {
+        return;
+      }
+      NodeAssert.equal(usage.payload.agentId, "child-thread-1");
+      NodeAssert.equal(usage.payload.usage.usedTokens, 30_500);
+      NodeAssert.equal(usage.payload.usage.maxTokens, 258_400);
+
+      // The cumulative counter the roster already showed still rides alongside.
+      const progress = events.find((event) => event.type === "task.progress");
+      NodeAssert.equal(progress?.type, "task.progress");
+      if (progress?.type === "task.progress") {
+        NodeAssert.equal(progress.payload.typedUsage?.totalTokens, 41_000);
+      }
+    }),
+  );
+
   it.effect("unwraps Codex token usage payloads for context window events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

@@ -1084,6 +1084,17 @@ function mapCollabAgentEvent(
           ? { reasoningOutputTokens: count(total?.reasoningOutputTokens) }
           : {}),
       };
+      // The child ALSO gets a real context-window meter, identical to the
+      // parent thread's: this notification is the child's own
+      // thread/tokenUsage/updated payload, so the `last` breakdown plus
+      // modelContextWindow describe its window exactly the way the parent's do.
+      // Decode the tokenUsage struct itself: the notification wrapper also
+      // requires threadId/turnId, which this synthetic event does not carry.
+      const contextUsage = readPayload(
+        EffectCodexSchema.V2ThreadTokenUsageUpdatedNotification__ThreadTokenUsage,
+        payload.tokenUsage,
+      );
+      const agentContextUsage = contextUsage ? normalizeCodexTokenUsage(contextUsage) : undefined;
       return [
         {
           ...base,
@@ -1095,6 +1106,18 @@ function mapCollabAgentEvent(
             typedUsage,
           },
         },
+        ...(agentContextUsage
+          ? [
+              {
+                ...base,
+                type: "thread.token-usage.updated" as const,
+                payload: {
+                  usage: agentContextUsage,
+                  agentId: taskId,
+                },
+              },
+            ]
+          : []),
       ];
     }
     case "collabAgent/item": {
