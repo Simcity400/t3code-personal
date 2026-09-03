@@ -140,6 +140,30 @@ jobs:
             return 1
           }
 
+          # Every way this step can die must still leave a pill. `set -e` over a
+          # long run of git commands means one unanticipated failure — a tree
+          # shape we did not foresee, a transient git error — would otherwise
+          # end the run with main unpushed, no marker, and nothing but a red
+          # check nobody is watching: precisely the silence this pipeline
+          # exists to remove. Found by review, with a submodule gitlink at
+          # .github/workflows/<name>.yml: `git rm --cached` staged it, `rm -f`
+          # then failed with "Is a directory", and the step died right there,
+          # before the guard and before any marker logic. That specific shape is
+          # handled below, but the class is what this trap closes.
+          # Handled exits set `handled=true` first, so their own more specific
+          # diagnostic is the one that shows.
+          handled=false
+          on_unexpected_exit() {
+            status=$?
+            if [ "$status" -ne 0 ] && [ "$handled" != true ]; then
+              git merge --abort 2>/dev/null || true
+              raise_marker || true
+              echo "::error::The sync stopped on an unexpected error (exit $status). Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
+            fi
+            exit "$status"
+          }
+          trap on_unexpected_exit EXIT
+
           # The fork's own workflows. Everything else under .github/workflows is
           # upstream-only and must not exist on this fork (see the header).
           # `case` rather than `grep -qxF -- "$path"`: a path is data, and grep
@@ -214,7 +238,9 @@ jobs:
               if [ "$step_failed" = false ]; then
                 while IFS= read -r -d '' f; do
                   git rm -q --cached -f -- "$f" || { step_failed=true; break; }
-                  rm -f -- "$f"
+                  # -r: a mode-160000 gitlink checks out as a directory, and
+                  # plain `rm -f` fails on one with "Is a directory".
+                  rm -rf -- "$f"
                 done < "$drop_file"
               fi
               if [ "$step_failed" = false ]; then
@@ -225,6 +251,7 @@ jobs:
               git merge --abort || true
               # Leave a marker branch the in-app updater can see; the pill then
               # asks Alex to have Claude Code resolve the merge from any machine.
+              handled=true
               raise_marker || true
               echo "::error::The sync stopped on a merge conflict. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge. Once the resolved merge is pushed to main, this workflow cleans up on its next run."
               exit 1
@@ -245,7 +272,8 @@ jobs:
               continue
             fi
             git rm -q --cached -f -- "$f"
-            rm -f -- "$f"
+            # -r: see above — an upstream-only "workflow" can be a gitlink.
+            rm -rf -- "$f"
             echo "Dropped upstream-only workflow: $f"
           done < "$tracked_workflows"
 
@@ -280,6 +308,7 @@ jobs:
             # exists to remove. Note HEAD carries the workflow change that cannot
             # be pushed, so raise_marker's origin/main fallback is what usually
             # lands here.
+            handled=true
             raise_marker || true
             echo "::error::The sync would push workflow changes, which GITHUB_TOKEN cannot. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
             exit 1
@@ -337,6 +366,30 @@ jobs:
             return 1
           }
 
+          # Every way this step can die must still leave a pill. `set -e` over a
+          # long run of git commands means one unanticipated failure — a tree
+          # shape we did not foresee, a transient git error — would otherwise
+          # end the run with main unpushed, no marker, and nothing but a red
+          # check nobody is watching: precisely the silence this pipeline
+          # exists to remove. The sibling trap on the merge step was added
+          # after review found one such death there (a submodule gitlink under
+          # .github/workflows that `rm -f` could not remove); this one covers
+          # the same class here, where the only handled exit below is a refused
+          # push.
+          # Handled exits set `handled=true` first, so their own more specific
+          # diagnostic is the one that shows.
+          handled=false
+          on_unexpected_exit() {
+            status=$?
+            if [ "$status" -ne 0 ] && [ "$handled" != true ]; then
+              git merge --abort 2>/dev/null || true
+              raise_marker || true
+              echo "::error::The sync stopped on an unexpected error (exit $status). Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
+            fi
+            exit "$status"
+          }
+          trap on_unexpected_exit EXIT
+
           # A refused push must raise the in-app pill, not just redden a run
           # nobody is watching — that silence is the failure mode this whole
           # pipeline exists to remove. The guards above catch the workflow case
@@ -344,6 +397,7 @@ jobs:
           # server-side rejection of a workflow-touching commit somewhere in the
           # range if GitHub judges pushes that way.
           if ! git push origin main; then
+            handled=true
             raise_marker || true
             # Deliberately not worded as a conflict: a refused push is also how
             # a non-fast-forward race, branch protection or a transport failure
