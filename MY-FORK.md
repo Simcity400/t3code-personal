@@ -200,13 +200,23 @@ machine.
   appears. Only a remote that refuses even a no-op ref create leaves no pill, and
   the run says so explicitly.
 
+  Both steps also carry an `EXIT` trap, because the guarantee has to hold for
+  failures nobody predicted, not just the ones with a handler. Under `set -e` a
+  single unexpected error used to end the run with main unpushed, no marker and
+  nothing but a red check — the exact silence this pipeline exists to remove.
+  Review found one: a submodule gitlink committed at
+  `.github/workflows/<name>.yml` checks out as a _directory_, so the `rm -f` that
+  drops upstream-only workflows failed with "Is a directory" and killed the step
+  before the guard. The drop now uses `rm -rf`, and the trap turns any remaining
+  surprise into the same visible outcome as a conflict.
+
   What is **not** covered locally: a literal tab in a workflow filename. Git on
   Windows rejects one at both layers — the filesystem maps it into the private-use
   plane, and `git update-index --cacheinfo` answers `error: Invalid path` — so no
   scenario here can build that case, and an earlier claim that one did was wrong.
   Coverage does not actually depend on it: the bug being fixed is git's C-quoting of
   unusual paths in newline-delimited output, and a non-ASCII byte is C-quoted by the
-  same mechanism, which the `deploiement.yml` scenarios do exercise.
+  same mechanism, which the `déploiement.yml` scenarios do exercise.
   Upstream's `infra/relay/scripts/deploy.test.ts` guard over `release.yml` was dropped
   with it. `fork-release.yml`'s old `sync_upstream` job — a second, weaker copy of the
   same merge — was deleted; `fork-sync.yml` is the only place that merges upstream.
