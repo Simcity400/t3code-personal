@@ -182,11 +182,17 @@ machine.
   then commits — so the commit it creates never touches a workflow at all, rather than
   adding one and deleting it again in a follow-up. A guard then aborts the run before
   any push if the pushed range's diff still shows **any** workflow path, the fork's own
-  three included. Untested and untestable without attempting a push: whether GitHub
-  judges a push by its net diff or by each commit in it. The guard is the net-diff
-  check, which is necessary either way; if the stricter reading holds, an upstream
-  commit that edits a workflow anywhere in the range is still refused at `git push`,
-  which fails the job loudly and leaves the usual by-hand path.
+  three included — raising the `needs-merge-help` pill as it goes, because that guard
+  firing is a case only a human can clear, and every later run would stop at it too.
+  Still unknown, and unknowable without attempting a push: whether GitHub judges a push
+  by its net diff or by each commit in it — the fork's own history never exercised
+  either, since no bot merge has ever had a workflow-touching commit in its range. So
+  the job is written to be correct under both readings rather than betting on one, and
+  when a push is refused anyway it raises the marker from the commit `origin/main`
+  already holds — a ref create that introduces no new commit, the weakest push there
+  is. Local scenarios drive the shipped step against bare repos that model each
+  reading, and the marker lands under both; only a remote that refuses even a no-op
+  ref create leaves no pill, and the run says so explicitly.
   Upstream's `infra/relay/scripts/deploy.test.ts` guard over `release.yml` was dropped
   with it. `fork-release.yml`'s old `sync_upstream` job — a second, weaker copy of the
   same merge — was deleted; `fork-sync.yml` is the only place that merges upstream.
