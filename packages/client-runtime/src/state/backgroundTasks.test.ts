@@ -1064,3 +1064,133 @@ describe("terminal then idle", () => {
     expect(task.endedAt).not.toBeNull();
   });
 });
+
+describe("tasks registered in the background at start", () => {
+  /**
+   * The CLI sets is_backgrounded on task_started for local_agent and
+   * local_bash tasks, and a resumed subagent is ALWAYS registered
+   * backgrounded. Those never send a later task_updated patch, so reading
+   * detachment only from the patch reported them as blocking main while main
+   * was demonstrably free.
+   */
+  it("marks a task detached from its start row alone", () => {
+    const rows = [
+      activity("task.started", {
+        taskId: "sh-1",
+        taskType: "local_bash",
+        detail: "pnpm test --watch",
+        isBackgrounded: true,
+      }),
+    ];
+    expect(byId(foldBackgroundTasks(rows), "sh-1").backgrounded).toBe(true);
+    expect(deriveDetachedTaskIds(rows).has("sh-1")).toBe(true);
+  });
+
+  it("claims no main wait for a lane backgrounded at start and never patched", () => {
+    const rows = [
+      activity("task.started", {
+        taskId: "lane-1",
+        taskType: "local_agent",
+        title: "merge-upstream",
+        isBackgrounded: true,
+      }),
+    ];
+    expect(
+      deriveAgentWaitStates({
+        tasks: [],
+        agents: [
+          {
+            id: "lane-1",
+            title: "merge-upstream",
+            status: "running",
+            startedAt: "2026-09-04T10:00:00.000Z",
+          },
+        ],
+        requests: [],
+        detachedIds: deriveDetachedTaskIds(rows),
+        mainTurnActive: true,
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("workflow members block their coordinator", () => {
+  const member = (id: string, title: string) => ({
+    id,
+    title,
+    status: "running" as const,
+    startedAt: "2026-09-04T10:00:00.000Z",
+    parentAgentId: "wf-1",
+  });
+
+  it("keeps members out of main's line and gives the coordinator its own", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [
+        {
+          id: "wf-1",
+          title: "Spec",
+          status: "running",
+          startedAt: "2026-09-04T09:59:00.000Z",
+          parentAgentId: null,
+        },
+        member("m-1", "writer"),
+        member("m-2", "checker"),
+        member("m-3", "linter"),
+      ],
+      requests: [],
+      mainTurnActive: true,
+    });
+
+    const mainRow = rows.find((row) => row.ownerId === null);
+    // Main waits on the coordinator only — not "Spec + 3 more agents".
+    expect(mainRow?.label).toBe("Spec");
+    expect(mainRow?.blockingIds).toEqual(["wf-1"]);
+
+    const coordinatorRow = rows.find((row) => row.ownerId === "wf-1");
+    expect(coordinatorRow?.kind).toBe("agents");
+    expect(coordinatorRow?.label).toBe("writer + 2 more agents");
+    expect(coordinatorRow?.blockingIds).toEqual(["m-1", "m-2", "m-3"]);
+  });
+
+  it("still treats an agent whose parent is not in the roster as top level", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [
+        {
+          id: "orphan",
+          title: "Stray",
+          status: "running",
+          startedAt: "2026-09-04T10:00:00.000Z",
+          parentAgentId: "gone",
+        },
+      ],
+      requests: [],
+      mainTurnActive: true,
+    });
+    expect(rows[0]).toMatchObject({ ownerId: null, label: "Stray" });
+  });
+});
+
+describe("requests with an unresolvable owner", () => {
+  it("falls back to the main line instead of vanishing", () => {
+    // An owner that aged out of the roster cap would otherwise land in a
+    // bucket that never renders, hiding an approval only the user can answer.
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [],
+      requests: [
+        {
+          requestId: "r1",
+          kind: "approval",
+          label: "Command approval",
+          since: "2026-09-04T10:00:00.000Z",
+          ownerId: "ghost-agent",
+        },
+      ],
+      mainTurnActive: false,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ ownerId: null, ownerLabel: "Main", needsUser: true });
+  });
+});

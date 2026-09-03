@@ -2556,6 +2556,8 @@ function ChatViewContent(props: ChatViewProps) {
           title: formatSubagentTitle(agent.title),
           status: agent.status,
           startedAt: agent.startedAt,
+          // Members block their coordinator, not main.
+          parentAgentId: agent.parentAgentId,
         })),
         requests: deriveOpenRequestWaits(threadActivities),
         agentWaitReasons: deriveAgentWaitReasons(threadActivities),

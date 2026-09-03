@@ -309,7 +309,11 @@ machine.
   what it is blocked on. A wait is only claimed on evidence — an open approval or
   question, a provider-named wait flag, or non-detached work while the turn is actually
   running — because Claude backgrounding and Codex's asynchronous `spawnAgent` both mean
-  running work frequently blocks nobody. Codex requests now carry the child thread that
+  running work frequently blocks nobody. Detachment is read from `task_started` as well
+  as the later patch: backgrounded shells and agents, and every resumed subagent, are
+  registered in the background at start and never send a patch, so reading only the
+  patch reported a fleet of background lanes as blocking an agent that was free.
+  Workflow members are attributed to their coordinator rather than to main. Codex requests now carry the child thread that
   raised them, so a child's approval is attributed to that child instead of reading as
   the main agent being stuck. Coverage is per provider: Claude has the full task
   lifecycle; Codex is agent-level only (its protocol exposes child agents but no shells,

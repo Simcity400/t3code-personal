@@ -649,6 +649,12 @@ export interface WaitStateAgent {
   readonly title: string;
   readonly status: BackgroundTaskStatus;
   readonly startedAt: string | null;
+  /**
+   * The agent this one reports to — a workflow coordinator for its members.
+   * Members block their coordinator, not the main agent; without this one
+   * workflow inflated main's line to "Reviewer + 7 more agents".
+   */
+  readonly parentAgentId?: string | null | undefined;
 }
 
 function joinLabels(labels: ReadonlyArray<string>, noun: string): string {
@@ -696,6 +702,7 @@ export function deriveAgentWaitStates(input: {
   readonly mainTurnActive?: boolean | undefined;
 }): ReadonlyArray<AgentWaitState> {
   const { tasks, agents, requests } = input;
+  const knownAgentIds = new Set(agents.map((agent) => agent.id));
   const agentWaitReasons = input.agentWaitReasons;
   const detachedIds = input.detachedIds;
   const mainTurnActive = input.mainTurnActive ?? true;
@@ -712,9 +719,15 @@ export function deriveAgentWaitStates(input: {
   // still answer it.
   const requestsByOwner = new Map<string | null, OpenRequestWait[]>();
   for (const request of requests) {
-    const bucket = requestsByOwner.get(request.ownerId);
+    // An owner we cannot see in the roster (aged out of the cap, a resume
+    // race, or a thread id that is not a collab child) would otherwise get a
+    // bucket that never renders a line, hiding an approval only the user can
+    // answer. Unresolvable ownership falls back to main.
+    const ownerId =
+      request.ownerId !== null && knownAgentIds.has(request.ownerId) ? request.ownerId : null;
+    const bucket = requestsByOwner.get(ownerId);
     if (bucket) bucket.push(request);
-    else requestsByOwner.set(request.ownerId, [request]);
+    else requestsByOwner.set(ownerId, [request]);
   }
 
   const requestRow = (
@@ -744,6 +757,13 @@ export function deriveAgentWaitStates(input: {
   // rendering it as a dependency was the panel asserting a relationship no
   // provider reports.
   const blockingAgents = activeAgents.filter((agent) => !isDetached(agent.id, false));
+  // Only top-level agents block main. A workflow's members are reported on
+  // their coordinator's own line below.
+  const isMember = (agent: WaitStateAgent): boolean =>
+    typeof agent.parentAgentId === "string" &&
+    agent.parentAgentId.length > 0 &&
+    knownAgentIds.has(agent.parentAgentId);
+  const topLevelBlockingAgents = blockingAgents.filter((agent) => !isMember(agent));
   const blockingTasks = tasks.filter(
     (task) => isActiveBackgroundTaskStatus(task.status) && !isDetached(task.id, task.backgrounded),
   );
@@ -753,17 +773,17 @@ export function deriveAgentWaitStates(input: {
     rows.push(requestRow(null, "Main", mainRequests));
   } else if (mainTurnActive) {
     const mainTasks = blockingTasks.filter((task) => task.ownerAgentId === null);
-    if (blockingAgents.length > 0) {
+    if (topLevelBlockingAgents.length > 0) {
       rows.push({
         ownerId: null,
         ownerLabel: "Main",
         kind: "agents",
         label: joinLabels(
-          blockingAgents.map((agent) => agent.title),
+          topLevelBlockingAgents.map((agent) => agent.title),
           "agent",
         ),
-        since: earliest(blockingAgents.map((agent) => agent.startedAt)),
-        blockingIds: blockingAgents.map((agent) => agent.id),
+        since: earliest(topLevelBlockingAgents.map((agent) => agent.startedAt)),
+        blockingIds: topLevelBlockingAgents.map((agent) => agent.id),
         needsUser: false,
       });
     } else if (mainTasks.length > 0) {
@@ -792,6 +812,16 @@ export function deriveAgentWaitStates(input: {
     else blockingTasksByOwner.set(task.ownerAgentId, [task]);
   }
 
+  // Members that block their coordinator, grouped once.
+  const blockingMembersByParent = new Map<string, WaitStateAgent[]>();
+  for (const agent of blockingAgents) {
+    if (!isMember(agent)) continue;
+    const parentId = agent.parentAgentId as string;
+    const bucket = blockingMembersByParent.get(parentId);
+    if (bucket) bucket.push(agent);
+    else blockingMembersByParent.set(parentId, [agent]);
+  }
+
   const reported = new Set<string>();
   for (const agent of agents) {
     if (!isActiveBackgroundTaskStatus(agent.status)) continue;
@@ -801,6 +831,24 @@ export function deriveAgentWaitStates(input: {
     if (owned && owned.length > 0) {
       reported.add(agent.id);
       rows.push(requestRow(agent.id, agent.title, owned));
+      continue;
+    }
+    // A coordinator waits on the members still running under it.
+    const members = blockingMembersByParent.get(agent.id);
+    if (members && members.length > 0) {
+      reported.add(agent.id);
+      rows.push({
+        ownerId: agent.id,
+        ownerLabel: agent.title,
+        kind: "agents",
+        label: joinLabels(
+          members.map((member) => member.title),
+          "agent",
+        ),
+        since: earliest(members.map((member) => member.startedAt)),
+        blockingIds: members.map((member) => member.id),
+        needsUser: false,
+      });
       continue;
     }
     // Otherwise a named wait reason: the provider is telling us this agent is

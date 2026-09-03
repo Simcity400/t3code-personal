@@ -2128,6 +2128,73 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("forwards is_backgrounded from task_started", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const taskEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.started"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "spawn a lane",
+        attachments: [],
+      });
+
+      // Backgrounded local_agent/local_bash tasks and resumed subagents are
+      // detached from their FIRST row and never send a task_updated patch.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-lane",
+        description: "merge-upstream",
+        task_type: "local_agent",
+        is_backgrounded: true,
+        uuid: "task-lane-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-fg",
+        description: "blocking shell",
+        task_type: "local_bash",
+        is_backgrounded: false,
+        uuid: "task-fg-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      const events = Array.from(yield* Fiber.join(taskEventsFiber));
+      const lane = events.find(
+        (event) => event.type === "task.started" && String(event.payload.taskId) === "task-lane",
+      );
+      assert.equal(lane?.type, "task.started");
+      if (lane?.type === "task.started") {
+        assert.equal(lane.payload.isBackgrounded, true);
+      }
+      // false must survive as false, not be dropped as falsy.
+      const foreground = events.find(
+        (event) => event.type === "task.started" && String(event.payload.taskId) === "task-fg",
+      );
+      assert.equal(foreground?.type, "task.started");
+      if (foreground?.type === "task.started") {
+        assert.equal(foreground.payload.isBackgrounded, false);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("interruptTurn settles live tasks and closes the provider session", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

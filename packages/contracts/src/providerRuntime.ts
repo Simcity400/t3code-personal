@@ -677,6 +677,14 @@ export type TaskAgentLinkage = typeof TaskAgentLinkage.Type;
 const TaskStartedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
+  /**
+   * Whether the task was registered in the background rather than with the
+   * spawning tool call blocking on it. Set at START for local_agent and
+   * local_bash tasks, and a resumed subagent is ALWAYS registered
+   * backgrounded — those never receive a later task_updated patch, so
+   * reading detachment only from the patch missed the common case entirely.
+   */
+  isBackgrounded: Schema.optional(Schema.Boolean),
   ...taskAgentLinkageFields,
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
