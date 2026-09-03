@@ -1498,3 +1498,47 @@ describe("the compacting wait", () => {
     ]);
   });
 });
+
+describe("a task the provider stopped listing", () => {
+  it("settles as interrupted and stays beside live work", () => {
+    // The adapter synthesizes this patch when a background_tasks_changed
+    // snapshot twice omits a task it should have listed. `interrupted` keeps
+    // the row visible rather than collapsing it into Finished: nobody chose
+    // to stop it, and it may need restarting.
+    const tasks = foldBackgroundTasks([
+      activity("task.started", {
+        taskId: "sh-lost",
+        taskType: "local_bash",
+        detail: "pnpm build --watch",
+        command: "pnpm build --watch",
+      }),
+      activity("task.updated", {
+        taskId: "sh-lost",
+        taskType: "local_bash",
+        command: "pnpm build --watch",
+        status: "interrupted",
+      }),
+    ]);
+    expect(byId(tasks, "sh-lost").status).toBe("interrupted");
+
+    const model = deriveBackgroundTasksPanelModel({ tasks });
+    expect(model.groups.flatMap((group) => group.tasks).map((task) => task.id)).toEqual([
+      "sh-lost",
+    ]);
+    expect(model.finished).toEqual([]);
+  });
+
+  it("no longer counts as blocking whoever started it", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "sh-lost", taskType: "local_bash", detail: "watch" }),
+      activity("task.updated", {
+        taskId: "sh-lost",
+        taskType: "local_bash",
+        status: "interrupted",
+      }),
+    ]);
+    expect(
+      deriveAgentWaitStates({ tasks, agents: [], requests: [], mainTurnActive: true }),
+    ).toEqual([]);
+  });
+});

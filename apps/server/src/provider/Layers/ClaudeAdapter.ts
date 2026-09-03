@@ -26,6 +26,7 @@ import {
   type CanonicalItemType,
   type CanonicalRequestType,
   type ClaudeSettings,
+  classifyTaskAgentKind,
   EventId,
   type ProviderApprovalDecision,
   ProviderDriverKind,
@@ -282,6 +283,18 @@ interface ClaudeTaskAgentState {
   /** MCP server / tool behind a monitor or backgrounded MCP task. */
   server: string | undefined;
   tool: string | undefined;
+  /**
+   * Last status the CLI itself reported, collapsed to the two values that
+   * decide whether a `background_tasks_changed` snapshot is expected to list
+   * this task. See {@link isSnapshotListedTask}.
+   */
+  liveStatus: "pending" | "running" | "other";
+  /**
+   * True only when the CLI explicitly said the task is FOREGROUND
+   * (`is_backgrounded: false`). Absent detachment is not foreground — a
+   * monitor never reports the flag at all and is listed regardless.
+   */
+  foreground: boolean;
   skipTranscript: boolean;
   runHandles: TaskRunHandles | undefined;
   /** Set when this task was launched from inside a subagent. */
@@ -379,6 +392,17 @@ interface ClaudeSessionContext {
   readonly workflowMemberFingerprints: Map<string, string>;
   /** Task ids that have started and not yet reached a terminal state. */
   readonly liveTaskIds: Set<string>;
+  /**
+   * Live tasks a `background_tasks_changed` snapshot should have listed and
+   * did not, awaiting a SECOND such snapshot before being declared dead.
+   *
+   * One absence is not proof: the snapshot fires on the same state change
+   * that settles a task, and the relative order of the two messages is not
+   * specified anywhere. Requiring two consecutive absences means the ordinary
+   * completion path — where the terminal row lands between them and removes
+   * the task from liveTaskIds — can never be mistaken for a lost one.
+   */
+  readonly tasksMissedFromSnapshot: Set<string>;
   turnState: ClaudeTurnState | undefined;
   /**
    * Whether the CLI last reported `status: "compacting"`. Held so the two
@@ -1393,6 +1417,34 @@ function taskLaunchDetails(input: {
 }
 
 /**
+ * Whether a `background_tasks_changed` snapshot is expected to LIST this task,
+ * and therefore whether its absence from one means anything at all.
+ *
+ * The snapshot is not "every live task" — the CLI filters it (`em`/`Td` in the
+ * shipped binary) down to tasks that are
+ *
+ *   status running or pending  AND  not explicitly foreground
+ *   AND not an observer `local_agent`
+ *
+ * so three whole classes of perfectly healthy task are absent from every
+ * snapshot: foreground work (a blocking subagent or shell), paused work (the
+ * CLI's `paused`, which this adapter reports as `idle`), and observer agents.
+ * Treating absence as death would have settled all three as interrupted.
+ *
+ * The first two are checked here from what the stream reports. The third
+ * cannot be: `isObserver` lives in the CLI's task registry and never appears
+ * on `task_started`. So reaping is confined to task types that are background
+ * work by classification, which excludes every `local_agent` — observers
+ * included — and still covers the case this exists for: a background shell or
+ * monitor whose terminal row was lost.
+ */
+function isSnapshotListedTask(agent: ClaudeTaskAgentState): boolean {
+  if (agent.liveStatus !== "pending" && agent.liveStatus !== "running") return false;
+  if (agent.foreground) return false;
+  return classifyTaskAgentKind({ taskType: agent.taskType }) === "background";
+}
+
+/**
  * Merges a `background_tasks_changed` roster snapshot into remembered task
  * identity, and reports the task ids whose identity actually changed.
  *
@@ -1419,10 +1471,13 @@ function taskLaunchDetails(input: {
 function rehydrateTaskAgentsFromRoster(
   context: { readonly taskAgents: Map<string, ClaudeTaskAgentState> },
   message: Record<string, unknown>,
-): ReadonlyArray<string> {
+): { readonly changed: ReadonlyArray<string>; readonly listed: ReadonlySet<string> } {
+  const listed = new Set<string>();
   const tasks = message.tasks;
   if (!Array.isArray(tasks)) {
-    return [];
+    // A malformed snapshot is not evidence that anything died. Reporting an
+    // empty listing here would reap every live background task at once.
+    return { changed: [], listed };
   }
   const changed: Array<string> = [];
   for (const entry of tasks) {
@@ -1430,6 +1485,7 @@ function rehydrateTaskAgentsFromRoster(
     const summary = entry as Record<string, unknown>;
     const taskId = trimmedString(summary.task_id) ?? trimmedString(summary.id);
     if (!taskId) continue;
+    listed.add(taskId);
     const rawType = trimmedString(summary.task_type) ?? trimmedString(summary.type);
     const taskType = rawType ? (ROSTER_TASK_TYPES[rawType] ?? rawType) : undefined;
     const description = trimmedString(summary.command) ?? trimmedString(summary.description);
@@ -1444,6 +1500,10 @@ function rehydrateTaskAgentsFromRoster(
       command: undefined,
       server: undefined,
       tool: undefined,
+      // The snapshot lists only running/pending, non-foreground tasks, so a
+      // seeded entry is live by construction.
+      liveStatus: "running",
+      foreground: false,
       skipTranscript: false,
       runHandles: undefined,
       owningAgentId: undefined,
@@ -1490,7 +1550,7 @@ function rehydrateTaskAgentsFromRoster(
     context.taskAgents.set(taskId, seeded);
     if (dirty) changed.push(taskId);
   }
-  return changed;
+  return { changed, listed };
 }
 
 const WORKFLOW_PHASE_CAP = 64;
@@ -3711,6 +3771,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             command: existing?.command,
             server: existing?.server,
             tool: existing?.tool,
+            liveStatus: existing?.liveStatus ?? "running",
+            foreground: existing?.foreground ?? false,
             skipTranscript: existing?.skipTranscript ?? false,
             runHandles,
             owningAgentId: existing?.owningAgentId,
@@ -4073,7 +4135,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // type-less row to "agent". That mis-stamp puts a background shell
         // in the agents roster. Rehydrating here keeps classification
         // truthful for every later row.
-        const changed = rehydrateTaskAgentsFromRoster(
+        const { changed, listed } = rehydrateTaskAgentsFromRoster(
           context,
           message as unknown as Record<string, unknown>,
         );
@@ -4098,6 +4160,52 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             payload: {
               taskId: RuntimeTaskId.make(taskId),
               ...linkage,
+            },
+          });
+        }
+        // The snapshot has REPLACE semantics, so a task it SHOULD have listed
+        // and did not is no longer running as far as the CLI is concerned. If
+        // its terminal row was lost — a killed process, a truncated transport
+        // — nothing else ever settles it and the panel shows it running until
+        // the session dies. This is the only signal that it stopped.
+        //
+        // Only tasks whose task_started this session actually saw are
+        // considered (liveTaskIds is written nowhere else), and only those a
+        // snapshot is expected to list at all (see isSnapshotListedTask), so a
+        // snapshot that races ahead of a task about to start settles nothing.
+        for (const taskId of [...context.liveTaskIds]) {
+          if (listed.has(taskId)) {
+            context.tasksMissedFromSnapshot.delete(taskId);
+            continue;
+          }
+          const agent = context.taskAgents.get(taskId);
+          if (!agent || !isSnapshotListedTask(agent)) continue;
+          if (!context.tasksMissedFromSnapshot.has(taskId)) {
+            // First absence: could be the snapshot that accompanies this
+            // task's own completion, arriving before its terminal row.
+            context.tasksMissedFromSnapshot.add(taskId);
+            continue;
+          }
+          context.tasksMissedFromSnapshot.delete(taskId);
+          context.liveTaskIds.delete(taskId);
+          releaseSubagentStream(context, taskId);
+          const stamp = yield* makeEventStamp();
+          yield* offerRuntimeEvent({
+            ...base,
+            eventId: stamp.eventId,
+            createdAt: stamp.createdAt,
+            type: "task.updated",
+            payload: {
+              taskId: RuntimeTaskId.make(taskId),
+              // `interrupted`, not `cancelled`: nobody chose to stop this, and
+              // the two read differently to the user. The panel keeps
+              // interrupted rows beside live work because they may need
+              // restarting, and collapses cancelled ones into Finished as
+              // deliberate endings. It is also already this fork's word for
+              // work that died without a terminal row — the same status a
+              // dead session gives its orphans.
+              status: "interrupted",
+              ...taskLinkageFor(context.taskAgents, taskId),
             },
           });
         }
@@ -4263,6 +4371,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           launchToolName: launchingTool?.toolName,
           launchInput,
         });
+        const startedBackgrounded = (() => {
+          const raw = (message as unknown as Record<string, unknown>).is_backgrounded;
+          return typeof raw === "boolean" ? raw : undefined;
+        })();
         // Remember the agent identity so every later task.* payload for this
         // taskId is self-describing (identity must survive activity retention).
         context.taskAgents.set(message.task_id, {
@@ -4275,6 +4387,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           command: launchDetails.command,
           server: launchDetails.server,
           tool: launchDetails.tool,
+          liveStatus: "running",
+          // Only an explicit false means foreground; the flag is absent
+          // entirely for monitors and MCP tasks, which are listed regardless.
+          foreground: startedBackgrounded === false,
           skipTranscript: message.skip_transcript === true,
           runHandles: context.taskAgents.get(message.task_id)?.runHandles,
           owningAgentId,
@@ -4282,10 +4398,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           effort,
         });
         context.liveTaskIds.add(message.task_id);
-        const startedBackgrounded = (() => {
-          const raw = (message as unknown as Record<string, unknown>).is_backgrounded;
-          return typeof raw === "boolean" ? raw : undefined;
-        })();
+        // A restarted id starts its snapshot bookkeeping over.
+        context.tasksMissedFromSnapshot.delete(message.task_id);
         yield* offerRuntimeEvent({
           ...base,
           type: "task.started",
@@ -4368,7 +4482,25 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           patch.status !== undefined ? CLAUDE_TASK_PATCH_STATUS[patch.status] : undefined;
         if (status === "completed" || status === "failed" || status === "cancelled") {
           context.liveTaskIds.delete(message.task_id);
+          context.tasksMissedFromSnapshot.delete(message.task_id);
           releaseSubagentStream(context, message.task_id);
+        }
+        // Track what a snapshot is now expected to say about this task. A
+        // `paused` patch (reported here as `idle`) drops it out of every
+        // snapshot while it is still perfectly alive, so it must stop being a
+        // reap candidate — and start again if it resumes.
+        const patched = context.taskAgents.get(message.task_id);
+        if (patched) {
+          if (status !== undefined) {
+            patched.liveStatus =
+              status === "pending" ? "pending" : status === "running" ? "running" : "other";
+            if (patched.liveStatus === "other") {
+              context.tasksMissedFromSnapshot.delete(message.task_id);
+            }
+          }
+          if (patch.is_backgrounded !== undefined) {
+            patched.foreground = patch.is_backgrounded === false;
+          }
         }
         const endedAt =
           typeof patch.end_time === "number" && Number.isFinite(patch.end_time)
@@ -4393,6 +4525,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
       case "task_notification": {
         context.liveTaskIds.delete(message.task_id);
+        context.tasksMissedFromSnapshot.delete(message.task_id);
         releaseSubagentStream(context, message.task_id);
         // The terminal row carries its own skip_transcript. A notification
         // that arrives without a remembered start (task_started missed, or a
@@ -5506,6 +5639,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         workflowMemberFingerprints,
         liveTaskIds,
         turnState: undefined,
+        tasksMissedFromSnapshot: new Set<string>(),
         compacting: false,
         lastKnownContextWindow: initialContextWindow,
         contextWindowByModel,

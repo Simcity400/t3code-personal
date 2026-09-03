@@ -296,6 +296,19 @@ async function readPromptMessages(
   return messages;
 }
 
+/**
+ * Task ids the adapter settled as interrupted, in emission order. Written as a
+ * narrowing flatMap rather than filter+map: a filter predicate does not narrow
+ * the runtime-event union, so `payload.taskId` is not reachable after one.
+ */
+function interruptedTaskIds(events: ReadonlyArray<ProviderRuntimeEvent>): ReadonlyArray<string> {
+  return events.flatMap((event) =>
+    event.type === "task.updated" && event.payload.status === "interrupted"
+      ? [String(event.payload.taskId)]
+      : [],
+  );
+}
+
 const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
 const SYNTHETIC_SUBAGENT_MODEL = "claude-synthetic-subagent[expanded]";
@@ -2484,6 +2497,297 @@ describe("ClaudeAdapterLive", () => {
       );
     },
   );
+
+  it.effect("settles a live background task the snapshot stops listing", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "watch two things",
+        attachments: [],
+      });
+
+      for (const [taskId, uuid] of [
+        ["shell-alive", "started-alive"],
+        ["shell-lost", "started-lost"],
+      ] as const) {
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: taskId,
+          description: taskId,
+          task_type: "local_bash",
+          is_backgrounded: true,
+          uuid,
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+      }
+
+      const snapshot = (uuid: string, ids: ReadonlyArray<string>) =>
+        harness.query.emit({
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: ids.map((id) => ({
+            task_id: id,
+            task_type: "local_bash",
+            description: id,
+          })),
+          uuid,
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+
+      // Both listed: nothing settles.
+      snapshot("snap-1", ["shell-alive", "shell-lost"]);
+      yield* Effect.yieldNow;
+      assert.deepEqual(interruptedTaskIds(runtimeEvents), []);
+
+      // First absence only marks it: this could be the snapshot that
+      // accompanies the task's own completion, racing its terminal row.
+      snapshot("snap-2", ["shell-alive"]);
+      yield* Effect.yieldNow;
+      assert.deepEqual(interruptedTaskIds(runtimeEvents), []);
+
+      // Second consecutive absence with no terminal row in between: the task
+      // is gone and nothing else will ever say so.
+      snapshot("snap-3", ["shell-alive"]);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      // Exactly the lost one; the task the snapshot kept listing is untouched.
+      assert.deepEqual(interruptedTaskIds(runtimeEvents), ["shell-lost"]);
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("never settles work the snapshot was never going to list", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "mixed work",
+        attachments: [],
+      });
+
+      // The CLI filters the snapshot to running/pending, non-foreground,
+      // non-observer tasks. Every task below is alive and absent from it by
+      // design, so absence proves nothing about any of them.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "shell-foreground",
+        description: "blocking shell",
+        task_type: "local_bash",
+        is_backgrounded: false,
+        uuid: "started-fg",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      // A subagent: agent-classified, and the adapter cannot tell an observer
+      // agent (which the CLI hides from the snapshot) from an ordinary one,
+      // because isObserver never reaches the stream.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "agent-1",
+        description: "reviewer",
+        task_type: "local_agent",
+        is_backgrounded: true,
+        uuid: "started-agent",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      // A paused shell: the CLI reports `paused`, which drops it out of every
+      // snapshot while it is still perfectly resumable.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "shell-paused",
+        description: "paused watcher",
+        task_type: "local_bash",
+        is_backgrounded: true,
+        uuid: "started-paused",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "shell-paused",
+        patch: { status: "paused" },
+        uuid: "patch-paused",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      for (const uuid of ["empty-1", "empty-2", "empty-3"]) {
+        harness.query.emit({
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [],
+          uuid,
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+      }
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      assert.deepEqual(interruptedTaskIds(runtimeEvents), []);
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("settles nothing for a task whose task_started it never saw", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "resume",
+        attachments: [],
+      });
+
+      // A snapshot naming a task, then snapshots without it, for a task this
+      // session never started: the roster seeds identity but not liveness, so
+      // there is nothing to settle. This is also the shape of a snapshot that
+      // races ahead of a task_started about to arrive.
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [
+          { task_id: "seeded-only", task_type: "local_bash", description: "pre-restart watcher" },
+        ],
+        uuid: "seed-snap",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      for (const uuid of ["gone-1", "gone-2"]) {
+        harness.query.emit({
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [],
+          uuid,
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+      }
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      assert.deepEqual(interruptedTaskIds(runtimeEvents), []);
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("lets a terminal row that lands between snapshots win over the reap", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "watch",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "shell-done",
+        description: "pnpm build --watch",
+        task_type: "local_bash",
+        is_backgrounded: true,
+        uuid: "started-done",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      // The ordinary completion path, in the order that would break a
+      // single-absence reap: the membership snapshot drops the task first and
+      // its terminal row follows.
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+        uuid: "done-snap-1",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "shell-done",
+        status: "completed",
+        output_file: "",
+        summary: "build finished",
+        uuid: "done-notif",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+        uuid: "done-snap-2",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      // The completion stands; no interrupted patch was ever synthesized.
+      assert.deepEqual(interruptedTaskIds(runtimeEvents), []);
+      assert.equal(
+        runtimeEvents.some(
+          (event) =>
+            event.type === "task.completed" && String(event.payload.taskId) === "shell-done",
+        ),
+        true,
+      );
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   it.effect("names the compacting wait and marks both of its edges exactly once", () => {
     const harness = makeHarness();
