@@ -343,6 +343,25 @@ machine.
   superset of `skip_transcript` covering its own live-update watchers), and emits a
   status-less `task.updated` per repaired task so recovered identity reaches the client
   instead of waiting for a lifecycle row that, for a watch loop, may be hours away.
+  The snapshot's REPLACE semantics also settle work whose terminal row was
+  lost: a task it should have listed and did not is no longer running, and if
+  its `task_notification` died with the process nothing else ever says so. Two
+  guards make that safe, both forced by the CLI's own filter on this message
+  (`em`/`Td` in the shipped binary), which admits only tasks that are
+  `running`/`pending`, not explicitly foreground, and not observer
+  `local_agent`s. Absence therefore proves nothing about a foreground task, a
+  paused one (the CLI's `paused`, reported here as `idle`), or an observer —
+  so reaping is confined to tasks that are background work by classification
+  (which excludes every `local_agent`, observers included, since `isObserver`
+  never reaches the stream) and whose last reported status was running or
+  pending. And it takes TWO consecutive absences: the snapshot fires on the
+  same state change that settles a task, the order of the two messages is
+  specified nowhere, and one absence would otherwise mark every completing
+  shell `interrupted` — a status the client's first-terminal-write-wins rule
+  would then never let the real completion correct. Tasks whose `task_started`
+  this session never saw are never reaped at all, which is also what keeps a
+  snapshot that races ahead of a starting task harmless.
+
   Same round: `mcp_task`, `monitor_ws` and `auto_mode_scan` joined
   `MONITOR_TASK_TYPES` — the CLI's own background set is
   `{local_bash, monitor_mcp, monitor_ws, mcp_task}`, so all three were falling through
