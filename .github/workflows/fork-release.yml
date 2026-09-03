@@ -30,73 +30,23 @@ concurrency:
   group: fork-release
   cancel-in-progress: true
 
-env:
-  FORK_BRANCH: main
-
 jobs:
-  # Manual runs first pull in upstream's latest changes. Scheduled fork-sync
-  # runs call this workflow with the exact main commit they already pushed.
-  sync_upstream:
-    name: Merge upstream/main
-    if: inputs.ref == '' && github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    outputs:
-      ref: ${{ steps.sync.outputs.ref }}
-      has_changes: ${{ steps.sync.outputs.has_changes }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ env.FORK_BRANCH }}
-          fetch-depth: 0
-          fetch-tags: true
-
-      - id: sync
-        name: Merge upstream and push
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add upstream https://github.com/pingdotgg/t3code.git
-          git fetch upstream main
-
-          if ! git merge --no-edit upstream/main; then
-            echo "::error::Merge conflict with upstream. On your computer, open Claude Code in the T3 Code folder and say: finish the upstream merge, then push. The next build will pick it up."
-            exit 1
-          fi
-
-          # Pushes made with GITHUB_TOKEN never trigger workflows, so this
-          # cannot recurse; the build continues in this same run instead.
-          git push origin "HEAD:$FORK_BRANCH"
-
-          head_sha="$(git rev-parse HEAD)"
-          echo "ref=$head_sha" >> "$GITHUB_OUTPUT"
-
-          last_tag="$(git tag --list 'v*-nightly.*' --sort=-creatordate | head -n 1)"
-          if [[ -n "$last_tag" && "$(git rev-parse "$last_tag^{commit}")" == "$head_sha" ]]; then
-            echo "Nothing new since the last release ($last_tag). Skipping build."
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          fi
+  # This workflow only builds and publishes. fork-sync.yml owns merging
+  # upstream — it carries the version-pin resolution and the workflow allowlist
+  # a GITHUB_TOKEN push needs — and then calls this workflow with the exact
+  # main commit it pushed. A manual run here just packages main as it stands.
+  #
   # Same rationale as upstream release.yml: node-pty has no Linux prebuilt,
   # and the Windows package bundles a Linux pty.node for the WSL backend.
   build_wsl_node_pty:
     name: Build WSL node-pty (linux-x64)
-    needs: [sync_upstream]
-    if: |
-      always() && !cancelled() &&
-      (inputs.ref != '' || github.event_name == 'push' ||
-       (needs.sync_upstream.result == 'success' && needs.sync_upstream.outputs.has_changes == 'true'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref != '' && inputs.ref || github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
+          ref: ${{ inputs.ref != '' && inputs.ref || github.sha }}
           sparse-checkout: |
             /*
             !/.repos/
@@ -131,8 +81,7 @@ jobs:
 
   release:
     name: Build and release Windows x64
-    needs: [sync_upstream, build_wsl_node_pty]
-    if: ${{ always() && !cancelled() && needs.build_wsl_node_pty.result == 'success' }}
+    needs: [build_wsl_node_pty]
     runs-on: windows-2025
     timeout-minutes: 60
     env:
@@ -152,7 +101,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref != '' && inputs.ref || github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
+          ref: ${{ inputs.ref != '' && inputs.ref || github.sha }}
           sparse-checkout: |
             /*
             !/.repos/
@@ -237,7 +186,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_meta.outputs.tag }}
-          target_commitish: ${{ inputs.ref != '' && inputs.ref || github.event_name == 'push' && github.sha || needs.sync_upstream.outputs.ref }}
+          target_commitish: ${{ inputs.ref != '' && inputs.ref || github.sha }}
           name: ${{ steps.release_meta.outputs.name }}
           prerelease: true
           make_latest: false

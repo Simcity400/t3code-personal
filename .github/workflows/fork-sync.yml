@@ -14,6 +14,20 @@ name: Fork Sync
 # machine) and say "finish the upstream merge". After the resolved merge is
 # pushed to main, the next sync run deletes the marker automatically.
 #
+# Workflow allowlist. This fork keeps exactly three workflows of its own —
+# fork-sync.yml, fork-release.yml and fork-mobile-preview.yml. Every other
+# `.github/workflows/*` file upstream ships is deleted here: they need T3's
+# Blacksmith runners, secrets or PR bots, so on this fork they only ever queue
+# runs that can never succeed. Keeping them deleted is not cosmetic — a push
+# made with GITHUB_TOKEN is REJECTED outright when it adds or modifies any
+# `.github/workflows/*` file, because that token has no `workflows` permission.
+# Before this allowlist existed, the sync therefore broke silently every time
+# upstream touched a workflow. So the merge step below (a) treats a conflict in
+# a non-allowlisted workflow as "delete it", (b) deletes any non-allowlisted
+# workflow the merge brought in cleanly, and (c) refuses to continue — before
+# anything is pushed — if the resulting branch would still carry a workflow
+# change GITHUB_TOKEN cannot push.
+#
 # Costs almost nothing: the gate job is seconds without a checkout, and the
 # full sync only runs when a new nightly is actually out (~once a day).
 
@@ -82,24 +96,64 @@ jobs:
           git remote add upstream https://github.com/pingdotgg/t3code.git
           git fetch upstream main
 
+          # The fork's own workflows. Everything else under .github/workflows is
+          # upstream-only and must not exist on this fork (see the header).
+          fork_workflows="$(printf '%s\n' \
+            .github/workflows/fork-sync.yml \
+            .github/workflows/fork-release.yml \
+            .github/workflows/fork-mobile-preview.yml)"
+          # The four manifests whose version line the fork pins.
+          pin_files="$(printf '%s\n' \
+            apps/desktop/package.json \
+            apps/server/package.json \
+            apps/web/package.json \
+            packages/contracts/package.json)"
+
           if ! git merge --no-edit upstream/main; then
-            # The four version-pinned manifests conflict on every sync (upstream
-            # bumps the same version line the fork pins). The pin step below
-            # rewrites them anyway, so when they are the ONLY conflicts, take
-            # upstream's side and finish the merge; the marker is reserved for
-            # genuine code conflicts. Any hiccup in the auto-resolution (e.g. a
-            # modify/delete conflict where no "theirs" blob exists) falls
-            # through to the marker path instead of killing the job silently.
+            # Two conflict classes resolve themselves:
+            #   * the four version-pinned manifests, which conflict on every sync
+            #     by construction (upstream bumps the line the fork pins) and are
+            #     rewritten by the pin step below anyway — take upstream's side;
+            #   * a non-allowlisted .github/workflows file, which this fork does
+            #     not keep at all — delete it, whatever the conflict shape
+            #     (modify/delete and add/add both land here).
+            # Anything else — including a conflict in one of the fork's OWN
+            # workflows — is a genuine conflict and takes the marker path. Any
+            # hiccup in the auto-resolution (e.g. a modify/delete conflict where
+            # no "theirs" blob exists) also falls through to the marker instead
+            # of killing the job silently.
             resolved=false
-            pin_files="$(printf '%s\n' apps/desktop/package.json apps/server/package.json apps/web/package.json packages/contracts/package.json)"
-            conflicts="$(git diff --name-only --diff-filter=U)"
-            if [ -n "$conflicts" ] && ! grep -vxFf <(echo "$pin_files") <(echo "$conflicts") >/dev/null; then
-              echo "Only version-pin conflicts; taking upstream's side (the pin step re-stamps them)."
-              checkout_failed=false
+            conflicts_file="$(mktemp)"
+            theirs_file="$(mktemp)"
+            drop_file="$(mktemp)"
+            git diff --name-only --diff-filter=U > "$conflicts_file"
+            auto=true
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              if printf '%s\n' "$pin_files" | grep -qxF -- "$f"; then
+                printf '%s\n' "$f" >> "$theirs_file"
+              elif printf '%s\n' "$f" | grep -q '^\.github/workflows/' &&
+                ! printf '%s\n' "$fork_workflows" | grep -qxF -- "$f"; then
+                printf '%s\n' "$f" >> "$drop_file"
+              else
+                auto=false
+                break
+              fi
+            done < "$conflicts_file"
+
+            if [ -s "$conflicts_file" ] && [ "$auto" = true ]; then
+              echo "Only auto-resolvable conflicts; taking upstream's side on the pins and dropping upstream-only workflows."
+              step_failed=false
               while IFS= read -r f; do
-                git checkout --theirs "$f" && git add "$f" || { checkout_failed=true; break; }
-              done <<< "$conflicts"
-              if [ "$checkout_failed" = false ] && git commit --no-edit; then
+                git checkout --theirs -- "$f" && git add -- "$f" || { step_failed=true; break; }
+              done < "$theirs_file"
+              if [ "$step_failed" = false ]; then
+                while IFS= read -r f; do
+                  git rm -q --cached -f -- "$f" || { step_failed=true; break; }
+                  rm -f -- "$f"
+                done < "$drop_file"
+              fi
+              if [ "$step_failed" = false ] && git commit --no-edit; then
                 resolved=true
               fi
             fi
@@ -115,6 +169,30 @@ jobs:
               echo "::error::Official changes conflict with fork customizations. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge. Once the resolved merge is pushed to main, this workflow cleans up on its next run."
               exit 1
             fi
+          fi
+
+          # A brand-new upstream workflow does not conflict — it just appears in
+          # the merged tree, and its push would then be rejected. Drop every
+          # non-allowlisted workflow the merge left behind, in its own commit so
+          # the merge commit stays a plain merge (fast-forward merges have no
+          # merge commit to fold into).
+          stray="$(git ls-files .github/workflows | grep -vxF -f <(printf '%s\n' "$fork_workflows") || true)"
+          if [ -n "$stray" ]; then
+            printf '%s\n' "$stray" | xargs -r git rm -q --
+            git commit -q -m "chore(fork): drop upstream-only workflows"
+            echo "Dropped upstream-only workflows:"
+            printf '%s\n' "$stray"
+          fi
+
+          # Last line of defence, before anything is pushed: GITHUB_TOKEN cannot
+          # push a commit that adds or modifies any .github/workflows file, so a
+          # branch that still carries one would fail the push (historically:
+          # silently, leaving the sync broken until someone noticed).
+          pushable="$(git diff --name-only origin/main..HEAD -- .github/workflows | grep -vxF -f <(printf '%s\n' "$fork_workflows") || true)"
+          if [ -n "$pushable" ]; then
+            echo "$pushable"
+            echo "::error::sync would push non-fork workflow changes (GITHUB_TOKEN cannot)"
+            exit 1
           fi
 
       - name: Pin package versions to the official nightly
