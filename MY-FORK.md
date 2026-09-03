@@ -7,9 +7,7 @@ personal customizations, backed up at
 ## Using it
 
 - **Start the app**: use the "T3 Code (Nightly)" Start Menu shortcut. It points
-  directly to `%LOCALAPPDATA%\Programs\t3code\T3 Code (Nightly).exe`. The two
-  compatibility launch scripts open that same executable; they do not run a source
-  or development build.
+  directly to `%LOCALAPPDATA%\Programs\t3code\T3 Code (Nightly).exe`.
 - **Get updates**: just push to `main`. GitHub Actions runs again on this account
   (the 2026-08-17 → 2026-09-03 billing block is over), so every push to `main`
   starts `fork-release.yml`, which packages that exact commit and publishes it as a
@@ -25,15 +23,8 @@ personal customizations, backed up at
   does the installed app have a newer version to offer: the updater compares against
   the newest release on the private feed, so while `main` is ahead of the last
   published release no update pill appears — correctly, because no newer release
-  exists yet.
-  **Manual fallback** (Actions down, or a release run that failed and you do not want
-  to re-run from the Actions tab): double-click
-  `Publish T3 Code Update (My Version).cmd` in the project folder. It packages the
-  exact `origin/main` commit, publishes the private prerelease, and pushes the iPhone
-  OTA update, and refuses to run unless every tracked file is clean (untracked files
-  are ignored) and local `main` already equals `origin/main`. For one of the two only,
-  run it from a terminal: `node scripts\publish-personal-update.ts --desktop-only`
-  (or `--iphone-only`).
+  exists yet. If a release run fails, re-run it from the Actions tab; there is no
+  local publisher any more (retired 2026-09-04 with the launcher scripts, see below).
   For the private feed, the updater reads the existing `gh` login directly; it does not
   put the GitHub token in the app or agent environment.
 - **iPhone agent alerts**: the personal preview registers an Expo Push token with each
@@ -56,8 +47,7 @@ personal customizations, backed up at
    machines).
 
 Machines stay in sync through the update pill: whenever GitHub's `main` moves,
-`fork-release.yml` packages that exact commit (or
-`Publish T3 Code Update (My Version).cmd` on this machine, as a fallback).
+`fork-release.yml` packages that exact commit.
 After it finishes, other machines surface it on their next update check and apply it as
 a plain download. Because no machine ever merges locally, machines
 cannot conflict with each other anymore; the only merge that can conflict is
@@ -220,7 +210,14 @@ machine.
   stand-in is gone. Deleted: `scripts/local-fork-sync.ts`, `scripts/local-fork-sync.test.ts`,
   `scripts/register-local-fork-sync.cmd`, and the "T3 Personal Fork Sync" scheduled task
   (`schtasks /delete /tn "T3 Personal Fork Sync" /f` if it ever comes back on another
-  machine). `scripts/publish-personal-update.ts` stays as the manual publisher.
+  machine).
+- **Local publisher and launcher scripts**: retired 2026-09-04 — GitHub builds every
+  release, and the Start Menu shortcut points straight at the installed app, so
+  `scripts/publish-personal-update.ts` (+ test), `Publish T3 Code Update (My Version).cmd`,
+  `Launch T3 Code (My Version).cmd`/`.vbs` and `Update T3 Code (My Version).cmd` were
+  deleted. `Setup T3 Code (My Version).cmd` stays: a new machine still needs it once.
+  `scripts/lib/personal-*.ts` stay: `apps/mobile/app.config.ts` and
+  `fork-mobile-preview.yml` read them.
 - **Only the fork's own workflows** (2026-09-03): `.github/workflows` keeps exactly
   `fork-sync.yml`, `fork-release.yml` and `fork-mobile-preview.yml`. Every upstream
   workflow (`ci.yml`, `release.yml`, `deploy-relay.yml`, `pr-size.yml`, `pr-vouch.yml`,
