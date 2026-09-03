@@ -167,8 +167,9 @@ machine.
   `collabAgent/tokenUsage`. On the client, the transcript selector now returns every
   row the server attributed to that agent instead of tool rows only, so the agent's
   own plan, denials, nested tasks and usage all render through the identical
-  derivations the main chat uses; the parent's plan chip and context meter skip
-  agent-attributed rows instead of reading a child's value as their own. The Agents
+  derivations the main chat uses; the parent's context meter and its server-side
+  plan progress skip agent-attributed rows instead of reading a child's value as
+  their own. The Agents
   panel shows the same `ContextWindowMeter` per subagent (transcript header, plus a
   compact `NN% ctx` on each roster row), and the iPhone app shows the same reading as a
   chip on each agent card and in the agent transcript header. (Mobile still has no
@@ -204,8 +205,9 @@ machine.
   as "Σ … tok" / "Σ … tools", and in the Agents panel footer as "Σ … tok" — now
   labelled with a sigma so a total is never misread as a context reading. Codex
   already kept the two apart (a child's usage is routed to `collabAgent/tokenUsage`
-  and stamped with its agent id, never to the parent's handler); Grok and OpenCode
-  report no token usage at all, so they have no meter to corrupt. Three upstream tests
+  and stamped with its agent id, never to the parent's handler); OpenCode reports a
+  message's own occupancy per session, so a child's figure never reaches the parent
+  either; Grok reports no token usage at all, so it has no meter to corrupt. Three upstream tests
   that asserted the merged behaviour were rewritten; expect a conflict there on the
   next upstream sync and keep the fork's version.
 - **Resource-monitor sidecar**: release builds ship a Rust sidecar

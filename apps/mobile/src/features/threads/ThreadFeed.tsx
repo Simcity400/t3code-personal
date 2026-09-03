@@ -1669,7 +1669,7 @@ function renderFeedEntry(
         {/* A report a subagent sent back: attributed, so it never reads as the
             main agent's own words. */}
         {entry.fromAgentLabel ? (
-          <Text className="mb-1 font-t3-medium text-xs text-neutral-600 dark:text-neutral-400">
+          <Text className="mb-1 font-t3-medium text-xs text-foreground-muted">
             From {entry.fromAgentLabel}
           </Text>
         ) : null}

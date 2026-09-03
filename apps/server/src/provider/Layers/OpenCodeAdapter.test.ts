@@ -2567,7 +2567,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
 
       const openedEventsFiber = yield* adapter.streamEvents.pipe(
         Stream.filter((event) => event.threadId === threadId),
-        Stream.take(3),
+        Stream.take(4),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -2580,6 +2580,13 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const openedEvents = Array.from(
         yield* Fiber.join(openedEventsFiber).pipe(Effect.timeout("1 second")),
       );
+      // The window is one wider than the request alone needs: a session whose
+      // parentID is this thread's root is a delegated subagent, so it is
+      // announced as a task before its request is routed.
+      const childStarted = openedEvents.find(
+        (event) => event.type === "task.started" && event.payload.taskId === "ses_child",
+      );
+      NodeAssert.ok(childStarted);
       const opened = openedEvents.find((event) => event.type === "request.opened");
       NodeAssert.ok(opened);
       NodeAssert.equal(opened.requestId, "per_child");
@@ -2662,7 +2669,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
 
       const requestedEventsFiber = yield* adapter.streamEvents.pipe(
         Stream.filter((event) => event.threadId === threadId),
-        Stream.take(3),
+        Stream.take(4),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -2675,6 +2682,13 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const requestedEvents = Array.from(
         yield* Fiber.join(requestedEventsFiber).pipe(Effect.timeout("1 second")),
       );
+      // The window is one wider than the request alone needs: a session whose
+      // parentID is this thread's root is a delegated subagent, so it is
+      // announced as a task before its request is routed.
+      const childStarted = requestedEvents.find(
+        (event) => event.type === "task.started" && event.payload.taskId === "ses_child_question",
+      );
+      NodeAssert.ok(childStarted);
       const requested = requestedEvents.find((event) => event.type === "user-input.requested");
       NodeAssert.ok(requested);
       NodeAssert.equal(requested.requestId, "que_child");
