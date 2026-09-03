@@ -204,7 +204,19 @@ jobs:
             echo "Dropped upstream-only workflow: $f"
           done < "$tracked_workflows"
 
-          git commit --no-edit
+          # Only when a merge is actually pending. `git merge` on an upstream
+          # that is already an ancestor says "Already up to date", exits 0 and
+          # leaves no MERGE_HEAD — which is exactly the state of the run that
+          # follows a by-hand marker resolution, and of a nightly-only re-pin.
+          # An unconditional commit would fail there with "nothing to commit"
+          # and, under set -e, take the marker cleanup and the re-pin down with
+          # it.
+          if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+            git commit --no-edit
+          elif ! git diff --cached --quiet; then
+            # No merge to make, but the cleanup above still staged something.
+            git commit -q -m "chore(fork): drop upstream-only workflows"
+          fi
 
           # Last line of defence, before anything is pushed. GITHUB_TOKEN has no
           # `workflows` permission, so a push that changes any
@@ -252,7 +264,17 @@ jobs:
         name: Push main and clear the conflict marker
         run: |
           set -euo pipefail
-          git push origin main
+          # A refused push must raise the in-app pill, not just redden a run
+          # nobody is watching — that silence is the failure mode this whole
+          # pipeline exists to remove. The guards above catch the workflow case
+          # they can see; this covers whatever they cannot, including a
+          # server-side rejection of a workflow-touching commit somewhere in the
+          # range if GitHub judges pushes that way.
+          if ! git push origin main; then
+            git push origin HEAD:refs/heads/needs-merge-help --force || true
+            echo "::error::Pushing the synced main was refused. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
+            exit 1
+          fi
           git push origin :refs/heads/needs-merge-help 2>/dev/null || true
           echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
