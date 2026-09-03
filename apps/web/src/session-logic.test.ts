@@ -9,7 +9,10 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 import { resolveWorkEntryToolPresentation } from "@t3tools/client-runtime/work-log/presentation";
 import {
+  deriveAgentPanelModel,
   deriveSubagentReplies,
+  flattenAgentPanelRoster,
+  foldSubagentActivities,
   formatSubagentTitle,
   selectSubagentTranscriptActivities,
 } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -2593,5 +2596,81 @@ describe("subagent plans and replies in the parent timeline", () => {
     const entries = deriveTimelineEntries([replyMessages[0]!.message], [], [], []);
     expect(entries).toHaveLength(1);
     expect(entries[0]?.kind).toBe("message");
+  });
+});
+
+describe("subagent reply labels", () => {
+  it("names a workflow member by its title, not its raw task id", () => {
+    // Reply labels used to be resolved from `directAgents` alone, so a
+    // workflow member replying to the thread rendered as its task id.
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "wf-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.started",
+        summary: "Workflow started",
+        tone: "info",
+        payload: {
+          taskId: "wf-1",
+          taskType: "local_workflow",
+          title: "audit-auth-flow",
+          workflowName: "audit-auth-flow",
+        },
+      }),
+      makeActivity({
+        id: "wf-member",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.progress",
+        summary: "Member running",
+        tone: "info",
+        payload: {
+          taskId: "wf-1:wf:0",
+          title: "audit_entrypoints",
+          status: "running",
+          parentAgentId: "wf-1",
+          agentIndex: 0,
+          phaseIndex: 0,
+          phaseTitle: "Audit",
+          timelineBypass: true,
+        },
+      }),
+      makeActivity({
+        id: "wf-member-done",
+        createdAt: "2026-02-23T00:00:09.000Z",
+        kind: "task.completed",
+        summary: "Member finished",
+        tone: "info",
+        payload: {
+          taskId: "wf-1:wf:0",
+          title: "audit_entrypoints",
+          status: "completed",
+          parentAgentId: "wf-1",
+          summary: "Three unguarded entrypoints.",
+        },
+      }),
+    ];
+
+    const model = deriveAgentPanelModel({
+      agents: foldSubagentActivities(activities),
+      v2Projection: null,
+    });
+    // The member is reachable only through its workflow group, which is the
+    // whole point: a direct-spawn-only lookup misses it.
+    expect(model.directAgents.some((agent) => agent.id === "wf-1:wf:0")).toBe(false);
+    expect(flattenAgentPanelRoster(model).some((agent) => agent.id === "wf-1:wf:0")).toBe(true);
+
+    const titleById = new Map(
+      flattenAgentPanelRoster(model).map((agent) => [agent.id, agent.title]),
+    );
+    const replyMessages = deriveSubagentReplyMessages(
+      deriveSubagentReplies(activities),
+      "wf-1",
+      (reply) =>
+        formatSubagentTitle(titleById.get(reply.agentId) ?? reply.agentTitle ?? reply.agentId),
+    );
+
+    expect(replyMessages).toHaveLength(1);
+    expect(replyMessages[0]?.label).toBe("Audit entrypoints");
+    expect(replyMessages[0]?.message.text).toBe("Three unguarded entrypoints.");
   });
 });

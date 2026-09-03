@@ -1017,6 +1017,26 @@ export function deriveAgentPanelModel({
  * Members ordered by urgency for the capped inline workflow card: running and
  * failed first, then waiting, then most recently updated.
  */
+/**
+ * Every agent on the panel, flattened: direct spawns, each workflow's
+ * coordinator, its phase members and its unphased members.
+ *
+ * The roster is the lookup for anything keyed by agent id — a reply's display
+ * title, an open transcript, a per-agent meter. Reading only `directAgents`
+ * (which three call sites used to do independently) left workflow members
+ * labelled with their raw task id.
+ */
+export function flattenAgentPanelRoster(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent> {
+  return [
+    ...model.directAgents,
+    ...model.workflows.flatMap((group) => [
+      group.workflow,
+      ...group.phases.flatMap((phase) => phase.members),
+      ...group.unphasedMembers,
+    ]),
+  ];
+}
+
 export function workflowCardMembers(
   group: AgentPanelWorkflowGroup,
   limit: number,
