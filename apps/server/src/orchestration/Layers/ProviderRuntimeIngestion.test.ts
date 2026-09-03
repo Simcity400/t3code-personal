@@ -3359,6 +3359,116 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("persists exactly one compaction row per thread, rewritten on each edge", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-compacting-start"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { state: "compacting", reason: "status:compacting", compacting: true },
+    });
+
+    let thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "session.compacting",
+      ),
+    );
+    let rows = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "session.compacting",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.summary).toBe("Compacting context");
+    expect((rows[0]?.payload as Record<string, unknown>).compacting).toBe(true);
+    // A compacting session is busy, not resting: the composer reads this.
+    expect(thread.session?.status).toBe("running");
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-compacting-end"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:20.000Z",
+      payload: { state: "running", reason: "status:active", compacting: false },
+    });
+
+    thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "session.compacting" &&
+          (activity.payload as Record<string, unknown>).compacting === false,
+      ),
+    );
+    rows = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "session.compacting",
+    );
+    // One row, rewritten — not a pair per compaction that no reader wants.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.summary).toBe("Context compaction finished");
+  });
+
+  it("writes no compaction row for an unedged session state change", async () => {
+    const harness = await createHarness();
+
+    // `running` is republished on every heartbeat (Claude's api_retry does);
+    // a row per state change would be an activity stream of nothing else.
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-heartbeat"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { state: "running", reason: "api_retry:3/10" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running",
+    );
+    expect(
+      thread.activities.filter(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "session.compacting",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("persists a task's command and MCP server/tool on every task row", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-task-detail"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      payload: {
+        taskId: RuntimeTaskId.make("task-monitor"),
+        description: "github/list_issues",
+        taskType: "monitor_mcp",
+        command: "pnpm test --watch",
+        server: "github",
+        tool: "list_issues",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-detail",
+      ),
+    );
+    const payload = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-detail",
+    )?.payload as Record<string, unknown>;
+    expect(payload.command).toBe("pnpm test --watch");
+    expect(payload.server).toBe("github");
+    expect(payload.tool).toBe("list_issues");
+    // monitor_mcp is background work, not an agent.
+    expect(payload.agentKind).toBe("background");
+  });
+
   it("projects compacted thread state into context compaction activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

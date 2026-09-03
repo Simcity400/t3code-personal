@@ -181,6 +181,39 @@ describe("BackgroundTasksSection", () => {
     );
     expect(markup).toContain("7s");
   });
+
+  it("names a monitor by its MCP server and tool", () => {
+    const markup = renderToStaticMarkup(
+      <BackgroundTasksSection
+        model={deriveBackgroundTasksPanelModel({
+          tasks: [
+            task({
+              id: "mon-1",
+              kind: "monitor",
+              taskType: "monitor_mcp",
+              label: "github/list_issues",
+              server: "github",
+              tool: "list_issues",
+            }),
+          ],
+        })}
+      />,
+    );
+    // Without it every watch loop in a thread reads as the same anonymous
+    // "Monitor" row.
+    expect(markup).toContain("github · list_issues");
+  });
+
+  it("leads a shell row with its command line", () => {
+    const markup = renderToStaticMarkup(
+      <BackgroundTasksSection
+        model={deriveBackgroundTasksPanelModel({
+          tasks: [task({ id: "sh-1", label: "pnpm test --watch", command: "pnpm test --watch" })],
+        })}
+      />,
+    );
+    expect(markup).toContain("pnpm test --watch");
+  });
 });
 
 describe("WaitingOnStrip", () => {
@@ -218,5 +251,16 @@ describe("WaitingOnStrip", () => {
     );
     expect(user).toContain("border-warning/40");
     expect(user).toContain("Command approval");
+  });
+  it("prints the compacting wait as a machine wait", () => {
+    const markup = renderToStaticMarkup(
+      <WaitingOnStrip
+        waits={[wait({ kind: "compacting", label: "Compacting context", needsUser: false })]}
+      />,
+    );
+    expect(markup).toContain("Main");
+    expect(markup).toContain("Compacting context");
+    // No user action shortens a compaction, so the strip stays untinted.
+    expect(markup).not.toContain("border-warning/40");
   });
 });

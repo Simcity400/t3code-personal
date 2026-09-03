@@ -194,6 +194,20 @@ describe("classifyTaskAgentKind", () => {
     expect(classifyTaskAgentKind({ taskType: "plan" })).toBe("background");
   });
 
+  it("covers the CLI's full background-task vocabulary", () => {
+    // The installed Claude CLI's own background set is
+    // {local_bash, monitor_mcp, monitor_ws, mcp_task}. The last three used to
+    // fall through the agent default here, which put a websocket watch loop
+    // and a backgrounded MCP call in the subagent roster.
+    for (const taskType of ["monitor_mcp", "monitor_ws", "mcp_task", "auto_mode_scan"]) {
+      expect(classifyTaskAgentKind({ taskType })).toBe("background");
+    }
+    // Agent-flavored CLI types stay agents.
+    for (const taskType of ["in_process_teammate", "remote_agent", "local_workflow"]) {
+      expect(classifyTaskAgentKind({ taskType })).toBe("agent");
+    }
+  });
+
   it("agent-owned tasks are background unless themselves agent-flavored", () => {
     expect(classifyTaskAgentKind({ taskType: "local_bash", agentId: "owner" })).toBe("background");
     expect(classifyTaskAgentKind({ taskType: undefined, agentId: "owner" })).toBe("background");
