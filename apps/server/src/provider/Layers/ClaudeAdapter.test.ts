@@ -5966,5 +5966,70 @@ describe("ClaudeAdapterLive", () => {
         Effect.provide(harness.layer),
       );
     });
+    it.effect("a subagent's proposed plan does not become the parent's plan card", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) => event.type === "turn.proposed.completed" || event.type === "turn.completed",
+          ),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "approval-required",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "plan it",
+          attachments: [],
+        });
+
+        const createInput = harness.getLastCreateQueryInput();
+        const canUseTool = createInput?.options.canUseTool;
+        assert.equal(typeof canUseTool, "function");
+        if (!canUseTool) {
+          return;
+        }
+
+        // The SDK names the owning subagent on the permission callback.
+        const decision = yield* Effect.promise(() =>
+          canUseTool("ExitPlanMode", { plan: "Child's plan markdown" }, {
+            signal: new AbortController().signal,
+            toolUseID: "toolu_child_exitplan",
+            agentID: "agent-1",
+          } as never),
+        );
+        assert.equal(decision.behavior, "deny");
+
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          duration_ms: 1,
+          duration_api_ms: 1,
+          num_turns: 1,
+          result: "done",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        // Only the turn completion arrives: no proposed-plan card was written
+        // into the PARENT from the child's plan.
+        assert.equal(
+          events.some((event) => event.type === "turn.proposed.completed"),
+          false,
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
   });
 });

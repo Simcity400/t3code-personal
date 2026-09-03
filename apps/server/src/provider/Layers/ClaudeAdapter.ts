@@ -4617,7 +4617,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
         if (toolName === "ExitPlanMode") {
           const planMarkdown = extractExitPlanModePlan(toolInput);
-          if (planMarkdown) {
+          // A plan a SUBAGENT proposed is not the thread's plan. The
+          // proposed-plan projection has no agent dimension (it is a thread
+          // table, not an activity), so an attributed card cannot be rendered
+          // in that agent's transcript — but writing it into the parent's plan
+          // card, where the user would accept it as the main agent's proposal,
+          // is worse than not showing it. The SDK names the owner here
+          // (`agentID`, "if running within the context of a sub-agent").
+          const proposedByAgent = (callbackOptions as { agentID?: string }).agentID !== undefined;
+          if (planMarkdown && !proposedByAgent) {
             yield* emitProposedPlanCompleted(context, {
               planMarkdown,
               toolUseId: callbackOptions.toolUseID,
