@@ -184,7 +184,13 @@ const AgentContextWindowCtx = createContext<ReadonlyMap<string, ContextWindowSna
   EMPTY_AGENT_CONTEXT_WINDOWS,
 );
 
-/** "42%" — the roster's compact form of the transcript header's full meter. */
+/**
+ * "42% ctx" — the roster's compact form of the transcript header's full meter.
+ *
+ * Deliberately a PERCENTAGE, never a token count: the neighbouring "Σ … tok"
+ * is a cumulative total, and two raw token figures side by side are
+ * indistinguishable to a reader.
+ */
 function formatContextPercentage(usage: ContextWindowSnapshot): string | null {
   if (usage.usedPercentage === null || !Number.isFinite(usage.usedPercentage)) {
     return null;
@@ -202,14 +208,16 @@ function AgentRow({ agent, onOpen }: { agent: RuntimeSubagent; onOpen: () => voi
     agent.role?.trim().toLocaleLowerCase() === agent.title.trim().toLocaleLowerCase()
       ? null
       : agent.role;
+  // Two different numbers that read alike unless they are labelled apart:
+  // "Σ … tok" is everything this agent has ever processed (a running total,
+  // summed into the panel footer the same way), while "… ctx" is how full its
+  // context window is right now. The sigma matches the footer so a reader
+  // learns one convention, not two.
   const metadata = [
     modelLabel,
-    agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok",
-    // Context occupancy, next to the cumulative token counter it is often
-    // confused with: one says how full this agent's window is right now, the
-    // other how many tokens it has burned in total.
+    agent.usage ? `Σ ${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "Σ — tok",
     contextWindow ? formatContextPercentage(contextWindow) : null,
-    agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
+    agent.usage?.toolUses !== undefined ? `Σ ${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
 

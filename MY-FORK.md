@@ -180,6 +180,24 @@ machine.
   sweep completing unfinished subagent tools into the parent timeline. Grok and
   OpenCode are documented in their adapters as not supportable: ACP has no subagent,
   child-session or parent-tool attribution anywhere in its wire format.
+- **The context meter measures context, not totals** (2026-09-03): a deliberate
+  divergence from upstream. Upstream's `normalizeClaudeTaskProgressTokenUsage`
+  (`apps/server/src/provider/Layers/ClaudeAdapter.ts`) max-merged a subagent's
+  CUMULATIVE token total into the parent thread's `usedTokens` — the numerator the
+  context-window meter divides by `maxTokens`. A subagent runs in its own context
+  window, so a child that burned 500k tokens pinned the parent's meter at 100% of a
+  200k window while the parent's own context was nearly empty. The parent's meter now
+  reports only what the parent itself last reported, and each subagent's meter reports
+  only its own context. Cumulative figures are untouched and still aggregate exactly
+  where upstream aggregated them — they ride along as `totalProcessedTokens`,
+  `toolUses` and `durationMs` (the meter's "Total processed" line), on each roster row
+  as "Σ … tok" / "Σ … tools", and in the Agents panel footer as "Σ … tok" — now
+  labelled with a sigma so a total is never misread as a context reading. Codex
+  already kept the two apart (a child's usage is routed to `collabAgent/tokenUsage`
+  and stamped with its agent id, never to the parent's handler); Grok and OpenCode
+  report no token usage at all, so they have no meter to corrupt. Three upstream tests
+  that asserted the merged behaviour were rewritten; expect a conflict there on the
+  next upstream sync and keep the fork's version.
 - **Resource-monitor sidecar**: release builds ship a Rust sidecar
   (`t3-resource-monitor.exe`) that source builds don't compile, so resource
   diagnostics were silently unavailable. A copy from the installed app lives at

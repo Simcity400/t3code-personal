@@ -2850,7 +2850,11 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+      // Filtered rather than counted: a task_progress no longer also moves the
+      // parent's context meter, so the event count is not a stable anchor.
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.progress"),
+        Stream.take(1),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -3108,12 +3112,19 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("emits thread token usage updates from Claude task progress", () => {
+  it.effect("keeps a subagent's cumulative totals out of the parent's context meter", () => {
+    // Fork divergence (owner decision 2026-09-03). Upstream max-merged a
+    // subagent's cumulative token total into the PARENT's usedTokens, which is
+    // the numerator of the context-window meter. A subagent runs in its own
+    // window, so a busy child pinned the parent's meter at 100% while the
+    // parent's own context was nearly empty.
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+      const usageFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "thread.token-usage.updated"),
+        Stream.take(2),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -3123,38 +3134,65 @@ describe("ClaudeAdapterLive", () => {
         provider: ProviderDriverKind.make("claudeAgent"),
         runtimeMode: "full-access",
       });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
 
+      // A subagent burns far more than the parent's own context holds. On its
+      // own this must move nothing: the parent has reported no context yet.
       harness.query.emit({
         type: "system",
         subtype: "task_progress",
         task_id: "task-usage-1",
         description: "Thinking through the patch",
-        usage: {
-          total_tokens: 321,
-          tool_uses: 2,
-          duration_ms: 654,
-        },
+        usage: { total_tokens: 500_000, tool_uses: 2, duration_ms: 654 },
         session_id: "sdk-session-task-usage",
         uuid: "task-usage-progress-1",
       } as unknown as SDKMessage);
 
-      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
-      const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
-      const progressEvent = runtimeEvents.find((event) => event.type === "task.progress");
-      assert.equal(usageEvent?.type, "thread.token-usage.updated");
-      if (usageEvent?.type === "thread.token-usage.updated") {
-        assert.deepEqual(usageEvent.payload, {
-          usage: {
-            usedTokens: 321,
-            lastUsedTokens: 321,
-            toolUses: 2,
-            durationMs: 654,
-          },
-        });
+      // The parent reports its OWN context.
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-task-usage",
+        uuid: "parent-usage",
+        parent_tool_use_id: null,
+        event: {
+          type: "message_delta",
+          delta: {},
+          usage: { input_tokens: 9_000, output_tokens: 500 },
+        },
+      } as unknown as SDKMessage);
+
+      // A later subagent tick still only carries totals forward.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-usage-1",
+        description: "Thinking through the patch",
+        usage: { total_tokens: 600_000, tool_uses: 3, duration_ms: 900 },
+        session_id: "sdk-session-task-usage",
+        uuid: "task-usage-progress-2",
+      } as unknown as SDKMessage);
+
+      const usageEvents = Array.from(yield* Fiber.join(usageFiber));
+      const first = usageEvents[0];
+      assert.equal(first?.type, "thread.token-usage.updated");
+      if (first?.type === "thread.token-usage.updated") {
+        // The parent's own frame, not the subagent's 500k.
+        assert.equal(first.payload.agentId, undefined);
+        assert.equal(first.payload.usage.usedTokens, 9_500);
       }
-      assert.equal(progressEvent?.type, "task.progress");
-      if (usageEvent && progressEvent) {
-        assert.notStrictEqual(usageEvent.eventId, progressEvent.eventId);
+
+      const second = usageEvents[1];
+      assert.equal(second?.type, "thread.token-usage.updated");
+      if (second?.type === "thread.token-usage.updated") {
+        // Context unchanged; the cumulative figures are what moved.
+        assert.equal(second.payload.usage.usedTokens, 9_500);
+        assert.equal(second.payload.usage.totalProcessedTokens, 600_000);
+        assert.equal(second.payload.usage.toolUses, 3);
+        assert.equal(second.payload.usage.durationMs, 900);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -3299,7 +3337,7 @@ describe("ClaudeAdapterLive", () => {
       return Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter;
 
-        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 9).pipe(
+        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 8).pipe(
           Stream.runCollect,
           Effect.forkChild,
         );
@@ -3357,10 +3395,13 @@ describe("ClaudeAdapterLive", () => {
         const finalUsageEvent = usageEvents.at(-1);
         assert.equal(finalUsageEvent?.type, "thread.token-usage.updated");
         if (finalUsageEvent?.type === "thread.token-usage.updated") {
+          // The subagent's 190k total never becomes the parent's context: the
+          // result's own 535k is clamped to the window and reported as the
+          // total processed alongside it.
           assert.deepEqual(finalUsageEvent.payload, {
             usage: {
-              usedTokens: 190000,
-              lastUsedTokens: 190000,
+              usedTokens: 200000,
+              lastUsedTokens: 200000,
               totalProcessedTokens: 535000,
               maxTokens: 200000,
             },
