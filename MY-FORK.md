@@ -177,9 +177,16 @@ machine.
   alongside — a subagent's TodoWrite rewriting the parent turn's plan, a child's tool
   at content-block index N evicting the parent's tool at index N, a child's
   `content_block_stop` closing the parent's assistant text block, and the end-of-turn
-  sweep completing unfinished subagent tools into the parent timeline. Grok and
-  OpenCode are documented in their adapters as not supportable: ACP has no subagent,
-  child-session or parent-tool attribution anywhere in its wire format.
+  sweep completing unfinished subagent tools into the parent timeline. OpenCode delegates by
+  creating a child SESSION (`Session.parentID`) and the adapter already subscribes to
+  the server's global event stream, so its children are supported the same way:
+  registered as agents, everything they emit attributed, their own user message
+  recovered as the parent's instruction, and a context meter for the thread and each
+  child (OpenCode reports token counts but no window size, so those meters show
+  occupancy without a percentage — identically for parent and child). Grok is
+  documented in its adapter as not supportable: it speaks ACP, whose eleven
+  `session/update` variants carry no subagent, child-session or parent-tool
+  attribution at all.
 - **The context meter measures context, not totals** (2026-09-03): a deliberate
   divergence from upstream. Upstream's `normalizeClaudeTaskProgressTokenUsage`
   (`apps/server/src/provider/Layers/ClaudeAdapter.ts`) max-merged a subagent's
