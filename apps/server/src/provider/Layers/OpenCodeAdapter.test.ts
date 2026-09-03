@@ -22,6 +22,7 @@ import {
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -5028,6 +5029,145 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       if (completed?.type === "item.completed") {
         NodeAssert.equal(completed.payload.detail, "A BBonus");
       }
+    }),
+  );
+
+  it.effect("treats an OpenCode child session as a subagent and attributes its work", () =>
+    Effect.gen(function* () {
+      // OpenCode delegates by creating a session whose parentID is the
+      // delegator's, and the event subscription is global, so the child's
+      // whole conversation arrives on this stream and must be attributed
+      // rather than dropped as "not the root session".
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-subagent");
+      const root = "http://127.0.0.1:9999/session";
+      const child = "child-session-1";
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.created",
+          properties: {
+            sessionID: child,
+            info: {
+              id: child,
+              parentID: root,
+              title: "Review the parser",
+              agent: "code-reviewer",
+              model: { id: "claude-sonnet-5", providerID: "anthropic" },
+            },
+          },
+        },
+        {
+          type: "message.updated",
+          properties: {
+            sessionID: child,
+            info: {
+              id: "child-user-msg",
+              role: "user",
+            },
+          },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID: child,
+            part: {
+              id: "child-prompt-part",
+              sessionID: child,
+              messageID: "child-user-msg",
+              type: "text",
+              text: "Audit every SQL change.",
+              time: { start: 1 },
+            },
+            time: 1,
+          },
+        },
+        {
+          type: "message.updated",
+          properties: {
+            sessionID: child,
+            info: {
+              id: "child-assistant-msg",
+              role: "assistant",
+              tokens: {
+                input: 9_000,
+                output: 500,
+                reasoning: 0,
+                cache: { read: 1_000, write: 0 },
+              },
+            },
+          },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID: child,
+            part: {
+              id: "child-text-part",
+              sessionID: child,
+              messageID: "child-assistant-msg",
+              type: "text",
+              text: "Two unparameterized queries.",
+              time: { start: 2, end: 3 },
+            },
+            time: 3,
+          },
+        },
+      ];
+
+      const events: Array<ProviderRuntimeEvent> = [];
+      const collector = yield* Stream.runForEach(
+        adapter.streamEvents.pipe(Stream.filter((event) => event.threadId === threadId)),
+        (event) => Effect.sync(() => events.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* advanceTestClock(50);
+      yield* Fiber.interrupt(collector);
+
+      // The child session is announced as an agent, carrying its role and model.
+      const started = events.find((event) => event.type === "task.started");
+      NodeAssert.equal(started?.type, "task.started");
+      if (started?.type === "task.started") {
+        NodeAssert.equal(started.payload.taskId, child);
+        NodeAssert.equal(started.payload.role, "code-reviewer");
+        NodeAssert.equal(started.payload.model, "claude-sonnet-5");
+      }
+
+      // Its narration is attributed, so it renders in its transcript and not
+      // in the parent chat.
+      const delta = events.find(
+        (event) => event.type === "content.delta" && event.payload.agentId === child,
+      );
+      NodeAssert.equal(delta?.type, "content.delta");
+
+      // Its own user message is the instruction the parent delegated to it —
+      // the shape the shared transcript selector recovers instructions from.
+      const instruction = events.find(
+        (event) => event.type === "item.completed" && event.payload.itemType === "user_message",
+      );
+      NodeAssert.equal(instruction?.type, "item.completed");
+      if (instruction?.type === "item.completed") {
+        NodeAssert.equal(instruction.payload.agentId, child);
+        NodeAssert.equal(instruction.payload.detail, "Audit every SQL change.");
+      }
+
+      // And it gets its own context meter: occupancy, not cumulative spend.
+      const usage = events.find((event) => event.type === "thread.token-usage.updated");
+      NodeAssert.equal(usage?.type, "thread.token-usage.updated");
+      if (usage?.type === "thread.token-usage.updated") {
+        NodeAssert.equal(usage.payload.agentId, child);
+        NodeAssert.equal(usage.payload.usage.usedTokens, 10_500);
+      }
+
+      // Nothing the child produced reached the parent unattributed.
+      const leaked = events.filter(
+        (event) => event.type === "content.delta" && event.payload.agentId === undefined,
+      );
+      NodeAssert.deepEqual(leaked, []);
     }),
   );
 
