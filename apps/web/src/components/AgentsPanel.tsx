@@ -30,6 +30,11 @@ import {
   selectSubagentTranscriptMessages,
   subagentPanelSection,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import type {
+  AgentWaitState,
+  BackgroundTasksPanelModel,
+} from "@t3tools/client-runtime/state/backgroundTasks";
+import { emptyBackgroundTasksPanelModel } from "@t3tools/client-runtime/state/backgroundTasks";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
@@ -56,6 +61,7 @@ import {
   type MutableRefObject,
 } from "react";
 
+import { BackgroundTasksSection, WaitingOnStrip } from "~/components/agents/BackgroundTasksSection";
 import {
   deriveSubagentReplyMessages,
   deriveTimelineEntries,
@@ -92,6 +98,9 @@ const STATUS_VISUALS: Record<RuntimeSubagent["status"], { dotClass: string; labe
   cancelled: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
   interrupted: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
 };
+
+/** Stable identity so the default prop never remounts the strip. */
+const EMPTY_AGENT_WAITS: ReadonlyArray<AgentWaitState> = [];
 
 function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
   return (
@@ -992,6 +1001,8 @@ export function AgentsPanel({
   onFileDownload,
   onUseArtifactTemplate,
   onCiteAssistantText,
+  tasksModel = emptyBackgroundTasksPanelModel(),
+  waits = EMPTY_AGENT_WAITS,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
@@ -1024,6 +1035,10 @@ export function AgentsPanel({
   onCiteAssistantText?:
     | ((citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => boolean)
     | undefined;
+  /** Background work running beside the roster (shells, monitors, watch loops). */
+  tasksModel?: BackgroundTasksPanelModel;
+  /** One line per blocked agent, main first. */
+  waits?: ReadonlyArray<AgentWaitState>;
 }) {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   useEffect(() => {
@@ -1148,14 +1163,17 @@ export function AgentsPanel({
     );
   }
 
-  if (!model.hasAgents) {
+  // A thread can have background work and no subagents at all (a backgrounded
+  // shell, a Monitor watch loop), and that is exactly when this panel earns
+  // its keep — so the empty state only applies when there is nothing of either.
+  if (!model.hasAgents && !tasksModel.hasTasks && waits.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <Bot aria-hidden className="size-6 text-muted-foreground/60" />
         <p className="text-sm font-medium">No agents yet</p>
         <p className="max-w-56 text-xs text-muted-foreground">
-          When this thread spawns subagents or runs a workflow, they show up here with live status,
-          activity, and token usage.
+          When this thread spawns subagents, runs a workflow, or leaves work running in the
+          background, it shows up here with live status, activity, and token usage.
         </p>
       </div>
     );
@@ -1166,6 +1184,7 @@ export function AgentsPanel({
       <div className="flex h-full min-h-0 flex-col">
         <ScrollArea className="min-h-0 flex-1">
           <div className="flex flex-col gap-2 p-2">
+            <WaitingOnStrip waits={waits} />
             <AgentRosterSection
               title="Active"
               workflows={sections.activeWorkflows}
@@ -1206,6 +1225,7 @@ export function AgentsPanel({
               }
               onOpenAgent={(agent) => setSelectedAgentId(agent.id)}
             />
+            <BackgroundTasksSection model={tasksModel} />
           </div>
         </ScrollArea>
         <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">

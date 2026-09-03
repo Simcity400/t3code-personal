@@ -186,6 +186,14 @@ import {
   foldSubagentActivities,
   formatSubagentTitle,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  deriveAgentWaitReasons,
+  deriveAgentWaitStates,
+  deriveBackgroundedTaskIds,
+  deriveBackgroundTasksPanelModel,
+  deriveOpenRequestWaits,
+  foldBackgroundTasks,
+} from "@t3tools/client-runtime/state/backgroundTasks";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -2478,6 +2486,17 @@ function ChatViewContent(props: ChatViewProps) {
       }),
     });
   }, [agentSessionLive, threadActivities]);
+  // The panel's own flatten, reused rather than repeated: the roster must be
+  // the same set here, in the title map, and in the Agents panel.
+  const rosterAgents = useMemo(() => flattenAgentPanelRoster(agentPanelModel), [agentPanelModel]);
+  // Background-task fold: the exact complement of the subagent fold above,
+  // over the same durable activities, so a task appears in one section or the
+  // other and never both. Same sessionLive derivation, for the same reason —
+  // background work dies with its provider session.
+  const backgroundTasks = useMemo(
+    () => foldBackgroundTasks(threadActivities, { sessionLive: agentSessionLive }),
+    [agentSessionLive, threadActivities],
+  );
   // Messages the thread's subagents sent BACK. Derived from the same persisted
   // rows the panel folds, so they survive reload and resume; the parent used
   // to see only a collapsed tool row where its agent actually answered.
@@ -2490,11 +2509,11 @@ function ChatViewContent(props: ChatViewProps) {
   // left it labelled with a raw task id. Same flattening the Agents panel does.
   const subagentTitleById = useMemo(() => {
     const byId = new Map<string, string>();
-    for (const agent of flattenAgentPanelRoster(agentPanelModel)) {
+    for (const agent of rosterAgents) {
       byId.set(agent.id, agent.title);
     }
     return byId;
-  }, [agentPanelModel]);
+  }, [rosterAgents]);
   const subagentReplyMessages = useMemo(
     () =>
       deriveSubagentReplyMessages(subagentReplies, null, (reply) =>
@@ -2513,6 +2532,38 @@ function ChatViewContent(props: ChatViewProps) {
         ]),
       ),
     [subagentReplyMessages],
+  );
+  const backgroundTasksModel = useMemo(
+    () =>
+      deriveBackgroundTasksPanelModel({
+        tasks: backgroundTasks,
+        agentTitles: new Map(
+          rosterAgents.map((agent) => [agent.id, formatSubagentTitle(agent.title)] as const),
+        ),
+      }),
+    [backgroundTasks, rosterAgents],
+  );
+  const agentWaits = useMemo(
+    () =>
+      deriveAgentWaitStates({
+        tasks: backgroundTasks,
+        // Every roster agent, workflow members included — mobile derives from
+        // the same full set, and omitting them here made the two surfaces
+        // disagree about which agents are blocked.
+        agents: rosterAgents.map((agent) => ({
+          id: agent.id,
+          title: formatSubagentTitle(agent.title),
+          status: agent.status,
+          startedAt: agent.startedAt,
+        })),
+        requests: deriveOpenRequestWaits(threadActivities),
+        agentWaitReasons: deriveAgentWaitReasons(threadActivities),
+        backgroundedIds: deriveBackgroundedTaskIds(threadActivities),
+        // Nothing blocks a turn that is not running: work still alive then
+        // was detached, and Tasks reports it without claiming a dependency.
+        mainTurnActive: phase === "running",
+      }),
+    [backgroundTasks, phase, rosterAgents, threadActivities],
   );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
@@ -7804,6 +7855,8 @@ function ChatViewContent(props: ChatViewProps) {
         onFileDownload={downloadFileAttachment}
         onUseArtifactTemplate={useArtifactTemplate}
         onCiteAssistantText={citeAssistantText}
+        tasksModel={backgroundTasksModel}
+        waits={agentWaits}
       />
     ) : (renderedRightPanelSurface?.kind === "files" ||
         renderedRightPanelSurface?.kind === "file") &&
