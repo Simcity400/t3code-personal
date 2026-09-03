@@ -6,6 +6,14 @@ import {
   isActiveSubagentStatus,
   subagentPanelSection,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  deriveAgentWaitReasons,
+  deriveAgentWaitStates,
+  deriveBackgroundedTaskIds,
+  deriveBackgroundTasksPanelModel,
+  deriveOpenRequestWaits,
+  foldBackgroundTasks,
+} from "@t3tools/client-runtime/state/backgroundTasks";
 import { deriveContextWindowSnapshotsByAgent } from "@t3tools/client-runtime/state/contextWindow";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -26,6 +34,7 @@ import { useThreadSelection } from "../../state/use-thread-selection";
 import { ThreadFeed } from "../threads/ThreadFeed";
 import { AgentCard, AgentStatus } from "./AgentCard";
 import { useAgentStatusClock } from "./agentStatusClock";
+import { BackgroundTasksSection, WaitingOnSection } from "./BackgroundTasksSection";
 
 type ThreadAgentsRouteScreenProps = StaticScreenProps<{
   readonly environmentId: string;
@@ -91,7 +100,52 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
     return null;
   }, [transcript]);
   const selectedAgentWorking = selectedAgent ? isActiveSubagentStatus(selectedAgent.status) : false;
-  const statusClock = useAgentStatusClock(activeAgents.length > 0 || selectedAgentWorking);
+  // Background work the subagent fold deliberately drops: shells, monitors,
+  // and a subagent's own internal tasks. Same durable activities, so this
+  // survives reload exactly as the roster does.
+  // Same liveness rule web uses (derivePhase !== "disconnected"): background
+  // work dies with its provider session, so a dead session must settle its
+  // rows as interrupted instead of leaving them "Running" and ticking forever.
+  const sessionStatus = thread?.session?.status ?? null;
+  const agentSessionLive =
+    sessionStatus !== null &&
+    sessionStatus !== "stopped" &&
+    sessionStatus !== "interrupted" &&
+    sessionStatus !== "error";
+  const backgroundTasks = useMemo(
+    () => (thread ? foldBackgroundTasks(thread.activities, { sessionLive: agentSessionLive }) : []),
+    [agentSessionLive, thread],
+  );
+  const backgroundTasksModel = useMemo(
+    () =>
+      deriveBackgroundTasksPanelModel({
+        tasks: backgroundTasks,
+        agentTitles: new Map(
+          allAgents.map((agent) => [agent.id, formatSubagentTitle(agent.title)] as const),
+        ),
+      }),
+    [allAgents, backgroundTasks],
+  );
+  const agentWaits = useMemo(
+    () =>
+      deriveAgentWaitStates({
+        tasks: backgroundTasks,
+        agents: allAgents.map((agent) => ({
+          id: agent.id,
+          title: formatSubagentTitle(agent.title),
+          status: agent.status,
+          startedAt: agent.startedAt,
+        })),
+        requests: thread ? deriveOpenRequestWaits(thread.activities) : [],
+        agentWaitReasons: thread ? deriveAgentWaitReasons(thread.activities) : new Map(),
+        backgroundedIds: thread ? deriveBackgroundedTaskIds(thread.activities) : new Set(),
+        mainTurnActive: sessionStatus === "running",
+      }),
+    [allAgents, backgroundTasks, sessionStatus, thread],
+  );
+  const statusClock = useAgentStatusClock(
+    activeAgents.length > 0 || selectedAgentWorking || backgroundTasksModel.activeCount > 0,
+  );
   // The status clock re-renders this screen every second while agents are
   // active; a fresh latestTurn object here would defeat ThreadFeed's memo and
   // reconcile the whole transcript list on every tick.
@@ -189,15 +243,17 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
   return (
     <View className="flex-1 bg-screen">
       <ScrollView contentContainerClassName="gap-2 p-3">
-        {allAgents.length === 0 ? (
+        {allAgents.length === 0 && !backgroundTasksModel.hasTasks && agentWaits.length === 0 ? (
           <View className="items-center px-8 py-16">
             <Text className="text-base font-t3-semibold text-foreground">No agents yet</Text>
             <Text className="mt-2 text-center text-sm leading-5 text-foreground-muted">
-              Subagents spawned by Codex or Claude will appear here with live transcripts.
+              Subagents spawned by Codex or Claude appear here with live transcripts, alongside any
+              work left running in the background.
             </Text>
           </View>
         ) : (
           <>
+            <WaitingOnSection waits={agentWaits} clock={statusClock} />
             {activeAgents.length > 0 ? (
               <View className="gap-2 rounded-2xl border border-primary/25 bg-card/40 p-2">
                 <View className="flex-row items-center gap-2 px-1 py-1">
@@ -252,6 +308,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
                 ) : null}
               </View>
             ) : null}
+            <BackgroundTasksSection model={backgroundTasksModel} clock={statusClock} />
           </>
         )}
       </ScrollView>
