@@ -6072,5 +6072,135 @@ describe("ClaudeAdapterLive", () => {
         Effect.provide(harness.layer),
       );
     });
+    it.effect("holds a child's work until task_started names it, then releases it", () => {
+      // Review finding: everything a child emitted before its task_started
+      // arrived was emitted UNATTRIBUTED (landing in the parent's timeline) or
+      // dropped. A frame carrying parent_tool_use_id provably belongs to some
+      // child, so it is held until the owner is known.
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const events: Array<ProviderRuntimeEvent> = [];
+        const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.forkChild);
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "spawn an agent",
+          attachments: [],
+        });
+
+        const childFrame = (event: unknown, uuid: string) =>
+          harness.query.emit({
+            type: "stream_event",
+            session_id: "sdk-session",
+            uuid,
+            parent_tool_use_id: "toolu_race",
+            event,
+          } as unknown as SDKMessage);
+
+        // The child opens a tool, writes a todo list and starts narrating — all
+        // BEFORE its task_started arrives.
+        childFrame(
+          {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "tool_use", id: "toolu_child_early", name: "Bash", input: {} },
+          },
+          "race-tool-start",
+        );
+        childFrame(
+          {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "input_json_delta", partial_json: '{"command":"ls"}' },
+          },
+          "race-tool-input",
+        );
+        childFrame(
+          { type: "content_block_start", index: 1, content_block: { type: "text" } },
+          "race-text-start",
+        );
+        childFrame(
+          {
+            type: "content_block_delta",
+            index: 1,
+            delta: { type: "text_delta", text: "Opening the file." },
+          },
+          "race-text-delta",
+        );
+
+        yield* TestClock.adjust("10 millis");
+        // Nothing unattributed may have reached the parent's timeline yet.
+        const leaked = events.filter(
+          (event) =>
+            (event.type === "item.started" ||
+              event.type === "item.updated" ||
+              event.type === "content.delta") &&
+            (event.payload as { agentId?: string }).agentId === undefined,
+        );
+        assert.deepEqual(
+          leaked.map((event) => event.type),
+          [],
+        );
+
+        // The task finally registers.
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-race",
+          description: "Late agent",
+          task_type: "local_agent",
+          tool_use_id: "toolu_race",
+          uuid: "race-task-started",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+        yield* TestClock.adjust("10 millis");
+
+        const attributed = events.filter(
+          (event) =>
+            (event.type === "item.started" ||
+              event.type === "item.updated" ||
+              event.type === "content.delta") &&
+            (event.payload as { agentId?: string }).agentId === "task-race",
+        );
+        // The tool call, its parsed input and the narration all arrive, stamped.
+        assert.equal(
+          attributed.some((event) => event.type === "item.started"),
+          true,
+        );
+        assert.equal(
+          attributed.some(
+            (event) =>
+              event.type === "content.delta" &&
+              (event.payload as { delta?: string }).delta === "Opening the file.",
+          ),
+          true,
+        );
+        // And still nothing unattributed.
+        assert.equal(
+          events.some(
+            (event) =>
+              (event.type === "item.started" ||
+                event.type === "item.updated" ||
+                event.type === "content.delta") &&
+              (event.payload as { agentId?: string }).agentId === undefined,
+          ),
+          false,
+        );
+
+        yield* Fiber.interrupt(collector);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
   });
 });
