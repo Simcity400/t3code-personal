@@ -164,6 +164,40 @@ interface AssistantTextBlockState {
   completionEmitted: boolean;
 }
 
+/**
+ * One streamed assistant text block inside a subagent's conversation.
+ *
+ * Mirrors {@link AssistantTextBlockState} but lives in a per-agent registry
+ * instead of the parent turn's: content block indices restart per message and
+ * are shared across parent and children, so a single index-keyed map would
+ * make a subagent's block index 0 collide with the parent's.
+ */
+interface SubagentTextBlockState {
+  readonly itemId: string;
+  readonly blockIndex: number;
+  text: string;
+  completionEmitted: boolean;
+}
+
+/**
+ * Streaming/usage bookkeeping for one subagent conversation, keyed by the
+ * spawning Task tool's `tool_use_id` (the `parent_tool_use_id` every
+ * subagent-owned stream frame carries).
+ */
+interface SubagentStreamState {
+  /** Text blocks of the subagent message currently streaming. */
+  readonly blocks: Map<number, SubagentTextBlockState>;
+  readonly blockOrder: Array<SubagentTextBlockState>;
+  /**
+   * True once this subagent message produced at least one attributed text
+   * delta. The authoritative assistant snapshot then completes the streamed
+   * blocks instead of emitting a second, monolithic transcript item.
+   */
+  streamedCurrentMessage: boolean;
+  /** Latest per-agent context occupancy, so repeat snapshots can extend it. */
+  lastUsage: ThreadTokenUsageSnapshot | undefined;
+}
+
 interface PendingApproval {
   readonly requestType: CanonicalRequestType;
   readonly detail?: string;
@@ -297,7 +331,14 @@ interface ClaudeSessionContext {
     id: TurnId;
     items: Array<unknown>;
   }>;
-  readonly inFlightTools: Map<number, ToolInFlight>;
+  /**
+   * In-flight tool calls keyed by {@link inFlightToolKey}. Content block
+   * indices restart per message and are shared between the parent and every
+   * child conversation, so keying on the index alone let a subagent's tool at
+   * index N evict the parent's tool at index N (its result then had no
+   * in-flight row to complete, and the call vanished from the timeline).
+   */
+  readonly inFlightTools: Map<string, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   readonly taskAgents: Map<string, ClaudeTaskAgentState>;
   /**
@@ -306,6 +347,12 @@ interface ClaudeSessionContext {
    * Written through `rememberPendingTaskModel`, consumed by task_started.
    */
   readonly pendingTaskModels: Map<string, string>;
+  /**
+   * Streaming/usage state per subagent conversation, keyed by the spawning
+   * Task tool's `tool_use_id`. Entries are dropped when the task reaches a
+   * terminal state so a long parent session cannot accumulate them.
+   */
+  readonly subagentStreams: Map<string, SubagentStreamState>;
   /**
    * Last emitted workflow-member fingerprint per member slot. A coordinator
    * task_progress repeats the FULL member array every tick; without a
@@ -1043,6 +1090,15 @@ const CLAUDE_TASK_PATCH_STATUS: Record<string, RuntimeTaskStatus> = {
  * subagent-forwarded block carries that id as its parent. Returns undefined
  * for parent-conversation traffic.
  */
+/**
+ * Key for {@link ClaudeSessionContext.inFlightTools}: the owning conversation
+ * (the parent, or a child's `parent_tool_use_id`) plus the content block
+ * index. Indices are only unique within one conversation's message.
+ */
+function inFlightToolKey(parentToolUseId: string | null | undefined, index: number): string {
+  return `${parentToolUseId ?? ""}\u0000${index}`;
+}
+
 function agentIdForParentToolUse(
   agents: Map<string, ClaudeTaskAgentState>,
   parentToolUseId: string | null | undefined,
@@ -2166,6 +2222,340 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
+  /**
+   * Per-subagent context-window snapshot. Same event and payload shape as the
+   * parent thread's meter, stamped with the owning agent so clients can key a
+   * meter per agent without either side moving the other's needle.
+   */
+  const emitAgentTokenUsage = Effect.fn("emitAgentTokenUsage")(function* (
+    context: ClaudeSessionContext,
+    agentId: string,
+    usage: ThreadTokenUsageSnapshot | undefined,
+    options?: {
+      readonly rawMethod?: string;
+      readonly rawPayload?: unknown;
+      readonly parentToolUseId?: string;
+    },
+  ) {
+    if (!usage) {
+      return;
+    }
+
+    if (options?.parentToolUseId) {
+      const stream = context.subagentStreams.get(options.parentToolUseId);
+      if (stream) {
+        stream.lastUsage = usage;
+      }
+    }
+
+    const turnState = context.turnState;
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "thread.token-usage.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(turnState ? { turnId: turnState.turnId } : {}),
+      payload: {
+        usage,
+        agentId,
+      },
+      providerRefs: nativeProviderRefs(context),
+      ...(options?.rawMethod || options?.rawPayload
+        ? {
+            raw: {
+              source: "claude.sdk.message" as const,
+              ...(options.rawMethod ? { method: options.rawMethod } : {}),
+              payload: options.rawPayload,
+            },
+          }
+        : {}),
+    });
+  });
+
+  function subagentStream(
+    context: ClaudeSessionContext,
+    parentToolUseId: string,
+  ): SubagentStreamState {
+    const existing = context.subagentStreams.get(parentToolUseId);
+    if (existing) {
+      return existing;
+    }
+    const created: SubagentStreamState = {
+      blocks: new Map(),
+      blockOrder: [],
+      streamedCurrentMessage: false,
+      lastUsage: undefined,
+    };
+    context.subagentStreams.set(parentToolUseId, created);
+    return created;
+  }
+
+  /**
+   * Emits the transcript item that closes one streamed subagent text block.
+   *
+   * The item id is the block's, and every delta for that block carried the
+   * same id, so ingestion folds deltas and completion into one assistant
+   * message exactly as it does for the parent conversation.
+   */
+  const completeSubagentTextBlock = Effect.fn("completeSubagentTextBlock")(function* (
+    context: ClaudeSessionContext,
+    agentId: string,
+    block: SubagentTextBlockState,
+    options: {
+      readonly rawMethod: string;
+      readonly rawPayload: unknown;
+    },
+  ) {
+    if (block.completionEmitted) {
+      return;
+    }
+    block.completionEmitted = true;
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "item.completed",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      itemId: asRuntimeItemId(block.itemId),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        title: "Assistant message",
+        ...(block.text.trim().length > 0 ? { detail: block.text } : {}),
+        agentId: RuntimeTaskId.make(agentId),
+      },
+      providerRefs: nativeProviderRefs(context, { providerItemId: block.itemId }),
+      raw: {
+        source: "claude.sdk.message",
+        method: options.rawMethod,
+        payload: options.rawPayload,
+      },
+    });
+  });
+
+  /** Closes every still-open streamed block of one subagent message. */
+  const closeSubagentMessage = Effect.fn("closeSubagentMessage")(function* (
+    context: ClaudeSessionContext,
+    agentId: string,
+    stream: SubagentStreamState,
+    options: {
+      readonly rawMethod: string;
+      readonly rawPayload: unknown;
+    },
+  ) {
+    for (const block of stream.blockOrder) {
+      yield* completeSubagentTextBlock(context, agentId, block, options);
+    }
+    stream.blocks.clear();
+    stream.blockOrder.length = 0;
+    stream.streamedCurrentMessage = false;
+  });
+
+  /**
+   * Subagent-owned stream frames (`parent_tool_use_id` set).
+   *
+   * Returns true when the frame was consumed here. Tool frames return false so
+   * they keep flowing through the shared tool paths below, which already carry
+   * agent attribution.
+   *
+   * Narration is streamed with the SAME events the parent conversation uses —
+   * `content.delta` plus a closing `item.completed` — only stamped with
+   * `agentId`, so the transcript renders through the identical client
+   * derivation instead of a thinner, snapshot-only path.
+   */
+  const handleSubagentStreamEvent = Effect.fn("handleSubagentStreamEvent")(function* (
+    context: ClaudeSessionContext,
+    message: Extract<SDKMessage, { type: "stream_event" }>,
+    parentToolUseId: string,
+  ) {
+    const { event } = message;
+    const agentId = agentIdForParentToolUse(context.taskAgents, parentToolUseId);
+    // The spawning task is not registered yet (its task_started lost the race)
+    // or it opted out of transcripts. Attributing is impossible, and emitting
+    // unattributed narration would leak the child into the parent chat — the
+    // authoritative assistant snapshot still recovers the text later.
+    const transcriptAgentId =
+      agentId !== undefined && context.taskAgents.get(agentId)?.skipTranscript !== true
+        ? agentId
+        : undefined;
+
+    if (event.type === "message_start") {
+      // A new subagent message: the previous one's blocks are finished even if
+      // its content_block_stop frames never arrived (interrupts, transport
+      // truncation), so settle them before the indices are reused.
+      const stream = subagentStream(context, parentToolUseId);
+      if (transcriptAgentId !== undefined) {
+        yield* closeSubagentMessage(context, transcriptAgentId, stream, {
+          rawMethod: "claude/stream_event/message_start",
+          rawPayload: message,
+        });
+      } else {
+        stream.blocks.clear();
+        stream.blockOrder.length = 0;
+        stream.streamedCurrentMessage = false;
+      }
+      return true;
+    }
+
+    if (event.type === "message_delta") {
+      if (agentId === undefined) {
+        return true;
+      }
+      const stream = subagentStream(context, parentToolUseId);
+      const snapshot = normalizeClaudeActiveTokenUsage(
+        event.usage,
+        context.lastKnownContextWindow,
+        stream.lastUsage?.totalProcessedTokens,
+      );
+      yield* emitAgentTokenUsage(context, agentId, snapshot, {
+        rawMethod: "claude/stream_event/message_delta/subagent",
+        rawPayload: message,
+        parentToolUseId,
+      });
+      return true;
+    }
+
+    if (event.type === "content_block_start") {
+      const blockType = event.content_block.type;
+      if (
+        blockType === "tool_use" ||
+        blockType === "server_tool_use" ||
+        blockType === "mcp_tool_use"
+      ) {
+        return false;
+      }
+      if (blockType !== "text" || transcriptAgentId === undefined) {
+        return true;
+      }
+      const stream = subagentStream(context, parentToolUseId);
+      if (!stream.blocks.has(event.index)) {
+        const block: SubagentTextBlockState = {
+          itemId: yield* randomUUIDv4,
+          blockIndex: event.index,
+          text: extractContentBlockText(event.content_block),
+          completionEmitted: false,
+        };
+        stream.blocks.set(event.index, block);
+        stream.blockOrder.push(block);
+      }
+      return true;
+    }
+
+    if (event.type === "content_block_delta") {
+      if (event.delta.type !== "text_delta" && event.delta.type !== "thinking_delta") {
+        return false;
+      }
+      if (transcriptAgentId === undefined) {
+        return true;
+      }
+      const deltaText =
+        event.delta.type === "text_delta"
+          ? event.delta.text
+          : typeof event.delta.thinking === "string"
+            ? event.delta.thinking
+            : "";
+      if (deltaText.length === 0) {
+        return true;
+      }
+      const stream = subagentStream(context, parentToolUseId);
+      // Thinking mirrors the parent path exactly: a reasoning delta carries no
+      // item id there either, so it streams for observers without opening an
+      // assistant message.
+      let block: SubagentTextBlockState | undefined;
+      if (event.delta.type === "text_delta") {
+        block = stream.blocks.get(event.index);
+        if (!block) {
+          block = {
+            itemId: yield* randomUUIDv4,
+            blockIndex: event.index,
+            text: "",
+            completionEmitted: false,
+          };
+          stream.blocks.set(event.index, block);
+          stream.blockOrder.push(block);
+        }
+        block.text += deltaText;
+        stream.streamedCurrentMessage = true;
+      }
+      const stamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent({
+        type: "content.delta",
+        eventId: stamp.eventId,
+        provider: PROVIDER,
+        createdAt: stamp.createdAt,
+        threadId: context.session.threadId,
+        ...(context.turnState ? { turnId: context.turnState.turnId } : {}),
+        ...(block ? { itemId: asRuntimeItemId(block.itemId) } : {}),
+        payload: {
+          streamKind: streamKindFromDeltaType(event.delta.type),
+          delta: deltaText,
+          agentId: RuntimeTaskId.make(transcriptAgentId),
+        },
+        providerRefs: nativeProviderRefs(context),
+        raw: {
+          source: "claude.sdk.message",
+          method: "claude/stream_event/content_block_delta/subagent",
+          payload: message,
+        },
+      });
+      return true;
+    }
+
+    if (event.type === "content_block_stop") {
+      // Always consumed. Content block indices are per message and shared
+      // between the parent and its children, so letting a child's stop reach
+      // the parent handler would close the PARENT's assistant text block at
+      // the same index. The parent handler does nothing for tool blocks
+      // anyway, so consuming here loses no behaviour.
+      const stream = context.subagentStreams.get(parentToolUseId);
+      const block = stream?.blocks.get(event.index);
+      if (!stream || !block) {
+        return true;
+      }
+      if (transcriptAgentId !== undefined) {
+        yield* completeSubagentTextBlock(context, transcriptAgentId, block, {
+          rawMethod: "claude/stream_event/content_block_stop/subagent",
+          rawPayload: message,
+        });
+      }
+      stream.blocks.delete(event.index);
+      const position = stream.blockOrder.indexOf(block);
+      if (position >= 0) {
+        stream.blockOrder.splice(position, 1);
+      }
+      return true;
+    }
+
+    return false;
+  });
+
+  const queryCurrentContextUsage = Effect.fn("queryCurrentContextUsage")(function* (
+    context: ClaudeSessionContext,
+    totalProcessedTokens?: number,
+  ) {
+    if (!context.query.getContextUsage) {
+      return undefined;
+    }
+
+    const usage = yield* Effect.promise(async () => {
+      try {
+        return await context.query.getContextUsage?.();
+      } catch {
+        return undefined;
+      }
+    }).pipe(Effect.timeoutOption("1 second"));
+    if (Option.isNone(usage) || !usage.value) {
+      return undefined;
+    }
+
+    context.lastKnownContextWindow = usage.value.maxTokens;
+    return normalizeClaudeContextUsageApiSnapshot(usage.value, totalProcessedTokens);
+  });
+
   const emitProposedPlanCompleted = Effect.fn("emitProposedPlanCompleted")(function* (
     context: ClaudeSessionContext,
     input: {
@@ -2358,7 +2748,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    for (const [index, tool] of context.inFlightTools.entries()) {
+    for (const [key, tool] of context.inFlightTools.entries()) {
       const toolStamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({
         type: "item.completed",
@@ -2373,6 +2763,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           status: status === "completed" ? "completed" : "failed",
           title: tool.title,
           ...(tool.detail ? { detail: tool.detail } : {}),
+          // Attribution must survive the sweep: an unfinished subagent tool
+          // completed without it lands in the PARENT timeline instead of the
+          // agent's transcript.
+          ...(tool.agentId ? { agentId: tool.agentId } : {}),
+          ...(tool.parentToolUseId ? { parentToolUseId: tool.parentToolUseId } : {}),
           data: {
             toolName: tool.toolName,
             input: tool.input,
@@ -2387,7 +2782,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: result ?? { status },
         },
       });
-      context.inFlightTools.delete(index);
+      context.inFlightTools.delete(key);
     }
     // Clear any remaining stale entries (e.g. from interrupted content blocks)
     context.inFlightTools.clear();
@@ -2454,24 +2849,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const { event } = message;
 
     // Subagent-owned stream traffic (parent_tool_use_id set) must not write
-    // into the parent transcript. Tool blocks keep flowing with agent
-    // attribution; assistant text is persisted from the authoritative
-    // assistant snapshot below, re-homed into that agent's transcript.
+    // into the parent transcript. Narration streams through the agent-stamped
+    // path (identical events, `agentId` attached); tool blocks fall through to
+    // the shared tool paths, which already carry agent attribution.
     const streamParentToolUseId = (message as { parent_tool_use_id?: string | null })
       .parent_tool_use_id;
     if (streamParentToolUseId !== null && streamParentToolUseId !== undefined) {
-      // Drop only the subagent's narration (text/thinking); tool_use blocks
-      // and their input_json_delta frames must flow so attributed tool items
-      // keep their inputs (review finding: dropping deltas emptied inputs).
-      const dropStart =
-        event.type === "content_block_start" &&
-        event.content_block.type !== "tool_use" &&
-        event.content_block.type !== "server_tool_use" &&
-        event.content_block.type !== "mcp_tool_use";
-      const dropDelta =
-        event.type === "content_block_delta" &&
-        (event.delta.type === "text_delta" || event.delta.type === "thinking_delta");
-      if (dropStart || dropDelta) {
+      const consumed = yield* handleSubagentStreamEvent(context, message, streamParentToolUseId);
+      if (consumed) {
         return;
       }
     }
@@ -2550,7 +2935,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       if (event.delta.type === "input_json_delta") {
-        const tool = context.inFlightTools.get(event.index);
+        const toolKey = inFlightToolKey(streamParentToolUseId, event.index);
+        const tool = context.inFlightTools.get(toolKey);
         if (!tool || typeof event.delta.partial_json !== "string") {
           return;
         }
@@ -2574,7 +2960,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           parsedInput && Object.keys(parsedInput).length > 0
             ? toolInputFingerprint(parsedInput)
             : undefined;
-        context.inFlightTools.set(event.index, nextTool);
+        context.inFlightTools.set(toolKey, nextTool);
 
         if (
           !parsedInput ||
@@ -2588,7 +2974,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...nextTool,
           lastEmittedInputFingerprint: nextFingerprint,
         };
-        context.inFlightTools.set(event.index, nextTool);
+        context.inFlightTools.set(toolKey, nextTool);
 
         const stamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
@@ -2643,6 +3029,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 : {}),
               payload: {
                 plan: planSteps,
+                // A subagent's own todo list is its plan, not the parent's:
+                // without the stamp every child TodoWrite rewrote the parent
+                // turn's plan chip. Stamped, it renders in that agent's
+                // transcript and stays out of the parent timeline.
+                ...(nextTool.agentId ? { agentId: nextTool.agentId } : {}),
               },
               providerRefs: nativeProviderRefs(context),
             });
@@ -2699,7 +3090,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(owningAgentId ? { agentId: owningAgentId } : {}),
         ...(parentToolUseId ? { parentToolUseId } : {}),
       };
-      context.inFlightTools.set(index, tool);
+      context.inFlightTools.set(inFlightToolKey(parentToolUseId, index), tool);
 
       const stamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({
@@ -2745,10 +3136,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       }
-      const tool = context.inFlightTools.get(index);
-      if (!tool) {
-        return;
-      }
     }
   });
 
@@ -2772,7 +3159,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         continue;
       }
 
-      const [index, tool] = toolEntry;
+      const [toolKey, tool] = toolEntry;
       const itemStatus = toolResult.isError ? "failed" : "completed";
       const toolUseResult = readClaudeToolUseResult(message);
       const toolData = {
@@ -2911,7 +3298,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
       }
 
-      context.inFlightTools.delete(index);
+      context.inFlightTools.delete(toolKey);
     }
   });
 
@@ -2950,7 +3337,48 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
       const transcriptText = extractAssistantTextBlocks(message).join("\n\n").trim();
       const nativeItemId = sdkNativeItemId(message) ?? message.uuid;
-      if (owningTaskId && !owningAgent?.skipTranscript && transcriptText.length > 0) {
+      // Settle whatever this message streamed. When partial messages reached
+      // us the transcript already holds the streamed assistant message(s), so
+      // the snapshot must NOT emit a second, monolithic copy of the same text;
+      // it stays the fallback for sessions (or races) that streamed nothing.
+      const stream = context.subagentStreams.get(assistantParentToolUseId);
+      const streamedThisMessage = stream?.streamedCurrentMessage === true;
+      if (stream) {
+        if (owningTaskId && !owningAgent?.skipTranscript) {
+          yield* closeSubagentMessage(context, owningTaskId, stream, {
+            rawMethod: "claude/assistant/subagent",
+            rawPayload: message,
+          });
+        } else {
+          stream.blocks.clear();
+          stream.blockOrder.length = 0;
+          stream.streamedCurrentMessage = false;
+        }
+      }
+      // Per-agent context occupancy also rides the snapshot: a subagent whose
+      // message_delta frames never arrived still reports usage this way.
+      if (owningTaskId) {
+        yield* emitAgentTokenUsage(
+          context,
+          owningTaskId,
+          normalizeClaudeActiveTokenUsage(
+            (message.message as { usage?: unknown }).usage,
+            context.lastKnownContextWindow,
+            stream?.lastUsage?.totalProcessedTokens,
+          ),
+          {
+            rawMethod: "claude/assistant/subagent/usage",
+            rawPayload: message,
+            parentToolUseId: assistantParentToolUseId,
+          },
+        );
+      }
+      if (
+        owningTaskId &&
+        !owningAgent?.skipTranscript &&
+        !streamedThisMessage &&
+        transcriptText.length > 0
+      ) {
         const stamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
           type: "item.completed",
@@ -3929,10 +4357,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
       const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
-      const inFlightTools = new Map<number, ToolInFlight>();
+      const inFlightTools = new Map<string, ToolInFlight>();
       const claudeTasks = new Map<string, ClaudeTaskState>();
       const taskAgents = new Map<string, ClaudeTaskAgentState>();
       const pendingTaskModels = new Map<string, string>();
+      const subagentStreams = new Map<string, SubagentStreamState>();
       const workflowMemberFingerprints = new Map<string, string>();
       const liveTaskIds = new Set<string>();
 
@@ -4501,6 +4930,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         claudeTasks,
         taskAgents,
         pendingTaskModels,
+        subagentStreams,
         workflowMemberFingerprints,
         liveTaskIds,
         turnState: undefined,
