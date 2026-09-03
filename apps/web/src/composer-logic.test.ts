@@ -17,6 +17,7 @@ import {
   parseStandaloneComposerSlashCommand,
   parseSideChatSlashCommand,
   replaceTextRange,
+  sideChatWouldDiscardAttachedContent,
 } from "./composer-logic";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
@@ -526,5 +527,33 @@ describe("parseSideChatSlashCommand", () => {
 
   it("does not intercept unrelated slash commands", () => {
     expect(parseSideChatSlashCommand("/plan")).toBeNull();
+  });
+});
+
+describe("sideChatWouldDiscardAttachedContent", () => {
+  const empty = {
+    images: 0,
+    files: 0,
+    terminalContexts: 0,
+    elementContexts: 0,
+    previewAnnotations: 0,
+    reviewComments: 0,
+  } as const;
+
+  it("lets a bare /side through when the composer holds nothing else", () => {
+    expect(sideChatWouldDiscardAttachedContent(empty)).toBe(false);
+  });
+
+  it.each([
+    ["images", { images: 1 }],
+    // The regression: a file-only draft slipped past the guard and was thrown
+    // away with the composer when the empty side chat opened.
+    ["files", { files: 1 }],
+    ["terminalContexts", { terminalContexts: 1 }],
+    ["elementContexts", { elementContexts: 1 }],
+    ["previewAnnotations", { previewAnnotations: 1 }],
+    ["reviewComments", { reviewComments: 1 }],
+  ])("blocks a bare /side that would discard %s", (_label, counts) => {
+    expect(sideChatWouldDiscardAttachedContent({ ...empty, ...counts })).toBe(true);
   });
 });

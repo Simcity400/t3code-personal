@@ -282,6 +282,36 @@ export function parseSideChatSlashCommand(text: string): SideChatSlashCommand | 
   return match ? { prompt: (match[1] ?? "").trim() } : null;
 }
 
+/**
+ * Everything a bare `/side` would throw away. Opening a side chat with no
+ * message navigates to a brand-new empty thread and clears the composer, so
+ * any attached content would be silently discarded — the send handler warns
+ * instead. Counted here rather than inline so a new attachment kind is a
+ * compile error at the call site instead of a silently uncounted field: that
+ * is exactly how `files` (upstream's PDF/ZIP attachments) went missing.
+ */
+export interface SideChatAttachedContentCounts {
+  readonly images: number;
+  readonly files: number;
+  readonly terminalContexts: number;
+  readonly elementContexts: number;
+  readonly previewAnnotations: number;
+  readonly reviewComments: number;
+}
+
+export function sideChatWouldDiscardAttachedContent(
+  counts: SideChatAttachedContentCounts,
+): boolean {
+  return (
+    counts.images > 0 ||
+    counts.files > 0 ||
+    counts.terminalContexts > 0 ||
+    counts.elementContexts > 0 ||
+    counts.previewAnnotations > 0 ||
+    counts.reviewComments > 0
+  );
+}
+
 export function replaceTextRange(
   text: string,
   rangeStart: number,
