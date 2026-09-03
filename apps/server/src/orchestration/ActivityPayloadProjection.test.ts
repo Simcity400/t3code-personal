@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
-import { projectActivityPayload } from "./ActivityPayloadProjection.ts";
+import {
+  projectActivityPayload,
+  projectThreadDetailSnapshot,
+} from "./ActivityPayloadProjection.ts";
 
 function activity(payload: Record<string, unknown>): OrchestrationThreadActivity {
   return {
@@ -393,5 +396,107 @@ describe("projectActivityPayload", () => {
     });
     const projected = projectActivityPayload(source);
     expect(projected.payload).toEqual(source.payload);
+  });
+});
+
+describe("collaboration replies and per-agent context rows", () => {
+  it("keeps the reply a subagent sent back, verbatim", () => {
+    // Every other tool result is reduced to a one-line summary here. This one
+    // is the message the parent actually received, and the parent timeline
+    // renders it as a message, so summarizing it would delete the content.
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "collab_agent_tool_call",
+        itemId: "toolu_agent_1",
+        data: {
+          toolName: "Task",
+          input: { prompt: "Audit the SQL changes." },
+          result: {
+            type: "tool_result",
+            content: [
+              { type: "text", text: "Found two unparameterized queries.\nBoth in db/users.ts." },
+            ],
+          },
+        },
+      }),
+    );
+
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    expect(data.agentReply).toBe("Found two unparameterized queries.\nBoth in db/users.ts.");
+  });
+
+  it("reads a plain-string reply envelope too", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "collab_agent_tool_call",
+        itemId: "toolu_agent_2",
+        data: { toolName: "Task", result: { content: "Done." } },
+      }),
+    );
+
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    expect(data.agentReply).toBe("Done.");
+  });
+
+  it("bounds a runaway report instead of shipping it whole", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "collab_agent_tool_call",
+        itemId: "toolu_agent_3",
+        data: { toolName: "Task", result: { content: "y".repeat(50_000) } },
+      }),
+    );
+
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    expect(typeof data.agentReply).toBe("string");
+    expect((data.agentReply as string).length).toBe(20_001);
+    expect((data.agentReply as string).endsWith("…")).toBe(true);
+  });
+
+  it("adds nothing when the result carries no reply text", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "collab_agent_tool_call",
+        itemId: "toolu_agent_4",
+        data: { toolName: "Task", result: { status: "ok" } },
+      }),
+    );
+
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    expect(data).not.toHaveProperty("agentReply");
+  });
+
+  it("retains one context-window row per turn AND per owner", () => {
+    // The parent and its subagents report under the same turn id, so a
+    // turn-only retention rule shipped only whichever conversation reported
+    // last and every other meter came back empty after a reload.
+    const contextRow = (id: string, usedTokens: number, agentId?: string) =>
+      ({
+        id,
+        tone: "info",
+        kind: "context-window.updated",
+        summary: "Context window updated",
+        payload: { usedTokens, ...(agentId ? { agentId } : {}) },
+        turnId: "turn-1",
+        createdAt: "2026-08-01T10:00:00.000Z",
+      }) as unknown as OrchestrationThreadActivity;
+
+    const projected = projectThreadDetailSnapshot({
+      thread: {
+        activities: [
+          contextRow("parent-1", 1_000),
+          contextRow("agent-a-1", 2_000, "agent-a"),
+          contextRow("parent-2", 1_500),
+          contextRow("agent-a-2", 2_500, "agent-a"),
+          contextRow("agent-b-1", 3_000, "agent-b"),
+        ],
+      },
+    } as unknown as Parameters<typeof projectThreadDetailSnapshot>[0]);
+
+    expect(projected.thread.activities.map((row) => row.id)).toEqual([
+      "parent-2",
+      "agent-a-2",
+      "agent-b-1",
+    ]);
   });
 });

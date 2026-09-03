@@ -560,6 +560,116 @@ describe("buildThreadFeed", () => {
     expect(messageIds).toEqual(["parent-message"]);
   });
 
+  it("shows a subagent's report to the parent as an attributed message", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-agent-reply"),
+      projectId: ProjectId.make("project-1"),
+      title: "Agent reply",
+      messages: [
+        {
+          id: MessageId.make("parent-message"),
+          role: "assistant",
+          text: "Spawning a reviewer.",
+          turnId: TurnId.make("turn-1"),
+          streaming: false,
+          createdAt: "2026-04-01T00:00:01.000Z",
+          updatedAt: "2026-04-01T00:00:01.000Z",
+        },
+      ],
+      activities: [
+        makeActivity({
+          id: EventId.make("task-start"),
+          kind: "task.started",
+          tone: "info",
+          summary: "Agent started",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId: TurnId.make("turn-1"),
+          payload: {
+            taskId: "agent-1",
+            title: "reviewer",
+            toolUseId: "toolu_1",
+            taskType: "local_agent",
+          },
+        }),
+        makeActivity({
+          id: EventId.make("collab-done"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Task",
+          createdAt: "2026-04-01T00:00:09.000Z",
+          turnId: TurnId.make("turn-1"),
+          payload: {
+            itemType: "collab_agent_tool_call",
+            itemId: "toolu_1",
+            data: { toolName: "Task", agentReply: "Two unparameterized queries." },
+          },
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+    const replyEntry = feed.find(
+      (entry) => entry.type === "message" && entry.message.text === "Two unparameterized queries.",
+    );
+    expect(replyEntry).toBeDefined();
+    // Attributed, so the reader can tell it from the main agent's own words.
+    expect(replyEntry).toMatchObject({ fromAgentLabel: "Reviewer" });
+  });
+
+  it("routes a nested report into the owning subagent's transcript, not the parent feed", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-nested-reply"),
+      projectId: ProjectId.make("project-1"),
+      title: "Nested reply",
+      messages: [],
+      activities: [
+        makeActivity({
+          id: EventId.make("nested-start"),
+          kind: "task.started",
+          tone: "info",
+          summary: "Nested agent started",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId: TurnId.make("turn-1"),
+          payload: {
+            taskId: "nested-1",
+            title: "nested",
+            toolUseId: "toolu_nested",
+            taskType: "local_agent",
+            agentId: "agent-1",
+          },
+        }),
+        makeActivity({
+          id: EventId.make("nested-done"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Task",
+          createdAt: "2026-04-01T00:00:09.000Z",
+          turnId: TurnId.make("turn-1"),
+          payload: {
+            itemType: "collab_agent_tool_call",
+            itemId: "toolu_nested",
+            agentId: "agent-1",
+            data: { toolName: "Task", agentReply: "Nested finding." },
+          },
+        }),
+      ],
+    });
+
+    const parentFeed = buildThreadFeed(thread);
+    expect(
+      parentFeed.some(
+        (entry) => entry.type === "message" && entry.message.text === "Nested finding.",
+      ),
+    ).toBe(false);
+
+    const agentFeed = buildThreadFeed(thread, { agentId: "agent-1" });
+    expect(
+      agentFeed.some(
+        (entry) => entry.type === "message" && entry.message.text === "Nested finding.",
+      ),
+    ).toBe(true);
+  });
+
   it("builds an agent transcript with the same message and work rows as the main feed", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-agent-feed"),

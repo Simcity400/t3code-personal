@@ -3199,6 +3199,68 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("stamps a subagent's context window row with its owning agent", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "thread.token-usage.updated",
+      eventId: asEventId("evt-agent-token-usage"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        usage: { usedTokens: 90_000, maxTokens: 200_000 },
+        agentId: "agent-1",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.updated",
+      ),
+    );
+
+    const usageActivity = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.updated",
+    );
+    // Persisted, so a reload rebuilds this agent's meter; and named, so the
+    // parent's meter can skip it instead of reading a child's usage as its own.
+    expect(usageActivity?.payload).toMatchObject({
+      usedTokens: 90_000,
+      maxTokens: 200_000,
+      agentId: "agent-1",
+    });
+  });
+
+  it("stamps a subagent's plan row with its owning agent", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.plan.updated",
+      eventId: asEventId("evt-agent-plan"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        plan: [{ step: "Read the file", status: "inProgress" }],
+        agentId: "agent-1",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "turn.plan.updated",
+      ),
+    );
+
+    const planActivity = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "turn.plan.updated",
+    );
+    expect(planActivity?.payload).toMatchObject({ agentId: "agent-1" });
+  });
+
   it("projects Codex camelCase token usage payloads into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

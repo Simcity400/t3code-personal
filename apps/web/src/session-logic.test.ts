@@ -8,12 +8,18 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { resolveWorkEntryToolPresentation } from "@t3tools/client-runtime/work-log/presentation";
+import {
+  deriveSubagentReplies,
+  formatSubagentTitle,
+  selectSubagentTranscriptActivities,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 
 import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
+  deriveSubagentReplyMessages,
   deriveTimelineEntries,
   deriveWorkLogEntries,
   findLatestProposedPlan,
@@ -2482,5 +2488,110 @@ describe("session activity performance", () => {
       command: "git diff",
       toolLifecycleStatus: "completed",
     });
+  });
+});
+
+describe("subagent plans and replies in the parent timeline", () => {
+  it("keeps a subagent's todo list out of the parent's plan chip", () => {
+    // A subagent's TodoWrite reports under the SAME turn as its parent, so an
+    // unscoped fold let a child rewrite the parent's chip.
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "plan-parent",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { plan: [{ step: "Parent step", status: "inProgress" }] },
+      }),
+      makeActivity({
+        id: "plan-agent",
+        createdAt: "2026-02-23T00:00:05.000Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          agentId: "agent-1",
+          plan: [{ step: "Child step", status: "inProgress" }],
+        },
+      }),
+    ];
+
+    const turnPlans = deriveTurnPlans(activities);
+    expect(turnPlans).toHaveLength(1);
+    expect(turnPlans[0]?.plan.steps.map((step) => step.step)).toEqual(["Parent step"]);
+  });
+
+  it("renders the agent's own plan when the transcript scopes rows to it", () => {
+    const scoped = selectSubagentTranscriptActivities(
+      [
+        makeActivity({
+          id: "plan-agent",
+          createdAt: "2026-02-23T00:00:05.000Z",
+          kind: "turn.plan.updated",
+          summary: "Plan updated",
+          tone: "info",
+          turnId: "turn-1",
+          payload: {
+            agentId: "agent-1",
+            plan: [{ step: "Child step", status: "inProgress" }],
+          },
+        }),
+      ],
+      "agent-1",
+    );
+
+    const turnPlans = deriveTurnPlans(scoped);
+    expect(turnPlans).toHaveLength(1);
+    expect(turnPlans[0]?.plan.steps.map((step) => step.step)).toEqual(["Child step"]);
+  });
+
+  it("turns a recovered reply into a message row the timeline can render", () => {
+    const replies = deriveSubagentReplies([
+      makeActivity({
+        id: "task-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.started",
+        summary: "Agent started",
+        tone: "info",
+        payload: {
+          taskId: "agent-1",
+          title: "Reviewer",
+          toolUseId: "toolu_1",
+          taskType: "local_agent",
+        },
+      }),
+      makeActivity({
+        id: "tool-done",
+        createdAt: "2026-02-23T00:00:09.000Z",
+        kind: "tool.completed",
+        summary: "Task",
+        tone: "tool",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          itemId: "toolu_1",
+          data: { agentReply: "Everything checks out." },
+        },
+      }),
+    ]);
+
+    const replyMessages = deriveSubagentReplyMessages(replies, null, (reply) =>
+      formatSubagentTitle(reply.agentTitle ?? reply.agentId),
+    );
+    expect(replyMessages).toHaveLength(1);
+    expect(replyMessages[0]?.label).toBe("Reviewer");
+    expect(replyMessages[0]?.message).toMatchObject({
+      role: "assistant",
+      text: "Everything checks out.",
+      agentId: "agent-1",
+      createdAt: "2026-02-23T00:00:09.000Z",
+    });
+
+    const entries = deriveTimelineEntries([replyMessages[0]!.message], [], [], []);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.kind).toBe("message");
   });
 });

@@ -155,6 +155,31 @@ machine.
 
   If `.env` ever goes missing, recreate it with those lines and rebuild.
 
+- **Subagent transcripts match the main chat, and each subagent has its own context
+  meter** (2026-09-03): a subagent transcript used to be a thinner view of the same
+  screen. On the server, Claude dropped every subagent-owned text and thinking frame,
+  so an agent's transcript stayed blank until its message finished and then appeared
+  in one block; its `message_delta` usage was discarded, so there was no per-agent
+  context window at all. Narration now streams through the same events the parent
+  uses (`content.delta` + a closing `item.completed`), stamped with `agentId`, and
+  per-agent usage is emitted as `thread.token-usage.updated` with `agentId` — from
+  Claude's `message_delta` and assistant snapshots, and from Codex's
+  `collabAgent/tokenUsage`. On the client, the transcript selector now returns every
+  row the server attributed to that agent instead of tool rows only, so the agent's
+  own plan, denials, nested tasks and usage all render through the identical
+  derivations the main chat uses; the parent's plan chip and context meter skip
+  agent-attributed rows instead of reading a child's value as their own. The Agents
+  panel shows the same `ContextWindowMeter` per subagent (transcript header, plus a
+  compact `NN% ctx` on each roster row). Messages now flow both ways: a report a
+  subagent sends back renders in the receiving conversation as an ordinary assistant
+  message with a "From <agent>" header that opens that agent's transcript, on web and
+  in the mobile feed, and it recurses for sub-subagents. Four leaks were fixed
+  alongside — a subagent's TodoWrite rewriting the parent turn's plan, a child's tool
+  at content-block index N evicting the parent's tool at index N, a child's
+  `content_block_stop` closing the parent's assistant text block, and the end-of-turn
+  sweep completing unfinished subagent tools into the parent timeline. Grok and
+  OpenCode are documented in their adapters as not supportable: ACP has no subagent,
+  child-session or parent-tool attribution anywhere in its wire format.
 - **Resource-monitor sidecar**: release builds ship a Rust sidecar
   (`t3-resource-monitor.exe`) that source builds don't compile, so resource
   diagnostics were silently unavailable. A copy from the installed app lives at

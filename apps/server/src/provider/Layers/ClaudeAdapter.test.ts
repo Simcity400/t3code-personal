@@ -5517,4 +5517,454 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+  describe("subagent transcript parity", () => {
+    /** task_started plus an open turn, so subagent frames have an agent to attribute to. */
+    const startAgent = (
+      harness: ReturnType<typeof makeHarness>,
+      taskId: string,
+      toolUseId: string,
+    ) =>
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: taskId,
+        description: "Reviewer",
+        task_type: "local_agent",
+        tool_use_id: toolUseId,
+        uuid: `${taskId}-started`,
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+    it.effect("streams a subagent narration into that agent's transcript", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "content.delta" ||
+              (event.type === "item.completed" && event.payload.itemType === "assistant_message"),
+          ),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "spawn an agent",
+          attachments: [],
+        });
+        startAgent(harness, "task-stream", "toolu_stream");
+
+        const streamFrame = (event: unknown) =>
+          harness.query.emit({
+            type: "stream_event",
+            session_id: "sdk-session",
+            uuid: "subagent-stream",
+            parent_tool_use_id: "toolu_stream",
+            event,
+          } as unknown as SDKMessage);
+
+        streamFrame({ type: "message_start", message: { id: "msg_sub", content: [] } });
+        streamFrame({ type: "content_block_start", index: 0, content_block: { type: "text" } });
+        streamFrame({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Reading " },
+        });
+        streamFrame({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "parser.ts." },
+        });
+        streamFrame({ type: "content_block_stop", index: 0 });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        const deltas = events.filter((event) => event.type === "content.delta");
+        assert.equal(deltas.length, 2);
+        // Every frame is attributed, so nothing leaks into the parent chat, and
+        // all of them share the block's item id so ingestion folds them into one
+        // assistant message exactly as it does for the parent conversation.
+        const itemIds = new Set<string>();
+        for (const delta of deltas) {
+          if (delta.type !== "content.delta") continue;
+          assert.equal(delta.payload.agentId, "task-stream");
+          assert.equal(delta.payload.streamKind, "assistant_text");
+          itemIds.add(String(delta.itemId));
+        }
+        assert.equal(itemIds.size, 1);
+
+        const completion = events.find((event) => event.type === "item.completed");
+        assert.equal(completion?.type, "item.completed");
+        if (completion?.type === "item.completed") {
+          assert.equal(completion.payload.agentId, "task-stream");
+          assert.equal(completion.payload.detail, "Reading parser.ts.");
+          assert.equal(String(completion.itemId), [...itemIds][0]);
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("gives a subagent its own context-window snapshot", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const usageFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "thread.token-usage.updated"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "spawn an agent",
+          attachments: [],
+        });
+        startAgent(harness, "task-usage", "toolu_usage");
+
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session",
+          uuid: "subagent-usage",
+          parent_tool_use_id: "toolu_usage",
+          event: {
+            type: "message_delta",
+            delta: {},
+            usage: { input_tokens: 12_000, output_tokens: 500 },
+          },
+        } as unknown as SDKMessage);
+
+        const events = Array.from(yield* Fiber.join(usageFiber));
+        const usage = events[0];
+        assert.equal(usage?.type, "thread.token-usage.updated");
+        if (usage?.type === "thread.token-usage.updated") {
+          assert.equal(usage.payload.agentId, "task-usage");
+          assert.equal(usage.payload.usage.usedTokens, 12_500);
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("does not repeat a streamed subagent message from the snapshot", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              (event.type === "item.completed" && event.payload.itemType === "assistant_message") ||
+              event.type === "turn.completed",
+          ),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "spawn an agent",
+          attachments: [],
+        });
+        startAgent(harness, "task-once", "toolu_once");
+
+        const streamFrame = (event: unknown) =>
+          harness.query.emit({
+            type: "stream_event",
+            session_id: "sdk-session",
+            uuid: "subagent-once",
+            parent_tool_use_id: "toolu_once",
+            event,
+          } as unknown as SDKMessage);
+
+        streamFrame({ type: "content_block_start", index: 0, content_block: { type: "text" } });
+        streamFrame({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "All done." },
+        });
+        streamFrame({ type: "content_block_stop", index: 0 });
+        // The authoritative snapshot repeats the same text; it must not become a
+        // second transcript message.
+        harness.query.emit({
+          type: "assistant",
+          parent_tool_use_id: "toolu_once",
+          message: {
+            model: "claude-sonnet-5",
+            id: "msg_snapshot",
+            content: [{ type: "text", text: "All done." }],
+          },
+          uuid: "subagent-snapshot",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          duration_ms: 1,
+          duration_api_ms: 1,
+          num_turns: 1,
+          result: "done",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        const assistantItems = events.filter((event) => event.type === "item.completed");
+        assert.equal(assistantItems.length, 1);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("stamps a subagent TodoWrite plan with its agent", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const planFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.plan.updated"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "spawn an agent",
+          attachments: [],
+        });
+        startAgent(harness, "task-plan", "toolu_plan");
+
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session",
+          uuid: "subagent-todo-start",
+          parent_tool_use_id: "toolu_plan",
+          event: {
+            type: "content_block_start",
+            index: 1,
+            content_block: { type: "tool_use", id: "toolu_todo", name: "TodoWrite", input: {} },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session",
+          uuid: "subagent-todo-delta",
+          parent_tool_use_id: "toolu_plan",
+          event: {
+            type: "content_block_delta",
+            index: 1,
+            delta: {
+              type: "input_json_delta",
+              partial_json: '{"todos":[{"content":"Read the file","status":"in_progress"}]}',
+            },
+          },
+        } as unknown as SDKMessage);
+
+        const events = Array.from(yield* Fiber.join(planFiber));
+        const plan = events[0];
+        assert.equal(plan?.type, "turn.plan.updated");
+        if (plan?.type === "turn.plan.updated") {
+          assert.equal(plan.payload.agentId, "task-plan");
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("a subagent tool at the parent block index does not evict it", () => {
+      // Content block indices restart per message and are shared between the
+      // parent and its children, so index-only keying let the child's tool
+      // replace the parent's and the parent's result had nothing to complete.
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const completionsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "item.completed" && event.payload.itemType === "command_execution",
+          ),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "spawn an agent",
+          attachments: [],
+        });
+        startAgent(harness, "task-tools", "toolu_tools");
+
+        const toolStart = (parentToolUseId: string | null, id: string) =>
+          harness.query.emit({
+            type: "stream_event",
+            session_id: "sdk-session",
+            uuid: `tool-start-${id}`,
+            parent_tool_use_id: parentToolUseId,
+            event: {
+              type: "content_block_start",
+              index: 0,
+              content_block: { type: "tool_use", id, name: "Bash", input: { command: "ls" } },
+            },
+          } as unknown as SDKMessage);
+
+        toolStart(null, "toolu_parent_bash");
+        toolStart("toolu_tools", "toolu_child_bash");
+
+        const toolResult = (id: string) =>
+          harness.query.emit({
+            type: "user",
+            session_id: "sdk-session",
+            uuid: `tool-result-${id}`,
+            message: {
+              role: "user",
+              content: [{ type: "tool_result", tool_use_id: id, content: "ok" }],
+            },
+          } as unknown as SDKMessage);
+
+        toolResult("toolu_child_bash");
+        toolResult("toolu_parent_bash");
+
+        const events = Array.from(yield* Fiber.join(completionsFiber));
+        const byItemId = new Map<string, string | undefined>();
+        for (const event of events) {
+          if (event.type !== "item.completed") continue;
+          byItemId.set(String(event.itemId), event.payload.agentId);
+        }
+        assert.equal(byItemId.size, 2);
+        assert.equal(byItemId.get("toolu_child_bash"), "task-tools");
+        assert.equal(byItemId.get("toolu_parent_bash"), undefined);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("a subagent block stop does not close the parent text block", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              (event.type === "item.completed" && event.payload.itemType === "assistant_message") ||
+              event.type === "content.delta",
+          ),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "spawn an agent",
+          attachments: [],
+        });
+        startAgent(harness, "task-stop", "toolu_stop");
+
+        // Parent opens a text block at index 0 and streams into it.
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session",
+          uuid: "parent-block-start",
+          parent_tool_use_id: null,
+          event: { type: "content_block_start", index: 0, content_block: { type: "text" } },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session",
+          uuid: "parent-delta-1",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "Parent " },
+          },
+        } as unknown as SDKMessage);
+        // The child closes ITS block 0. The parent's must stay open.
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session",
+          uuid: "child-block-stop",
+          parent_tool_use_id: "toolu_stop",
+          event: { type: "content_block_stop", index: 0 },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session",
+          uuid: "parent-delta-2",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "continues." },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session",
+          uuid: "parent-block-stop",
+          parent_tool_use_id: null,
+          event: { type: "content_block_stop", index: 0 },
+        } as unknown as SDKMessage);
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        const deltas = events.filter((event) => event.type === "content.delta");
+        assert.equal(deltas.length, 2);
+        const deltaItemIds = new Set(deltas.map((event) => String(event.itemId)));
+        // Both parent deltas belong to ONE block: a premature close would have
+        // finished the first and opened a second message for the second.
+        assert.equal(deltaItemIds.size, 1);
+        const completions = events.filter((event) => event.type === "item.completed");
+        assert.equal(completions.length, 1);
+        assert.equal(completions[0]?.payload.agentId, undefined);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  });
 });
