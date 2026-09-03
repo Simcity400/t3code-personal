@@ -170,7 +170,10 @@ machine.
   derivations the main chat uses; the parent's plan chip and context meter skip
   agent-attributed rows instead of reading a child's value as their own. The Agents
   panel shows the same `ContextWindowMeter` per subagent (transcript header, plus a
-  compact `NN% ctx` on each roster row). Messages now flow both ways: a report a
+  compact `NN% ctx` on each roster row), and the iPhone app shows the same reading as a
+  chip on each agent card and in the agent transcript header. (Mobile still has no
+  meter for the MAIN thread — it never had one — so that surface shows context for
+  subagents only.) Messages now flow both ways: a report a
   subagent sends back renders in the receiving conversation as an ordinary assistant
   message with a "From <agent>" header that opens that agent's transcript, on web and
   in the mobile feed, and it recurses for sub-subagents. Four leaks were fixed

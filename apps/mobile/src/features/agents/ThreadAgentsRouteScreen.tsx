@@ -5,6 +5,7 @@ import {
   isActiveSubagentStatus,
   subagentPanelSection,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import { deriveContextWindowSnapshotsByAgent } from "@t3tools/client-runtime/state/contextWindow";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { EnvironmentId } from "@t3tools/contracts";
 import type { StaticScreenProps } from "@react-navigation/native";
@@ -16,6 +17,7 @@ import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
+import { ContextWindowChip } from "./ContextWindowChip";
 import { buildThreadFeed } from "../../lib/threadActivity";
 import { useSelectedThreadDetail } from "../../state/use-thread-detail";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
@@ -72,6 +74,15 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
     [allAgents],
   );
   const selectedAgentTitle = selectedAgent ? formatSubagentTitle(selectedAgent.title) : null;
+  // One pass over the thread's activities gives every conversation's meter;
+  // each card and the open transcript then read their own by id.
+  const contextWindowByAgentId = useMemo(
+    () => (thread ? deriveContextWindowSnapshotsByAgent(thread.activities) : new Map()),
+    [thread],
+  );
+  const selectedAgentContextWindow = selectedAgent
+    ? (contextWindowByAgentId.get(selectedAgent.id) ?? null)
+    : null;
   const openAgent = useCallback((agentId: string) => setSelectedAgentId(agentId), []);
   const transcript = useMemo(
     () => (thread && selectedAgent ? buildThreadFeed(thread, { agentId: selectedAgent.id }) : []),
@@ -151,6 +162,9 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
             >
               {selectedAgentTitle}
             </Text>
+            {selectedAgentContextWindow ? (
+              <ContextWindowChip usage={selectedAgentContextWindow} />
+            ) : null}
             <AgentStatus agent={selectedAgent} clock={statusClock} />
           </View>
         </View>
@@ -202,7 +216,13 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
                   <Text className="text-xs text-foreground-muted">{activeAgents.length}</Text>
                 </View>
                 {activeAgents.map((agent) => (
-                  <AgentCard key={agent.id} agent={agent} clock={statusClock} onOpen={openAgent} />
+                  <AgentCard
+                    key={agent.id}
+                    agent={agent}
+                    clock={statusClock}
+                    contextWindow={contextWindowByAgentId.get(agent.id) ?? null}
+                    onOpen={openAgent}
+                  />
                 ))}
               </View>
             ) : null}
@@ -233,6 +253,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
                         key={agent.id}
                         agent={agent}
                         clock={statusClock}
+                        contextWindow={contextWindowByAgentId.get(agent.id) ?? null}
                         onOpen={openAgent}
                       />
                     ))}

@@ -175,6 +175,10 @@
       "types": "./src/state/threads.ts",
       "default": "./src/state/threads.ts"
     },
+    "./state/contextWindow": {
+      "types": "./src/state/contextWindow.ts",
+      "default": "./src/state/contextWindow.ts"
+    },
     "./state/subagentRuntime": {
       "types": "./src/state/subagentRuntime.ts",
       "default": "./src/state/subagentRuntime.ts"
