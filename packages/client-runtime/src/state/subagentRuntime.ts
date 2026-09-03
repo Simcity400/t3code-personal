@@ -1090,8 +1090,14 @@ export function selectSubagentTranscriptActivities(
       return [];
     }
     const payload = activity.payload as Record<string, unknown>;
+    // `agentId` is how Claude stamps the owning conversation; `parentAgentId`
+    // is how providers that model children as their own threads (Codex,
+    // OpenCode) name it on the child's task rows. Matching only the former hid
+    // a nested agent's launch row from the subagent that actually spawned it.
+    const ownedByAgent =
+      asString(payload.agentId) === agentId || asString(payload.parentAgentId) === agentId;
     if (
-      asString(payload.agentId) !== agentId ||
+      !ownedByAgent ||
       payload.itemType === "assistant_message" ||
       payload.itemType === "user_message"
     ) {
@@ -1663,8 +1669,25 @@ export interface SubagentReplyEntry {
   readonly createdAt: string;
 }
 
+/**
+ * How much of a reply is compared when deciding whether two rows are the same
+ * report. A terminal task summary is truncated at ingestion (180 chars) while a
+ * collaboration tool result keeps far more, so an exact-text key let one report
+ * render twice: once in full and once clipped.
+ */
+const REPLY_DEDUPE_PREFIX_CHARS = 120;
+
+/** Drops a truncation marker so a clipped copy keys like its full original. */
+function replyDedupeText(text: string): string {
+  return text
+    .trim()
+    .replace(/(?:…|\.\.\.)$/u, "")
+    .trimEnd()
+    .slice(0, REPLY_DEDUPE_PREFIX_CHARS);
+}
+
 function normalizedReplyKey(agentId: string, text: string): string {
-  return `${agentId}\u0000${text.trim()}`;
+  return `${agentId} ${replyDedupeText(text)}`;
 }
 
 /**
@@ -1701,6 +1724,10 @@ export function deriveSubagentReplies(
   const agentIdByToolUseId = new Map<string, string>();
   const agentIdByAlias = new Map<string, string>();
   const titleByAgentId = new Map<string, string>();
+  // Providers that model children as their own threads (Codex, OpenCode) name
+  // the owning conversation as `parentAgentId` instead of stamping `agentId`.
+  const parentAgentIdByAgentId = new Map<string, string>();
+  const knownAgentIds = new Set<string>();
   for (const activity of activities) {
     if (!activity.kind.startsWith("task.")) continue;
     const payload = asRecord(activity.payload);
@@ -1711,10 +1738,47 @@ export function deriveSubagentReplies(
     const title = asString(payload.title) ?? asString(payload.description);
     if (title && !isOpaqueSubagentTitle(title, taskId)) titleByAgentId.set(taskId, title);
     agentIdByAlias.set(taskId.toLowerCase(), taskId);
+    knownAgentIds.add(taskId);
     const pathAlias = agentPathLeaf(payload.agentPath);
     if (pathAlias) agentIdByAlias.set(pathAlias.toLowerCase(), taskId);
     if (title) agentIdByAlias.set(title.toLowerCase(), taskId);
+    const parentAgentId = asString(payload.parentAgentId);
+    if (parentAgentId) parentAgentIdByAgentId.set(taskId, parentAgentId);
   }
+
+  // The name the LAUNCH call gave the agent. Claude's Agent tool takes `name`
+  // and `description` as separate fields and task_started reports only the
+  // description, so a follow-up addressed by `name` cannot be resolved without
+  // reading it off the launching tool — the same alias prompt recovery learns.
+  for (const activity of activities) {
+    if (
+      activity.kind !== "tool.started" &&
+      activity.kind !== "tool.updated" &&
+      activity.kind !== "tool.completed"
+    ) {
+      continue;
+    }
+    const payload = asRecord(activity.payload);
+    if (!payload || payload.itemType !== "collab_agent_tool_call") continue;
+    const itemId = asString(payload.itemId) ?? asString(payload.toolCallId);
+    const launchedAgentId = itemId ? agentIdByToolUseId.get(itemId) : undefined;
+    if (!launchedAgentId) continue;
+    const launchName = asString(asRecord(asRecord(payload.data)?.input)?.name);
+    if (launchName) agentIdByAlias.set(launchName.toLowerCase(), launchedAgentId);
+  }
+
+  /**
+   * The conversation a reply from `agentId` is addressed to: the subagent that
+   * owns it, or null for the root thread. `agentId` on a task row is the owner
+   * stamped by Claude; `parentAgentId` is how Codex and OpenCode name it, and
+   * it only counts when it names an agent this thread actually knows (for a
+   * top-level child it is the root provider thread, which is not an agent).
+   */
+  const ownerOf = (agentId: string, stampedOwner: string | undefined): string | null => {
+    if (stampedOwner) return stampedOwner;
+    const parent = parentAgentIdByAgentId.get(agentId);
+    return parent !== undefined && knownAgentIds.has(parent) ? parent : null;
+  };
 
   const replies: SubagentReplyEntry[] = [];
   const seenReplyKeys = new Set<string>();
@@ -1738,7 +1802,7 @@ export function deriveSubagentReplies(
     // still renders as the ordinary tool card it already was.
     if (!agentId) continue;
     // A subagent reading its own sub-subagent's report owns that exchange.
-    const ownerAgentId = asString(payload.agentId) ?? null;
+    const ownerAgentId = ownerOf(agentId, asString(payload.agentId));
     if (ownerAgentId === agentId) continue;
     seenReplyKeys.add(normalizedReplyKey(agentId, text));
     seenActivityIds.add(activity.id);
@@ -1768,7 +1832,7 @@ export function deriveSubagentReplies(
     seenActivityIds.add(activity.id);
     // `agentId` on a task row names the conversation that OWNS the task, which
     // is exactly the conversation its report is addressed to.
-    const ownerAgentId = asString(payload.agentId) ?? null;
+    const ownerAgentId = ownerOf(agentId, asString(payload.agentId));
     replies.push({
       id: `subagent-reply:${activity.id}`,
       activityId: activity.id,
@@ -1815,7 +1879,7 @@ export function deriveSubagentReplies(
     boundaries.push({
       createdAt: activity.createdAt,
       turnId: activity.turnId,
-      owner: asString(payload.agentId) ?? null,
+      owner: ownerOf(taskId, asString(payload.agentId)),
     });
     boundariesByAgent.set(taskId, boundaries);
   }

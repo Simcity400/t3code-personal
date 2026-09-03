@@ -69,15 +69,34 @@ export function deriveLatestContextWindowSnapshot(
     if (!activity || activity.kind !== "context-window.updated") {
       continue;
     }
-
-    const payload = asRecord(activity.payload);
-    const rowAgentId = typeof payload?.agentId === "string" ? payload.agentId : null;
+    const rowAgentId = contextWindowActivityOwner(activity);
     if (rowAgentId !== agentId) {
       continue;
     }
+    const snapshot = contextWindowSnapshotFromActivity(activity);
+    if (snapshot) {
+      return snapshot;
+    }
+  }
+
+  return null;
+}
+
+/** Owner of a context-window row: a subagent, or the parent thread (null). */
+function contextWindowActivityOwner(activity: OrchestrationThreadActivity): string | null {
+  const agentId = asRecord(activity.payload)?.agentId;
+  return typeof agentId === "string" ? agentId : null;
+}
+
+/** Reads one row into a snapshot, or null when it carries no usable usage. */
+function contextWindowSnapshotFromActivity(
+  activity: OrchestrationThreadActivity,
+): ContextWindowSnapshot | null {
+  {
+    const payload = asRecord(activity.payload);
     const usedTokens = asFiniteNumber(payload?.usedTokens);
     if (usedTokens === null || usedTokens < 0) {
-      continue;
+      return null;
     }
 
     const maxTokens = asFiniteNumber(payload?.maxTokens);
@@ -110,8 +129,36 @@ export function deriveLatestContextWindowSnapshot(
       updatedAt: activity.createdAt,
     };
   }
+}
 
-  return null;
+/**
+ * Every conversation's latest context-window snapshot in ONE pass, keyed by
+ * agent id (the parent thread under `null`).
+ *
+ * Calling `deriveLatestContextWindowSnapshot` per agent re-walks the whole
+ * activity list each time, so a 100-agent roster did roughly
+ * `agents x activities` work on every streaming update.
+ */
+export function deriveContextWindowSnapshotsByAgent(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyMap<string | null, ContextWindowSnapshot> {
+  const byOwner = new Map<string | null, ContextWindowSnapshot>();
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index];
+    if (!activity || activity.kind !== "context-window.updated") {
+      continue;
+    }
+    const payload = asRecord(activity.payload);
+    const owner = typeof payload?.agentId === "string" ? payload.agentId : null;
+    if (byOwner.has(owner)) {
+      continue;
+    }
+    const snapshot = contextWindowSnapshotFromActivity(activity);
+    if (snapshot) {
+      byOwner.set(owner, snapshot);
+    }
+  }
+  return byOwner;
 }
 
 export function formatContextWindowTokens(value: number | null): string {
