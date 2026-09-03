@@ -413,6 +413,26 @@ type EventBaseInput = {
   readonly raw?: unknown;
 };
 
+/**
+ * Subagent parity — explicit decision for this adapter (2026-09-03).
+ *
+ * NOT SUPPORTED, and not supportable from this protocol. OpenCode's event
+ * stream is per session: parts belong to a message, messages belong to the one
+ * session being watched, and no event carries a child-agent, sub-session, or
+ * parent-tool id. An OpenCode agent that delegates does so inside that session,
+ * so there is nothing to attribute a transcript, a context meter, or a
+ * parent/child message to.
+ *
+ * The `collab_agent_tool_call` classification below is a DISPLAY label derived
+ * from the tool's name ("task", "agent", "subtask"). It gives the call an
+ * agent-shaped icon; it does not mean the client learns anything about the
+ * agent behind it.
+ *
+ * If the protocol ever reports sub-session parentage, the shared client-side
+ * selectors already handle the rest: this adapter only has to stamp `agentId`
+ * on the events it emits and, for the reply direction, put the delegated
+ * call's output text where the activity projection reads it.
+ */
 function toToolLifecycleItemType(toolName: string): ToolLifecycleItemType {
   const normalized = toolName.toLowerCase();
   if (normalized.includes("bash") || normalized.includes("command")) {
