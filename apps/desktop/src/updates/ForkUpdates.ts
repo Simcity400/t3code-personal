@@ -38,12 +38,14 @@ const FORK_CHECK_POLL_INTERVAL = "4 minutes";
 const FORK_CHECK_TIMEOUT = Duration.minutes(3);
 const FORK_APPLY_STEP_TIMEOUT = Duration.minutes(20);
 
-// fork-sync.yml pushes this marker branch when the official changes conflict
-// with fork customizations, and deletes it once a resolved main is pushed.
+// fork-sync.yml pushes this marker branch whenever a sync stops and needs a
+// human — an upstream change that conflicts with a fork customization, or a
+// push GitHub refuses — and deletes it once a resolved main is pushed. The
+// branch carries no reason, so the message below must not claim one.
 const SYNC_CONFLICT_REF = "origin/needs-merge-help";
 
 const CONFLICT_MESSAGE =
-  "An official change overlaps one of your customizations, so GitHub needs a hand. " +
+  "Syncing the official changes stopped and needs a hand. " +
   'Open Claude Code in the project folder on any computer and say "finish the upstream merge".';
 
 interface ForkCheckOutcome {

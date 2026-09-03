@@ -8,11 +8,15 @@ name: Fork Sync
 #
 # Conflicts confined to the four version-pinned package.json files are
 # resolved automatically (upstream's side wins; the pin step re-stamps them —
-# they conflict on every sync by construction). Only when other files
-# conflict does the job push a marker branch `needs-merge-help`; the in-app
-# fork updater then shows a pill telling Alex to open Claude Code (on any
-# machine) and say "finish the upstream merge". After the resolved merge is
-# pushed to main, the next sync run deletes the marker automatically.
+# they conflict on every sync by construction). When any other file conflicts
+# — and equally when the push itself is refused, for a workflow change, a
+# non-fast-forward race, branch protection or a transport failure — the job
+# pushes a marker branch `needs-merge-help`; the in-app fork updater then shows
+# a pill telling Alex to open Claude Code (on any machine) and say "finish the
+# upstream merge". The marker records only that the sync stopped and needs a
+# human, never why: nothing downstream can tell those causes apart, so the run
+# log is the place to look. After a resolved main is pushed, the next sync run
+# deletes the marker automatically.
 #
 # Workflow allowlist. This fork keeps exactly three workflows of its own —
 # fork-sync.yml, fork-release.yml and fork-mobile-preview.yml. Every other
@@ -109,16 +113,26 @@ jobs:
 
           # The fork's own workflows. Everything else under .github/workflows is
           # upstream-only and must not exist on this fork (see the header).
-          fork_workflows="$(printf '%s\n' \
-            .github/workflows/fork-sync.yml \
-            .github/workflows/fork-release.yml \
-            .github/workflows/fork-mobile-preview.yml)"
+          # `case` rather than `grep -qxF -- "$path"`: a path is data, and grep
+          # would read one containing a newline as several alternative patterns.
+          is_fork_workflow() {
+            case "$1" in
+              .github/workflows/fork-sync.yml) return 0 ;;
+              .github/workflows/fork-release.yml) return 0 ;;
+              .github/workflows/fork-mobile-preview.yml) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
           # The four manifests whose version line the fork pins.
-          pin_files="$(printf '%s\n' \
-            apps/desktop/package.json \
-            apps/server/package.json \
-            apps/web/package.json \
-            packages/contracts/package.json)"
+          is_pin_file() {
+            case "$1" in
+              apps/desktop/package.json) return 0 ;;
+              apps/server/package.json) return 0 ;;
+              apps/web/package.json) return 0 ;;
+              packages/contracts/package.json) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
 
           # --no-commit so the workflow cleanup below lands INSIDE the merge
           # commit: the commit this job creates then never adds a file
@@ -142,15 +156,20 @@ jobs:
             conflicts_file="$(mktemp)"
             theirs_file="$(mktemp)"
             drop_file="$(mktemp)"
-            git diff --name-only --diff-filter=U > "$conflicts_file"
+            # -z everywhere a path is carried. Without it git C-quotes any path
+            # that is not plain ASCII, or that holds a tab, newline, quote or
+            # backslash, and that quoted display string is not a path `git rm`
+            # or `git checkout` can find — which would abort the job under
+            # set -e without ever raising the marker.
+            git diff -z --name-only --diff-filter=U > "$conflicts_file"
             auto=true
-            while IFS= read -r f; do
+            while IFS= read -r -d '' f; do
               [ -n "$f" ] || continue
-              if printf '%s\n' "$pin_files" | grep -qxF -- "$f"; then
-                printf '%s\n' "$f" >> "$theirs_file"
-              elif printf '%s\n' "$f" | grep -q '^\.github/workflows/' &&
-                ! printf '%s\n' "$fork_workflows" | grep -qxF -- "$f"; then
-                printf '%s\n' "$f" >> "$drop_file"
+              if is_pin_file "$f"; then
+                printf '%s\0' "$f" >> "$theirs_file"
+              elif { case "$f" in .github/workflows/*) true ;; *) false ;; esac; } &&
+                ! is_fork_workflow "$f"; then
+                printf '%s\0' "$f" >> "$drop_file"
               else
                 auto=false
                 break
@@ -160,11 +179,11 @@ jobs:
             if [ -s "$conflicts_file" ] && [ "$auto" = true ]; then
               echo "Only auto-resolvable conflicts; taking upstream's side on the pins and dropping upstream-only workflows."
               step_failed=false
-              while IFS= read -r f; do
+              while IFS= read -r -d '' f; do
                 git checkout --theirs -- "$f" && git add -- "$f" || { step_failed=true; break; }
               done < "$theirs_file"
               if [ "$step_failed" = false ]; then
-                while IFS= read -r f; do
+                while IFS= read -r -d '' f; do
                   git rm -q --cached -f -- "$f" || { step_failed=true; break; }
                   rm -f -- "$f"
                 done < "$drop_file"
@@ -189,14 +208,15 @@ jobs:
 
           # A brand-new upstream workflow does not conflict — it just appears in
           # the merged tree. Drop every non-allowlisted workflow before the merge
-          # is committed, so the commit that gets pushed never adds one. Read
-          # line by line rather than through xargs: git does not quote a path
-          # that merely contains a space, and xargs would split it in two.
+          # is committed, so the commit that gets pushed never adds one. -z and
+          # a read loop rather than xargs: xargs would split a path on its
+          # spaces, and a newline-delimited read would hand us git's C-quoted
+          # display form for any unusual name.
           tracked_workflows="$(mktemp)"
-          git ls-files .github/workflows > "$tracked_workflows"
-          while IFS= read -r f; do
+          git ls-files -z .github/workflows > "$tracked_workflows"
+          while IFS= read -r -d '' f; do
             [ -n "$f" ] || continue
-            if printf '%s\n' "$fork_workflows" | grep -qxF -- "$f"; then
+            if is_fork_workflow "$f"; then
               continue
             fi
             git rm -q --cached -f -- "$f"
@@ -271,8 +291,26 @@ jobs:
           # server-side rejection of a workflow-touching commit somewhere in the
           # range if GitHub judges pushes that way.
           if ! git push origin main; then
-            git push origin HEAD:refs/heads/needs-merge-help --force || true
-            echo "::error::Pushing the synced main was refused. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
+            # The marker has to survive the very rejection it reports. Push our
+            # HEAD first, so the branch points at the work that needs help; but
+            # under the strict per-commit reading that push carries the same
+            # workflow-touching commits and is refused identically, so fall back
+            # to the commit origin/main already holds, whose workflow files
+            # GitHub has accepted by definition. The updater only tests that the
+            # branch exists, so the fallback still raises the pill.
+            marker=false
+            if git push origin HEAD:refs/heads/needs-merge-help --force; then
+              marker=true
+            elif git push origin "$(git rev-parse origin/main)":refs/heads/needs-merge-help --force; then
+              marker=true
+            fi
+            if [ "$marker" != true ]; then
+              echo "::error::Could not raise the needs-merge-help marker either, so no in-app pill will appear; this red run is the only notice."
+            fi
+            # Deliberately not worded as a conflict: a refused push is also how
+            # a non-fast-forward race, branch protection or a transport failure
+            # arrives here, and the marker cannot tell them apart.
+            echo "::error::The sync could not push main. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
             exit 1
           fi
           git push origin :refs/heads/needs-merge-help 2>/dev/null || true

@@ -17,9 +17,11 @@ personal customizations, backed up at
   update. Official changes arrive on their own: `fork-sync.yml` runs every two hours,
   merges `upstream/main` when npm's `t3` nightly moves, re-pins the four package
   versions, pushes `main`, and then calls both `fork-release.yml` and
-  `fork-mobile-preview.yml` — so no machine ever merges or pins locally. Only when the merge hits a genuine conflict does it stop and
-  push the `needs-merge-help` marker branch, which the in-app pill turns into "open
-  Claude Code and say: finish the upstream merge". Only after a release run finishes
+  `fork-mobile-preview.yml` — so no machine ever merges or pins locally. When it cannot
+  finish on its own — a genuine merge conflict, or a push GitHub refuses — it stops and
+  pushes the `needs-merge-help` marker branch, which the in-app pill turns into "open
+  Claude Code and say: finish the upstream merge". The pill only means the sync needs a
+  hand; the run log says which of those it was. Only after a release run finishes
   does the installed app have a newer version to offer: the updater compares against
   the newest release on the private feed, so while `main` is ahead of the last
   published release no update pill appears — correctly, because no newer release
@@ -121,10 +123,12 @@ machine.
   encryption key differs and every saved connection shows up as missing.
   **Which profile depends on how you launch it**: the pin keys off `VITE_DEV_SERVER_URL`,
   which `scripts/dev-runner.ts` sets, so ordinary `pnpm dev:desktop` development gets its
-  own `%APPDATA%\t3code-dev` (or the legacy `T3 Code (Dev)`) and does **not** share logins
-  with the installed app. Only a non-development unpackaged launch — no
-  `VITE_DEV_SERVER_URL` — lands on `%APPDATA%\t3code` and shares the installed app's key
-  and the device connections in `~\.t3\userdata`. **Caveat** for that case only: two apps
+  own `%APPDATA%\t3code-dev` (or the legacy `T3 Code (Dev)`, when that directory already
+  exists) and does **not** share logins with the installed app. Only a non-development
+  unpackaged launch — no `VITE_DEV_SERVER_URL` — lands on the installed app's profile:
+  `%APPDATA%\T3 Code (Alpha)` when that legacy directory exists, otherwise
+  `%APPDATA%\t3code`. Either way it shares the installed app's encryption key and the
+  device connections in `~\.t3\userdata`. **Caveat** for that case only: two apps
   sharing one profile must not run at the same time.
 - **One user-facing Windows app**: the installed personal Nightly build is the normal
   launcher. A publish run after each push to `origin/main` builds a private Windows
@@ -208,7 +212,8 @@ machine.
   then rebuild. Upstream version bumps conflict with this pin on every sync by
   construction; since 2026-08-08 `fork-sync.yml` resolves that class automatically
   (upstream's side wins, then the pin re-stamps), so the `needs-merge-help` pill
-  only appears for genuine code conflicts.
+  never appears for that class. It still covers everything else that stops the sync:
+  a genuine code conflict, or a push GitHub refuses.
 
 ## Notes on upstream files kept as-is
 
