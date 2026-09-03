@@ -264,11 +264,16 @@ function assistantSegmentMessageId(baseKey: string, segmentIndex: number): Messa
 }
 function buildContextWindowActivityPayload(
   event: ProviderRuntimeEvent,
-): ThreadTokenUsageSnapshot | undefined {
+): (ThreadTokenUsageSnapshot & { readonly agentId?: string }) | undefined {
   if (event.type !== "thread.token-usage.updated" || event.payload.usage.usedTokens <= 0) {
     return undefined;
   }
-  return event.payload.usage;
+  // The owning agent rides the persisted row so a reload can rebuild each
+  // subagent's meter, and so the parent's meter can skip child rows instead
+  // of reading whichever snapshot happened to arrive last.
+  return event.payload.agentId !== undefined
+    ? { ...event.payload.usage, agentId: event.payload.agentId }
+    : event.payload.usage;
 }
 
 function normalizeRuntimeTurnState(
@@ -555,6 +560,9 @@ export function runtimeEventToActivities(
             ...(event.payload.explanation !== undefined
               ? { explanation: event.payload.explanation }
               : {}),
+            // Owning subagent, when a child wrote this plan. Clients scope
+            // the chip to that agent's transcript instead of the parent turn.
+            ...(event.payload.agentId !== undefined ? { agentId: event.payload.agentId } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -2092,7 +2100,12 @@ const make = Effect.gen(function* () {
         threadPlanProgress.clearThreadPlanProgress(thread.id);
       } else if (!conflictsWithActiveTurn) {
         if (event.type === "turn.plan.updated") {
-          threadPlanProgress.recordPlanProgress(thread.id, event.payload.plan);
+          // A subagent's own todo list is not the thread's working indicator:
+          // recording it here made the parent's status line narrate a child's
+          // steps (and a finished child's last step lingered on the parent).
+          if (event.payload.agentId === undefined) {
+            threadPlanProgress.recordPlanProgress(thread.id, event.payload.plan);
+          }
         } else if (event.type === "turn.completed" || event.type === "turn.aborted") {
           threadPlanProgress.clearThreadPlanProgress(thread.id);
         }
