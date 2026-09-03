@@ -2905,7 +2905,11 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const timelineEntries = useMemo(
     () =>
-      deriveTimelineEntries(timelineMessagesWithReplies, activeThread?.proposedPlans ?? [], workLogEntries),
+      deriveTimelineEntries(
+        timelineMessagesWithReplies,
+        activeThread?.proposedPlans ?? [],
+        workLogEntries,
+      ),
     [activeThread?.proposedPlans, timelineMessagesWithReplies, workLogEntries],
   );
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);

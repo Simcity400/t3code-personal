@@ -77,42 +77,41 @@ function contextWindowActivityOwner(activity: OrchestrationThreadActivity): stri
 function contextWindowSnapshotFromActivity(
   activity: OrchestrationThreadActivity,
 ): ContextWindowSnapshot | null {
-  {
-    const payload = asRecord(activity.payload);
-    const usedTokens = asFiniteNumber(payload?.usedTokens);
-    if (usedTokens === null || usedTokens < 0) {
-      return null;
-    }
-
-    const maxTokens = asFiniteNumber(payload?.maxTokens);
-    const usedPercentage =
-      maxTokens !== null && maxTokens > 0 ? Math.min(100, (usedTokens / maxTokens) * 100) : null;
-    const remainingTokens =
-      maxTokens !== null ? Math.max(0, Math.round(maxTokens - usedTokens)) : null;
-    const remainingPercentage = usedPercentage !== null ? Math.max(0, 100 - usedPercentage) : null;
-
-    return {
-      usedTokens,
-      totalProcessedTokens: asFiniteNumber(payload?.totalProcessedTokens),
-      maxTokens,
-      remainingTokens,
-      usedPercentage,
-      remainingPercentage,
-      inputTokens: asFiniteNumber(payload?.inputTokens),
-      cachedInputTokens: asFiniteNumber(payload?.cachedInputTokens),
-      outputTokens: asFiniteNumber(payload?.outputTokens),
-      reasoningOutputTokens: asFiniteNumber(payload?.reasoningOutputTokens),
-      lastUsedTokens: asFiniteNumber(payload?.lastUsedTokens),
-      lastInputTokens: asFiniteNumber(payload?.lastInputTokens),
-      lastCachedInputTokens: asFiniteNumber(payload?.lastCachedInputTokens),
-      lastOutputTokens: asFiniteNumber(payload?.lastOutputTokens),
-      lastReasoningOutputTokens: asFiniteNumber(payload?.lastReasoningOutputTokens),
-      toolUses: asFiniteNumber(payload?.toolUses),
-      durationMs: asFiniteNumber(payload?.durationMs),
-      compactsAutomatically: asBoolean(payload?.compactsAutomatically) ?? false,
-      updatedAt: activity.createdAt,
-    };
+  const payload = asRecord(activity.payload);
+  const usedTokens = asFiniteNumber(payload?.usedTokens);
+  if (usedTokens === null || usedTokens < 0) {
+    return null;
   }
+
+  const maxTokens = asFiniteNumber(payload?.maxTokens);
+  const usedPercentage =
+    maxTokens !== null && maxTokens > 0 ? Math.min(100, (usedTokens / maxTokens) * 100) : null;
+  const remainingTokens =
+    maxTokens !== null ? Math.max(0, Math.round(maxTokens - usedTokens)) : null;
+  const remainingPercentage = usedPercentage !== null ? Math.max(0, 100 - usedPercentage) : null;
+
+  return {
+    usedTokens,
+    totalProcessedTokens: asFiniteNumber(payload?.totalProcessedTokens),
+    maxTokens,
+    remainingTokens,
+    usedPercentage,
+    remainingPercentage,
+    inputTokens: asFiniteNumber(payload?.inputTokens),
+    cachedInputTokens: asFiniteNumber(payload?.cachedInputTokens),
+    outputTokens: asFiniteNumber(payload?.outputTokens),
+    reasoningOutputTokens: asFiniteNumber(payload?.reasoningOutputTokens),
+    lastUsedTokens: asFiniteNumber(payload?.lastUsedTokens),
+    lastInputTokens: asFiniteNumber(payload?.lastInputTokens),
+    lastCachedInputTokens: asFiniteNumber(payload?.lastCachedInputTokens),
+    lastOutputTokens: asFiniteNumber(payload?.lastOutputTokens),
+    lastReasoningOutputTokens: asFiniteNumber(payload?.lastReasoningOutputTokens),
+    toolUses: asFiniteNumber(payload?.toolUses),
+    durationMs: asFiniteNumber(payload?.durationMs),
+    compactsAutomatically: asBoolean(payload?.compactsAutomatically) ?? false,
+    autoCompactThreshold: asFiniteNumber(payload?.autoCompactThreshold),
+    updatedAt: activity.createdAt,
+  };
 }
 
 /**
