@@ -2494,63 +2494,7 @@ describe("session activity performance", () => {
   });
 });
 
-describe("subagent plans and replies in the parent timeline", () => {
-  it("keeps a subagent's todo list out of the parent's plan chip", () => {
-    // A subagent's TodoWrite reports under the SAME turn as its parent, so an
-    // unscoped fold let a child rewrite the parent's chip.
-    const activities: OrchestrationThreadActivity[] = [
-      makeActivity({
-        id: "plan-parent",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        kind: "turn.plan.updated",
-        summary: "Plan updated",
-        tone: "info",
-        turnId: "turn-1",
-        payload: { plan: [{ step: "Parent step", status: "inProgress" }] },
-      }),
-      makeActivity({
-        id: "plan-agent",
-        createdAt: "2026-02-23T00:00:05.000Z",
-        kind: "turn.plan.updated",
-        summary: "Plan updated",
-        tone: "info",
-        turnId: "turn-1",
-        payload: {
-          agentId: "agent-1",
-          plan: [{ step: "Child step", status: "inProgress" }],
-        },
-      }),
-    ];
-
-    const turnPlans = deriveTurnPlans(activities);
-    expect(turnPlans).toHaveLength(1);
-    expect(turnPlans[0]?.plan.steps.map((step) => step.step)).toEqual(["Parent step"]);
-  });
-
-  it("renders the agent's own plan when the transcript scopes rows to it", () => {
-    const scoped = selectSubagentTranscriptActivities(
-      [
-        makeActivity({
-          id: "plan-agent",
-          createdAt: "2026-02-23T00:00:05.000Z",
-          kind: "turn.plan.updated",
-          summary: "Plan updated",
-          tone: "info",
-          turnId: "turn-1",
-          payload: {
-            agentId: "agent-1",
-            plan: [{ step: "Child step", status: "inProgress" }],
-          },
-        }),
-      ],
-      "agent-1",
-    );
-
-    const turnPlans = deriveTurnPlans(scoped);
-    expect(turnPlans).toHaveLength(1);
-    expect(turnPlans[0]?.plan.steps.map((step) => step.step)).toEqual(["Child step"]);
-  });
-
+describe("subagent replies in the parent timeline", () => {
   it("turns a recovered reply into a message row the timeline can render", () => {
     const replies = deriveSubagentReplies([
       makeActivity({
@@ -2593,7 +2537,7 @@ describe("subagent plans and replies in the parent timeline", () => {
       createdAt: "2026-02-23T00:00:09.000Z",
     });
 
-    const entries = deriveTimelineEntries([replyMessages[0]!.message], [], [], []);
+    const entries = deriveTimelineEntries([replyMessages[0]!.message], [], []);
     expect(entries).toHaveLength(1);
     expect(entries[0]?.kind).toBe("message");
   });

@@ -829,20 +829,6 @@ function AgentTranscript({
     () => deriveLatestContextWindowSnapshot(transcriptActivities),
     [transcriptActivities],
   );
-  // The step the agent is on, derived from its OWN plan exactly as the main
-  // chat derives the thread's — otherwise the working row here is the only
-  // one in the app that cannot say what it is doing.
-  const workingStepLabel = useMemo(() => {
-    const plan = turnPlans.at(-1)?.plan;
-    if (!plan) {
-      return null;
-    }
-    return (
-      plan.steps.find((step) => step.status === "inProgress")?.step ??
-      plan.steps.find((step) => step.status === "pending")?.step ??
-      null
-    );
-  }, [turnPlans]);
   const timelineEntries = useMemo(
     () => deriveTimelineEntries(transcriptMessages, [], workLogEntries),
     [transcriptMessages, workLogEntries],
@@ -919,7 +905,6 @@ function AgentTranscript({
           agentPanelModel={model}
           onOpenAgents={() => onOpenAgent(agent.id)}
           onOpenAgent={onOpenAgent}
-          workingStepLabel={workingStepLabel}
           latestTurn={latestTurn}
           runningTurnId={isWorking ? turnId : null}
           turnDiffSummaryByAssistantMessageId={EMPTY_TURN_DIFFS}

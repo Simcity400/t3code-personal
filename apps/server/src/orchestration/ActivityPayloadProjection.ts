@@ -650,7 +650,7 @@ function contextWindowActivityOwner(activity: OrchestrationThreadActivity): stri
  * would let the newest row evict every other meter's only value.
  */
 function contextWindowRetentionKey(activity: OrchestrationThreadActivity): string {
-  return `${activity.turnId ?? ""} ${contextWindowActivityOwner(activity) ?? ""}`;
+  return `${activity.turnId ?? ""}\u0000${contextWindowActivityOwner(activity) ?? ""}`;
 }
 
 /**
