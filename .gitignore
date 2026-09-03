@@ -41,3 +41,7 @@ node_modules/
 
 # Personal fork: resource-monitor sidecar copied from the installed app (see MY-FORK.md)
 apps/desktop/resources/resource-monitor/
+
+# Personal fork: pnpm content-addressable store (a `v11/` tree) left in the repo
+# root by a local install. Machine-local build state, never part of a commit.
+.pnpm-store/
