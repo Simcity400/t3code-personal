@@ -330,6 +330,13 @@ export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
 
 const ThreadTokenUsageUpdatedPayload = Schema.Struct({
   usage: ThreadTokenUsageSnapshot,
+  /**
+   * Owning subagent when this snapshot measures a child conversation's own
+   * context window rather than the parent thread's. Clients key their context
+   * meters on it, so an agent's usage never moves the parent's meter and two
+   * agents never overwrite each other.
+   */
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type ThreadTokenUsageUpdatedPayload = typeof ThreadTokenUsageUpdatedPayload.Type;
 
@@ -388,6 +395,13 @@ export type RuntimePlanStep = typeof RuntimePlanStep.Type;
 const TurnPlanUpdatedPayload = Schema.Struct({
   explanation: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   plan: Schema.Array(RuntimePlanStep),
+  /**
+   * Owning subagent when a child conversation wrote this plan (its own
+   * TodoWrite). Without the stamp a subagent's todo list overwrites the
+   * parent turn's plan chip; with it the plan renders in that agent's
+   * transcript and stays out of the parent timeline.
+   */
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TurnPlanUpdatedPayload = typeof TurnPlanUpdatedPayload.Type;
 
