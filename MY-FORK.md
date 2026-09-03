@@ -168,10 +168,17 @@ machine.
   permission, so any Actions push that adds or modifies a `.github/workflows/*` file is
   rejected, which silently broke the sync whenever upstream touched a workflow (in the
   fork's whole history every merge that touched `.github/workflows` was pushed by hand;
-  the 37 bot merges never did). `fork-sync.yml` now keeps them deleted by itself: a
-  conflict in a non-allowlisted workflow resolves to "delete it", a newly added one is
-  removed in a follow-up `chore(fork): drop upstream-only workflows` commit, and a guard
-  aborts the run before any push if the branch would still carry a workflow change.
+  the 37 bot merges never did). `fork-sync.yml` now keeps them deleted by itself: it
+  merges with `--no-commit`, resolves a conflict in a non-allowlisted workflow to
+  "delete it", deletes any non-allowlisted workflow a clean merge brought in, and only
+  then commits — so the commit it creates never touches a workflow at all, rather than
+  adding one and deleting it again in a follow-up. A guard then aborts the run before
+  any push if the pushed range's diff still shows **any** workflow path, the fork's own
+  three included. Untested and untestable without attempting a push: whether GitHub
+  judges a push by its net diff or by each commit in it. The guard is the net-diff
+  check, which is necessary either way; if the stricter reading holds, an upstream
+  commit that edits a workflow anywhere in the range is still refused at `git push`,
+  which fails the job loudly and leaves the usual by-hand path.
   Upstream's `infra/relay/scripts/deploy.test.ts` guard over `release.yml` was dropped
   with it. `fork-release.yml`'s old `sync_upstream` job — a second, weaker copy of the
   same merge — was deleted; `fork-sync.yml` is the only place that merges upstream.
