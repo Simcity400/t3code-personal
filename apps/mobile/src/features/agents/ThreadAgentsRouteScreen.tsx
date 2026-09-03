@@ -15,7 +15,7 @@ import { useSharedValue } from "react-native-reanimated";
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
 import { LoadingScreen } from "../../components/LoadingScreen";
-import { useThemeColor } from "../../lib/useThemeColor";
+import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { buildThreadFeed } from "../../lib/threadActivity";
 import { useSelectedThreadDetail } from "../../state/use-thread-detail";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
@@ -35,7 +35,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [idleOpen, setIdleOpen] = useState(true);
-  const chevronColor = useThemeColor("--color-chevron");
+  const chevronColor = useUniwindTheme()["--color-chevron"];
   const transcriptListRef = useRef<LegendListRef>(null);
   const freeze = useSharedValue(false);
   const contentInsetEndAdjustment = useSharedValue(0);

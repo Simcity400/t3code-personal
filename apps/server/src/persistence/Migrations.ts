@@ -1,16 +1,15 @@
 /**
- * MigrationsLive - Migration runner with inline loader
+ * Migration runner with an inline loader.
  *
  * Uses Migrator.make with fromRecord to define migrations inline.
  * All migrations are statically imported - no dynamic file system loading.
  *
- * Migrations run automatically when the MigrationLayer is provided,
- * ensuring the database schema is always up-to-date before the application starts.
+ * `runMigrations` is called by the SQLite persistence layer at startup, so the
+ * schema is always up to date before the application starts.
  */
 
 import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -55,11 +54,19 @@ import Migration0039 from "./Migrations/039_ProjectionProjectsDefaultThreadEnvMo
 import Migration0040 from "./Migrations/040_ProjectionProjectFaviconPath.ts";
 import Migration0041 from "./Migrations/041_ProjectionThreadMessageAgentId.ts";
 import Migration0042 from "./Migrations/042_ProjectionThreadSideChats.ts";
-// Fork note: upstream shipped this as migration 041, but ids 041/042 are already
-// recorded in every fork database (the fork added its own two first). The migrator
-// only runs ids greater than the highest recorded one, so upstream's migration is
-// renumbered to 043 here — otherwise it would silently never run on fork machines.
+// Fork note: ids 041/042 are already recorded in every fork database (the fork added
+// its own two migrations first). The migrator only runs ids greater than the highest
+// recorded one, so every upstream migration from AuthSessionClientConnection onwards is
+// renumbered here (+2) — otherwise it would silently never run on fork machines.
+// Upstream 041 -> 043, 042 -> 044, 043 -> 045, 044 -> 046, 045 -> 047, 046 -> 048,
+// 047 -> 049. The files on disk carry the fork ids, not upstream's.
 import Migration0043 from "./Migrations/043_AuthSessionClientConnection.ts";
+import Migration0044 from "./Migrations/044_ProjectionThreadLinkedPullRequest.ts";
+import Migration0045 from "./Migrations/045_ProjectionThreadsUnsettledAt.ts";
+import Migration0046 from "./Migrations/046_ClearAutomaticProjectModelDefaults.ts";
+import Migration0047 from "./Migrations/047_ProjectionProjectsAutoPull.ts";
+import Migration0048 from "./Migrations/048_RepairAutomaticSettlementTimestamps.ts";
+import Migration0049 from "./Migrations/049_ProjectionProjectIcon.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -115,6 +122,12 @@ export const migrationEntries = [
   [41, "ProjectionThreadMessageAgentId", Migration0041],
   [42, "ProjectionThreadSideChats", Migration0042],
   [43, "AuthSessionClientConnection", Migration0043],
+  [44, "ProjectionThreadLinkedPullRequest", Migration0044],
+  [45, "ProjectionThreadsUnsettledAt", Migration0045],
+  [46, "ClearAutomaticProjectModelDefaults", Migration0046],
+  [47, "ProjectionProjectsAutoPull", Migration0047],
+  [48, "RepairAutomaticSettlementTimestamps", Migration0048],
+  [49, "ProjectionProjectIcon", Migration0049],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -158,22 +171,3 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
   return executedMigrations;
 });
-
-/**
- * Layer that runs migrations when the layer is built.
- *
- * Use this to ensure migrations run before your application starts.
- * Migrations are run automatically - no separate script is needed.
- *
- * @example
- * ```typescript
- * import { MigrationsLive } from "@acme/db/Migrations"
- * import * as SqliteClient from "@acme/db/SqliteClient"
- *
- * // Migrations run automatically when SqliteClient is provided
- * const AppLayer = MigrationsLive.pipe(
- *   Layer.provideMerge(SqliteClient.layer({ filename: "database.sqlite" }))
- * )
- * ```
- */
-export const MigrationsLive = Layer.effectDiscard(runMigrations());
