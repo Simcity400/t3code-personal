@@ -800,6 +800,15 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
   ) {
     return true;
   }
+  // SDK `skip_transcript`: the provider explicitly asks clients to keep this
+  // ambient task out of the inline transcript, noting it "may still appear in
+  // a tasks panel". It now has one — the Agents surface's Tasks section — so
+  // honoring the flag hides nothing the user cannot still find. Scoped to
+  // task rows: only those have a home in that panel, and an unrelated row
+  // that happened to carry the field would otherwise vanish entirely.
+  if (payload.skipTranscript === true && activity.kind.startsWith("task.")) {
+    return true;
+  }
   const isTaskRow =
     activity.kind === "task.started" ||
     activity.kind === "task.progress" ||

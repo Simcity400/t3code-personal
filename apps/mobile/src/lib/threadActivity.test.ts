@@ -2302,6 +2302,43 @@ describe("buildThreadFeed", () => {
   });
 });
 
+describe("quiet timeline: ambient tasks", () => {
+  it("keeps skip_transcript housekeeping out of the chat feed", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-ambient"),
+      projectId: ProjectId.make("project-1"),
+      title: "Ambient tasks",
+      activities: [
+        makeActivity({
+          id: EventId.make("ambient-done"),
+          kind: "task.completed",
+          summary: "Task completed",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          payload: {
+            taskId: "amb-1",
+            taskType: "local_bash",
+            agentKind: "background",
+            skipTranscript: true,
+          },
+        }),
+        makeActivity({
+          id: EventId.make("loud-done"),
+          kind: "task.completed",
+          summary: "Task completed",
+          createdAt: "2026-04-01T00:00:03.000Z",
+          payload: { taskId: "loud-1", taskType: "local_bash", agentKind: "background" },
+        }),
+      ],
+    });
+
+    const ids = buildThreadFeed(thread).flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities.map((row) => row.id) : [],
+    );
+    expect(ids).not.toContain("ambient-done");
+    expect(ids).toContain("loud-done");
+  });
+});
+
 describe("quiet timeline: nested agents", () => {
   it("re-homes nested agent terminal rows and background work out of chat", () => {
     const thread = makeThread({

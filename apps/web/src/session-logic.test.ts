@@ -2348,6 +2348,27 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     expect(entries).toHaveLength(0);
   });
 
+  it("keeps ambient skip_transcript tasks out of the work log", () => {
+    // The SDK marks housekeeping tasks skip_transcript and says they belong
+    // in a tasks panel instead; the Agents surface now has one.
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "task.completed",
+        payload: {
+          taskId: "ambient-1",
+          status: "completed",
+          taskType: "local_bash",
+          skipTranscript: true,
+        },
+      }),
+      makeActivity({
+        kind: "task.completed",
+        payload: { taskId: "loud-1", status: "completed", taskType: "local_bash" },
+      }),
+    ]);
+    expect(entries.map((entry) => entry.taskId)).toEqual(["loud-1"]);
+  });
+
   it("drops task.updated and tool.progress from the work log (fold input only)", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
