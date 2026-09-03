@@ -495,6 +495,13 @@ const RequestOpenedPayload = Schema.Struct({
   appName: Schema.optional(TrimmedNonEmptyStringSchema),
   options: Schema.optional(Schema.Array(ProviderApprovalOption)),
   args: Schema.optional(Schema.Unknown),
+  /**
+   * Owning subagent when a child raised this request. Only the user can answer
+   * it, so the prompt still surfaces on the thread; the stamp is what lets the
+   * request also appear in that agent's transcript instead of only the
+   * parent's work log.
+   */
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
 
@@ -502,6 +509,8 @@ const RequestResolvedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
   decision: Schema.optional(TrimmedNonEmptyStringSchema),
   resolution: Schema.optional(Schema.Unknown),
+  /** Owning subagent, mirroring the request that opened. */
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type RequestResolvedPayload = typeof RequestResolvedPayload.Type;
 
@@ -524,11 +533,15 @@ export type UserInputQuestion = typeof UserInputQuestion.Type;
 
 const UserInputRequestedPayload = Schema.Struct({
   questions: Schema.Array(UserInputQuestion),
+  /** Owning subagent when a child asked the question. */
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
 const UserInputResolvedPayload = Schema.Struct({
   answers: UnknownRecordSchema,
+  /** Owning subagent, mirroring the question that was asked. */
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 

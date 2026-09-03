@@ -376,6 +376,12 @@ interface ClaudeSessionContext {
   readonly liveTaskIds: Set<string>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
+  /**
+   * Context window per model id, learned from result `modelUsage`. Subagents
+   * can run on a different model from their parent, so each meter needs its
+   * own denominator.
+   */
+  readonly contextWindowByModel: Map<string, number>;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
   lastAssistantUuid: string | undefined;
@@ -521,6 +527,41 @@ function isInterruptedResult(result: SDKResultMessage): boolean {
 
 function asRuntimeItemId(value: string): RuntimeItemId {
   return RuntimeItemId.make(value);
+}
+
+/**
+ * Records each model's own context window from a result's per-model usage,
+ * which the SDK keys by model id.
+ *
+ * A subagent can be launched on a different model from its parent, and the SDK
+ * reports no per-agent context window — so without this the child's occupancy
+ * was divided by the PARENT's limit and its meter read the wrong percentage.
+ */
+function rememberClaudeContextWindows(
+  context: ClaudeSessionContext,
+  modelUsage: Record<string, ModelUsage> | undefined,
+): void {
+  if (!modelUsage) return;
+  for (const [model, value] of Object.entries(modelUsage)) {
+    const contextWindow = finitePositiveInteger(value.contextWindow);
+    if (contextWindow !== undefined) {
+      context.contextWindowByModel.set(model, contextWindow);
+    }
+  }
+}
+
+/**
+ * The context window to divide one agent's occupancy by: its own model's when
+ * that model has reported one, else the session's last known window.
+ */
+function agentContextWindow(
+  context: ClaudeSessionContext,
+  agentId: string | undefined,
+): number | undefined {
+  const model = agentId ? context.taskAgents.get(agentId)?.model : undefined;
+  return (
+    (model ? context.contextWindowByModel.get(model) : undefined) ?? context.lastKnownContextWindow
+  );
 }
 
 function maxClaudeContextWindowFromModelUsage(
@@ -1182,6 +1223,23 @@ function releaseSubagentStream(context: ClaudeSessionContext, taskId: string): v
     context.subagentStreams.delete(toolUseId);
     context.pendingSubagentEvents.delete(toolUseId);
   }
+}
+
+/**
+ * The subagent that raised a permission or user-input request.
+ *
+ * The SDK names it on the callback ("if running within the context of a
+ * sub-agent"). It is only trusted when it matches a task this session has
+ * registered — an unknown id would stamp a row with an agent no client can
+ * resolve, hiding it from the parent's work log without it appearing anywhere
+ * else.
+ */
+function requestAgentId(
+  context: ClaudeSessionContext,
+  callbackOptions: { readonly agentID?: string | undefined },
+): string | undefined {
+  const agentID = trimmedString(callbackOptions.agentID);
+  return agentID !== undefined && context.taskAgents.has(agentID) ? agentID : undefined;
 }
 
 /**
@@ -2575,7 +2633,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const stream = subagentStream(context, parentToolUseId);
       const snapshot = normalizeClaudeActiveTokenUsage(
         event.usage,
-        context.lastKnownContextWindow,
+        // The CHILD's own model limit when its model has reported one: a
+        // subagent can be launched on a different model, and dividing its
+        // occupancy by the parent's window gave the wrong percentage.
+        agentContextWindow(context, agentId),
         stream.lastUsage?.totalProcessedTokens,
       );
       yield* emitAgentTokenUsage(context, agentId, snapshot, {
@@ -2811,6 +2872,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     errorMessage?: string,
     result?: SDKResultMessage,
   ) {
+    rememberClaudeContextWindows(context, result?.modelUsage);
     const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
     if (resultContextWindow !== undefined) {
       context.lastKnownContextWindow = resultContextWindow;
@@ -3549,7 +3611,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           owningTaskId,
           normalizeClaudeActiveTokenUsage(
             (message.message as { usage?: unknown }).usage,
-            context.lastKnownContextWindow,
+            agentContextWindow(context, owningTaskId),
             stream?.lastUsage?.totalProcessedTokens,
           ),
           {
@@ -4559,6 +4621,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const pendingTaskModels = new Map<string, string>();
       const subagentStreams = new Map<string, SubagentStreamState>();
       const pendingSubagentEvents = new Map<string, Array<ProviderRuntimeEvent>>();
+      const contextWindowByModel = new Map<string, number>();
       const workflowMemberFingerprints = new Map<string, string>();
       const liveTaskIds = new Set<string>();
 
@@ -4574,9 +4637,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         callbackOptions: {
           readonly signal: AbortSignal;
           readonly toolUseID?: string;
+          /** Set when a subagent asked the question (SDK `agentID`). */
+          readonly agentID?: string;
         },
       ) {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+        const questionAgentId = requestAgentId(context, callbackOptions);
 
         // Parse questions from the SDK's AskUserQuestion input.
         // `id` MUST equal the full question text — Claude SDK >= 2.1.121 looks
@@ -4631,7 +4697,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               }
             : {}),
           requestId: asRuntimeRequestId(requestId),
-          payload: { questions },
+          // A child's question is answered on the thread but belongs to that
+          // child's transcript.
+          payload: { questions, ...(questionAgentId ? { agentId: questionAgentId } : {}) },
           providerRefs: nativeProviderRefs(context, {
             providerItemId: callbackOptions.toolUseID,
           }),
@@ -4679,7 +4747,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               }
             : {}),
           requestId: asRuntimeRequestId(requestId),
-          payload: { answers },
+          payload: { answers, ...(questionAgentId ? { agentId: questionAgentId } : {}) },
           providerRefs: nativeProviderRefs(context, {
             providerItemId: callbackOptions.toolUseID,
           }),
@@ -4840,6 +4908,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         const requestType = classifyRequestType(toolName);
         const detail = summarizeToolRequest(toolName, toolInput);
         const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
+        const approvalAgentId = requestAgentId(context, callbackOptions);
         const pendingApproval: PendingApproval = {
           requestType,
           detail,
@@ -4859,6 +4928,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: {
             requestType,
             detail,
+            // A child's approval still prompts on the thread — only the user
+            // can answer it — but the timeline row belongs to that child.
+            ...(approvalAgentId ? { agentId: approvalAgentId } : {}),
             args: {
               toolName,
               input: toolInput,
@@ -4912,6 +4984,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: {
             requestType,
             decision,
+            ...(approvalAgentId ? { agentId: approvalAgentId } : {}),
           },
           providerRefs: nativeProviderRefs(context, {
             providerItemId: callbackOptions.toolUseID,
@@ -5141,6 +5214,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         liveTaskIds,
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
+        contextWindowByModel,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
         lastAssistantUuid: resumeState?.resumeSessionAt,
