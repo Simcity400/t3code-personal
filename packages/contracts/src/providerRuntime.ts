@@ -642,6 +642,12 @@ const taskAgentLinkageFields = {
   /** Reasoning effort when known (e.g. "high"). Open string: provider vocabularies differ. */
   effort: Schema.optional(TrimmedNonEmptyStringSchema),
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
+  /**
+   * SDK `skip_transcript`: ambient housekeeping the provider asks clients to
+   * hide from the inline transcript while noting it "may still appear in a
+   * tasks panel". Rides the linkage bundle so every row is self-describing.
+   */
+  skipTranscript: Schema.optional(Schema.Boolean),
   /** Exact parent instruction when the provider exposes it for this agent. */
   prompt: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Stable provider item id for deduplicating mirrored prompt events. */
@@ -712,6 +718,12 @@ const TaskUpdatedPayload = Schema.Struct({
   error: Schema.optional(TrimmedNonEmptyStringSchema),
   endedAt: Schema.optional(IsoDateTime),
   isBackgrounded: Schema.optional(Schema.Boolean),
+  /**
+   * Why a `waiting` task is waiting, when the provider distinguishes it
+   * (Codex's activeFlags). Absent means "waiting, reason unknown" — which is
+   * all Claude's task_updated patch can say.
+   */
+  waitReason: Schema.optional(Schema.Literals(["approval", "user-input"])),
   ...taskAgentLinkageFields,
 });
 export type TaskUpdatedPayload = typeof TaskUpdatedPayload.Type;

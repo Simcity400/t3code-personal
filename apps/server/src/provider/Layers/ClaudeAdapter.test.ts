@@ -1951,6 +1951,118 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("carries skip_transcript onto every task row for the tasks panel", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const taskEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type.startsWith("task.")),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "watch the build",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-ambient",
+        description: "pnpm build --watch",
+        task_type: "local_bash",
+        skip_transcript: true,
+        uuid: "task-ambient-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-ambient",
+        status: "completed",
+        output_file: "/tmp/task-ambient.jsonl",
+        summary: "watcher exited",
+        uuid: "task-ambient-done-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      const taskEvents = Array.from(yield* Fiber.join(taskEventsFiber));
+      const started = taskEvents.find((event) => event.type === "task.started");
+      assert.equal(started?.type, "task.started");
+      if (started?.type === "task.started") {
+        assert.equal(started.payload.skipTranscript, true);
+        assert.equal(started.payload.taskType, "local_bash");
+      }
+      // The linkage bundle repeats it, so a terminal row is self-describing
+      // even after the start row ages out of activity retention.
+      const completed = taskEvents.find((event) => event.type === "task.completed");
+      assert.equal(completed?.type, "task.completed");
+      if (completed?.type === "task.completed") {
+        assert.equal(completed.payload.skipTranscript, true);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("takes skip_transcript from a notification with no remembered start", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const taskEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.completed"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "housekeeping",
+        attachments: [],
+      });
+
+      // No task_started: a reconnect can drop the remembered linkage, and the
+      // terminal row then carries the only copy of the flag. Relying on the
+      // remembered start alone let the ambient row leak into the transcript.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-orphan",
+        status: "completed",
+        output_file: "/tmp/task-orphan.jsonl",
+        summary: "compacted",
+        skip_transcript: true,
+        uuid: "task-orphan-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      const events = Array.from(yield* Fiber.join(taskEventsFiber));
+      const completed = events[0];
+      assert.equal(completed?.type, "task.completed");
+      if (completed?.type === "task.completed") {
+        assert.equal(completed.payload.skipTranscript, true);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("interruptTurn settles live tasks and closes the provider session", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
