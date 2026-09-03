@@ -288,6 +288,31 @@ machine.
   while unfocused on an existing thread; focused and new-thread composers use upstream's
   taller box. The mobile one-line composer (`composerEditorHeight.ts`) is unaffected and
   still ships.
+- **Background tasks & "waiting on" in the Agents panel** (2026-09-03): the Agents
+  right panel gained a **Waiting on** strip and a **Tasks** section beside the subagent
+  roster, so a thread's background work is visible instead of buried. Tasks covers what
+  the subagent roster deliberately drops — background shells (`run_in_background`),
+  Monitor watch loops, plan-mode bookkeeping, and a subagent's own internal shells —
+  each with its command, live-ticking elapsed time, latest progress line, and result.
+  Live work and failures stay on screen; successes collapse behind a **Finished**
+  disclosure. Waiting on prints one dependency line per blocked agent
+  (`Main ← Reviewer + 1 more agent · 42m 13s`), tinted only when the user is the one
+  holding it up (a pending approval or an unanswered question). Everything derives from
+  the same durable thread activities as the roster, so it survives reload, resume, and
+  reconnect. Web, desktop, and mobile all render it from one shared model
+  (`packages/client-runtime/src/state/backgroundTasks.ts`). Two provider-side fixes came
+  with it: the Claude SDK's `skip_transcript` flag now rides every task row (including a
+  terminal notification that arrives with no remembered start) so ambient housekeeping
+  leaves the chat transcript and lives in the panel instead, and Codex's
+  `waitingOnApproval` / `waitingOnUserInput` flags are no longer flattened into a bare
+  "waiting", so a blocked child agent says what it is blocked on. A wait is only ever
+  claimed on evidence — an open approval or question, a provider-named wait flag, or
+  non-detached work while the turn is actually running — because Claude's backgrounding
+  means running work often blocks nobody. Coverage is per provider: Claude full, Codex
+  agent-level only (its protocol exposes child agents but no shells, monitors or
+  workflows), Grok and OpenCode wait-states only — ACP has no task concept at all, and
+  OpenCode's tool parts are foreground calls the work log already shows, with its
+  `subtask` part carrying identity but no status or timestamps.
 - **Nightly version pin**: `version` in `apps/server`, `apps/desktop`, `apps/web`, and
   `packages/contracts` package.json is pinned to the published npm nightly so the app
   identifies as Nightly and device connections install a matching published
