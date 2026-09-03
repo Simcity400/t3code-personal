@@ -325,14 +325,60 @@ machine.
   lifecycle; Codex is agent-level only (its protocol exposes child agents but no shells,
   monitors or workflows); Grok and OpenCode get wait states only — ACP has no task
   concept at all, and OpenCode's tool parts are foreground calls the work log already
-  shows, with its `subtask` part carrying identity but no status or timestamps. Known
-  gaps: the SDK's richer `BackgroundTaskSummary` fields (MCP server/tool) and
-  scheduled-cron summaries reach hooks and a control request but not the stream, so they
-  are not shown; Claude's thread-level `compacting` wait is flattened to a running
-  session at ingestion, so the panel cannot name it; and if a resumed session loses a
-  task's identity before its roster snapshot arrives, that one task can still show up in
-  both the roster and Tasks — closing that needs a change inside the subagent fold,
-  which this work deliberately leaves alone.
+  shows, with its `subtask` part carrying identity but no status or timestamps. The three
+  gaps this shipped with were closed on 2026-09-04.
+
+  **Task detail.** Rows now carry a shell's command line and a monitor's MCP
+  `server · tool`, sourced from the call that launched the task: a background shell's
+  Bash input, an `mcp__<server>__<tool>` tool name, or an `mcp_task`'s description
+  (which the CLI composes as `server/tool`). The command is the shell row's label — a
+  provider description humanizes the call, and a panel showing five "Running tests"
+  rows names none of them. Closing this exposed a defect underneath: the
+  `background_tasks_changed` reader was written against the SDK's documented
+  `BackgroundTaskSummary` (`{id, type, status, command, …}`), but the CLI sends
+  `{task_id, task_type, description, ambient?}` with REPLACE semantics, so every
+  snapshot was discarded on a missing `summary.id` and the identity rehydration this
+  feature relies on had never once run. It reads both shapes now, merges fill-if-absent
+  into live entries instead of skipping them, raises the CLI's `ambient` flag (a
+  superset of `skip_transcript` covering its own live-update watchers), and emits a
+  status-less `task.updated` per repaired task so recovered identity reaches the client
+  instead of waiting for a lifecycle row that, for a watch loop, may be hours away.
+  Same round: `mcp_task`, `monitor_ws` and `auto_mode_scan` joined
+  `MONITOR_TASK_TYPES` — the CLI's own background set is
+  `{local_bash, monitor_mcp, monitor_ws, mcp_task}`, so all three were falling through
+  the agent default and landing watch loops in the subagent roster.
+
+  **The compacting wait.** `compacting` is a runtime session state end to end. Claude
+  names compaction only on `system/status` (`session_state_changed` is
+  `idle | running | requires_action` and never mentions it, verified in the shipped
+  binary), and the adapter used to flatten that to a bare `waiting`. Ingestion maps the
+  state to session status `running` — a compacting session is busy, not resting, and
+  the composer reads that status — and persists one durable row per thread, rewritten
+  on each of the two transition edges the adapter marks. Edge-marking is the point:
+  `running` is republished on every heartbeat, so an unedged signal would write a row
+  per heartbeat. The panel prints `Main ← Compacting context`, untinted, since no user
+  action shortens it; the boundary closes the wait if a compaction ends without a
+  closing status.
+
+  **The double listing.** Task membership is one decision, taken per task id in
+  `packages/client-runtime/src/state/taskSurface.ts` from the evidence on all of that
+  id's rows, and read by both folds. Judging each row on its own stamp is what let a
+  resumed session double-list: the thin terminal row that follows a lost identity
+  carries only `taskId` + `status`, ingestion's classifier defaults a type-less row to
+  `agent`, and the roster built a phantom agent beside the real background row.
+
+  Still not possible: the SDK's richer `BackgroundTaskSummary` (its `command`,
+  `server`, `tool`, `agent_type`, `name`) and `SessionCronSummary` (scheduled
+  `CronCreate` / `ScheduleWakeup` / `/loop` wakeups) exist **only** in the
+  `Stop` / `SubagentStop` hook payloads. There is no stream message and no control
+  request that lists them — `SDKControlBackgroundTasksRequest` /
+  `query.backgroundTasks()` is a mutation that backgrounds in-flight foreground tasks
+  (Ctrl+B semantics), not a listing. Surfacing scheduled crons would mean registering an
+  SDK `Stop` hook purely to harvest a snapshot at turn end, which puts a callback in the
+  turn-end path and emits `hook_started` / `hook_response` rows into the work log for
+  something the user never configured; not worth it for data that arrives only once the
+  turn is already over. Cron rows are therefore not shown.
+
 - **Nightly version pin**: `version` in `apps/server`, `apps/desktop`, `apps/web`, and
   `packages/contracts` package.json is pinned to the published npm nightly so the app
   identifies as Nightly and device connections install a matching published

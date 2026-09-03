@@ -4,7 +4,9 @@ import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tool
 import { foldSubagentActivities } from "./subagentRuntime.ts";
 import {
   backgroundTaskKind,
+  backgroundTaskSourceLabel,
   deriveAgentWaitReasons,
+  deriveCompactingSince,
   deriveDetachedTaskIds,
   deriveAgentWaitStates,
   deriveBackgroundTasksPanelModel,
@@ -1279,5 +1281,220 @@ describe("named wait outranks a coordinator's running members", () => {
       label: "writer",
       needsUser: false,
     });
+  });
+});
+
+describe("one surface, never both (mixed resumed stream)", () => {
+  /**
+   * The exact sequence that used to double-list a task, in arrival order:
+   *
+   * 1. the shell starts and is fully described (pre-restart);
+   * 2. the server restarts, so its task registry is empty;
+   * 3. the shell finishes — the notification carries only taskId + status,
+   *    and ingestion's classifier defaults a type-less row to "agent";
+   * 4. the roster snapshot that repairs identity arrives AFTER that.
+   *
+   * Step 3 used to be enough for the roster fold to build a phantom agent,
+   * while this fold rightly kept the real shell. Membership is now decided
+   * once for the whole id, so exactly one surface claims it.
+   */
+  const resumedStream = (): ReadonlyArray<OrchestrationThreadActivity> => [
+    activity("task.started", {
+      taskId: "sh-9",
+      taskType: "local_bash",
+      detail: "pnpm test --watch",
+      command: "pnpm test --watch",
+    }),
+    {
+      ...activity("task.completed", { taskId: "sh-9", status: "completed" }),
+      payload: { taskId: "sh-9", status: "completed", agentKind: "agent" },
+    } as OrchestrationThreadActivity,
+    // The adapter's roster repair, arriving late.
+    activity("task.updated", {
+      taskId: "sh-9",
+      taskType: "local_bash",
+      title: "pnpm test --watch",
+      command: "pnpm test --watch",
+    }),
+  ];
+
+  it("renders the task in Tasks", () => {
+    const tasks = foldBackgroundTasks(resumedStream());
+    expect(tasks.map((task) => task.id)).toEqual(["sh-9"]);
+    expect(byId(tasks, "sh-9").status).toBe("completed");
+  });
+
+  it("builds no phantom agent for it in the roster", () => {
+    expect(foldSubagentActivities(resumedStream()).map((agent) => agent.id)).toEqual([]);
+  });
+
+  it("still keeps a real subagent out of Tasks in the same stream", () => {
+    const stream = [
+      ...resumedStream(),
+      activity("task.started", { taskId: "ag-1", taskType: "local_agent", role: "reviewer" }),
+      {
+        ...activity("task.completed", { taskId: "ag-1", status: "completed" }),
+        payload: { taskId: "ag-1", status: "completed", agentKind: "agent" },
+      } as OrchestrationThreadActivity,
+    ];
+    expect(foldBackgroundTasks(stream).map((task) => task.id)).toEqual(["sh-9"]);
+    expect(foldSubagentActivities(stream).map((agent) => agent.id)).toEqual(["ag-1"]);
+  });
+});
+
+describe("task detail recovered from the launching call", () => {
+  it("leads a shell row with its command line, not the humanized description", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", {
+        taskId: "sh-2",
+        taskType: "local_bash",
+        detail: "Running the test suite",
+        command: "pnpm vitest run packages/client-runtime",
+      }),
+    ]);
+    expect(byId(tasks, "sh-2").label).toBe("pnpm vitest run packages/client-runtime");
+    expect(byId(tasks, "sh-2").command).toBe("pnpm vitest run packages/client-runtime");
+  });
+
+  it("takes the command even when it arrives after the description", () => {
+    // The launching call is only read at task_started; a resumed task
+    // recovers its command from a later snapshot repair.
+    const tasks = foldBackgroundTasks([
+      activity("task.progress", { taskId: "sh-3", taskType: "local_bash", detail: "Running" }),
+      activity("task.updated", { taskId: "sh-3", taskType: "local_bash", command: "cargo watch" }),
+    ]);
+    expect(byId(tasks, "sh-3").label).toBe("cargo watch");
+  });
+
+  it("names a monitor by its MCP server and tool", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", {
+        taskId: "mon-1",
+        taskType: "monitor_mcp",
+        detail: "github/list_issues",
+        server: "github",
+        tool: "list_issues",
+      }),
+    ]);
+    expect(backgroundTaskSourceLabel(byId(tasks, "mon-1"))).toBe("github · list_issues");
+    expect(byId(tasks, "mon-1").kind).toBe("monitor");
+  });
+
+  it("says what it can when only half the pair was recovered", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "mon-2", taskType: "mcp_task", server: "github" }),
+    ]);
+    expect(backgroundTaskSourceLabel(byId(tasks, "mon-2"))).toBe("github");
+  });
+
+  it("has no source label for an ordinary shell", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "sh-4", taskType: "local_bash", detail: "ls" }),
+    ]);
+    expect(backgroundTaskSourceLabel(byId(tasks, "sh-4"))).toBe(null);
+  });
+
+  it("classifies the CLI's remaining background task types as background", () => {
+    // mcp_task / monitor_ws / auto_mode_scan used to fall through the agent
+    // default and land a watch loop in the subagent roster.
+    for (const taskType of ["mcp_task", "monitor_ws", "auto_mode_scan"]) {
+      const stream = [activity("task.started", { taskId: taskType, taskType, detail: taskType })];
+      expect(foldBackgroundTasks(stream).map((task) => task.id)).toEqual([taskType]);
+      expect(foldSubagentActivities(stream)).toEqual([]);
+    }
+  });
+});
+
+describe("the compacting wait", () => {
+  const compactingRow = (compacting: boolean, at: string): OrchestrationThreadActivity =>
+    ({
+      id: "session-compacting:t-1",
+      tone: "info",
+      kind: "session.compacting",
+      summary: compacting ? "Compacting context" : "Context compaction finished",
+      payload: { compacting },
+      turnId: null,
+      createdAt: at,
+    }) as unknown as OrchestrationThreadActivity;
+
+  it("reports when compaction began", () => {
+    expect(deriveCompactingSince([compactingRow(true, "2026-09-04T10:00:00.000Z")])).toBe(
+      "2026-09-04T10:00:00.000Z",
+    );
+  });
+
+  it("reports nothing once compaction has ended", () => {
+    expect(
+      deriveCompactingSince([
+        compactingRow(true, "2026-09-04T10:00:00.000Z"),
+        compactingRow(false, "2026-09-04T10:00:20.000Z"),
+      ]),
+    ).toBe(null);
+  });
+
+  it("reports nothing for a thread that never compacted", () => {
+    expect(deriveCompactingSince([activity("task.started", { taskId: "sh-1" })])).toBe(null);
+  });
+
+  it("prints a machine wait on main for the whole compaction", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [],
+      requests: [],
+      compactingSince: "2026-09-04T10:00:00.000Z",
+      // Compaction between turns is exactly when a reader needs telling.
+      mainTurnActive: false,
+    });
+    expect(rows).toEqual([
+      {
+        ownerId: null,
+        ownerLabel: "Main",
+        kind: "compacting",
+        label: "Compacting context",
+        since: "2026-09-04T10:00:00.000Z",
+        blockingIds: [],
+        needsUser: false,
+      },
+    ]);
+  });
+
+  it("yields to an open request, which only the user can clear", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [],
+      requests: [
+        {
+          requestId: "r1",
+          kind: "approval",
+          label: "Command approval",
+          since: "2026-09-04T10:00:10.000Z",
+          ownerId: null,
+        },
+      ],
+      compactingSince: "2026-09-04T10:00:00.000Z",
+      mainTurnActive: true,
+    });
+    expect(rows.map((row) => row.kind)).toEqual(["approval"]);
+  });
+
+  it("outranks the machine work still running under main", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [
+        {
+          id: "ag-1",
+          title: "Reviewer",
+          status: "running",
+          startedAt: "2026-09-04T10:00:00.000Z",
+          parentAgentId: null,
+        },
+      ],
+      requests: [],
+      compactingSince: "2026-09-04T10:00:05.000Z",
+      mainTurnActive: true,
+    });
+    expect(rows.filter((row) => row.ownerId === null).map((row) => row.kind)).toEqual([
+      "compacting",
+    ]);
   });
 });

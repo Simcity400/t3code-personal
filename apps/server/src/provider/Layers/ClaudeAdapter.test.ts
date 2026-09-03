@@ -2247,6 +2247,354 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("rehydrates task identity from the roster snapshot the CLI actually sends", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const taskEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.completed"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "resume",
+        attachments: [],
+      });
+
+      // The installed CLI's own schema for this subtype: task_id / task_type /
+      // description / ambient, NOT the SDK's BackgroundTaskSummary
+      // (id / type / status / command / ...), which exists only in the
+      // Stop-hook payload. Reading the summary shape meant `summary.id` was
+      // always undefined, so every snapshot was discarded and the rehydration
+      // never ran at all.
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [
+          {
+            task_id: "task-wire",
+            task_type: "local_bash",
+            description: "pnpm build --watch",
+            ambient: true,
+          },
+        ],
+        uuid: "roster-wire-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-wire",
+        status: "completed",
+        output_file: "/tmp/task-wire.jsonl",
+        summary: "watcher exited",
+        uuid: "task-wire-done-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      const events = Array.from(yield* Fiber.join(taskEventsFiber));
+      const completed = events[0];
+      assert.equal(completed?.type, "task.completed");
+      if (completed?.type === "task.completed") {
+        assert.equal(completed.payload.taskType, "local_bash");
+        assert.equal(completed.payload.title, "pnpm build --watch");
+        // The CLI's `ambient` is a superset of skip_transcript: every
+        // skip_transcript task plus its own live-update watchers.
+        assert.equal(completed.payload.skipTranscript, true);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("publishes recovered identity immediately, one row per repaired task", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const taskEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.updated"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "resume",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [
+          { task_id: "wire-a", task_type: "local_bash", description: "cargo watch" },
+          { task_id: "wire-b", task_type: "mcp_task", description: "github/list_issues" },
+        ],
+        uuid: "roster-two-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      const events = Array.from(yield* Fiber.join(taskEventsFiber));
+      assert.deepEqual(
+        events.map((event) => String(event.payload.taskId)),
+        ["wire-a", "wire-b"],
+      );
+      // Distinct event ids: activities upsert by id, so a shared stamp would
+      // let the second repair overwrite the first.
+      assert.notEqual(events[0]?.eventId, events[1]?.eventId);
+      const [first, second] = events;
+      if (first?.type === "task.updated") {
+        // Pure metadata — a status would read as a transition the CLI never
+        // reported.
+        assert.equal(first.payload.status, undefined);
+        assert.equal(first.payload.taskType, "local_bash");
+      }
+      if (second?.type === "task.updated") {
+        // An mcp_task's description IS `server/tool`, which is how the pair
+        // survives a session whose launching call has aged out.
+        assert.equal(second.payload.server, "github");
+        assert.equal(second.payload.tool, "list_issues");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "carries a shell's command and an MCP monitor's server/tool from the launching call",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const taskEventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "task.started"),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "watch things",
+          attachments: [],
+        });
+
+        // The CLI keeps `command` / `server` / `tool` on its internal TaskState
+        // and projects them only into the Stop-hook payload — but the call that
+        // launched the task is on the stream and carries both.
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session",
+          uuid: "stream-bash",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "tool_use",
+              id: "toolu_bash_1",
+              name: "Bash",
+              input: { command: "pnpm test --watch", run_in_background: true },
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-shell",
+          tool_use_id: "toolu_bash_1",
+          description: "Running the test suite",
+          task_type: "local_bash",
+          uuid: "task-shell-uuid",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session",
+          uuid: "stream-mcp",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 1,
+            content_block: {
+              type: "tool_use",
+              id: "toolu_mcp_1",
+              name: "mcp__github__list_issues",
+              input: { repo: "t3" },
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-monitor",
+          tool_use_id: "toolu_mcp_1",
+          description: "github/list_issues",
+          task_type: "monitor_mcp",
+          uuid: "task-monitor-uuid",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+
+        const events = Array.from(yield* Fiber.join(taskEventsFiber));
+        const shell = events.find(
+          (event) => event.type === "task.started" && String(event.payload.taskId) === "task-shell",
+        );
+        assert.equal(shell?.type, "task.started");
+        if (shell?.type === "task.started") {
+          assert.equal(shell.payload.command, "pnpm test --watch");
+        }
+        const monitor = events.find(
+          (event) =>
+            event.type === "task.started" && String(event.payload.taskId) === "task-monitor",
+        );
+        assert.equal(monitor?.type, "task.started");
+        if (monitor?.type === "task.started") {
+          assert.equal(monitor.payload.server, "github");
+          assert.equal(monitor.payload.tool, "list_issues");
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("names the compacting wait and marks both of its edges exactly once", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      // `system/status` is the only place the CLI names compaction:
+      // session_state_changed is idle | running | requires_action and never
+      // mentions it. The CLI republishes status freely, so the repeat below
+      // must not re-mark the edge.
+      for (const [status, uuid] of [
+        ["compacting", "st-1"],
+        ["compacting", "st-2"],
+        [null, "st-3"],
+      ] as const) {
+        harness.query.emit({
+          type: "system",
+          subtype: "status",
+          status,
+          session_id: "session",
+          uuid,
+        } as unknown as SDKMessage);
+      }
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      const states = runtimeEvents
+        .filter(
+          (event) =>
+            event.type === "session.state.changed" &&
+            typeof event.payload.reason === "string" &&
+            event.payload.reason.startsWith("status:"),
+        )
+        .map((event) =>
+          event.type === "session.state.changed"
+            ? `${event.payload.state}:${String(event.payload.compacting)}`
+            : "",
+        );
+      assert.deepEqual(states, [
+        // Entering: the state itself says compacting, and the edge is marked.
+        "compacting:true",
+        // Still compacting: same state, no second edge.
+        "compacting:undefined",
+        // Leaving: back to running, edge marked once.
+        "running:false",
+      ]);
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("closes an open compacting wait at the compact boundary", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "status",
+        status: "compacting",
+        session_id: "session",
+        uuid: "st-c",
+      } as unknown as SDKMessage);
+      // A compaction that produces its boundary without a closing status
+      // would otherwise leave the panel claiming the thread is still
+      // compacting for the rest of the session.
+      harness.query.emit({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "auto", pre_tokens: 100_000 },
+        session_id: "session",
+        uuid: "cb-1",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      const edges = runtimeEvents
+        .filter(
+          (event) =>
+            event.type === "session.state.changed" && event.payload.compacting !== undefined,
+        )
+        .map((event) =>
+          event.type === "session.state.changed" ? String(event.payload.compacting) : "",
+        );
+      assert.deepEqual(edges, ["true", "false"]);
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("forwards is_backgrounded from task_started", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
