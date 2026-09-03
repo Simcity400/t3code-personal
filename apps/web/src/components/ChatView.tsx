@@ -189,7 +189,7 @@ import {
 import {
   deriveAgentWaitReasons,
   deriveAgentWaitStates,
-  deriveBackgroundedTaskIds,
+  deriveDetachedTaskIds,
   deriveBackgroundTasksPanelModel,
   deriveOpenRequestWaits,
   foldBackgroundTasks,
@@ -2558,7 +2558,7 @@ function ChatViewContent(props: ChatViewProps) {
         })),
         requests: deriveOpenRequestWaits(threadActivities),
         agentWaitReasons: deriveAgentWaitReasons(threadActivities),
-        backgroundedIds: deriveBackgroundedTaskIds(threadActivities),
+        detachedIds: deriveDetachedTaskIds(threadActivities),
         // Nothing blocks a turn that is not running: work still alive then
         // was detached, and Tasks reports it without claiming a dependency.
         mainTurnActive: phase === "running",

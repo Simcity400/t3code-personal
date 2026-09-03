@@ -197,11 +197,18 @@ export function BackgroundTasksSection({
   readonly model: BackgroundTasksPanelModel;
   readonly clock: AgentStatusClockSnapshot;
 }) {
-  const [finishedOpen, setFinishedOpen] = useState(false);
+  // Open by default when finished work is all there is: collapsing the only
+  // content behind a toggle leaves the section looking empty.
+  const [finishedOpen, setFinishedOpen] = useState(model.groups.length === 0);
   const chevronColor = useThemeColor("--color-chevron");
   if (!model.hasTasks) return null;
 
-  const showOwners = model.groups.length > 1 || model.groups[0]?.ownerId !== null;
+  // Attribution is needed whenever ANY row belongs to a subagent, including
+  // one that only appears under Finished.
+  const showOwners =
+    model.groups.length > 1 ||
+    model.groups.some((group) => group.ownerId !== null) ||
+    model.finished.some((entry) => entry.task.ownerAgentId !== null);
 
   return (
     <View

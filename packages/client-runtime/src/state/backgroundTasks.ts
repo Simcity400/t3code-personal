@@ -197,6 +197,7 @@ function fillMetadata(task: MutableTask, payload: Record<string, unknown>): void
     asString(payload.title) ?? asString(payload.description) ?? asString(payload.detail);
   if (label && task.label === task.id) task.label = bounded(label);
   if (payload.isBackgrounded === true) task.backgrounded = true;
+  else if (payload.isBackgrounded === false) task.backgrounded = false;
   if (payload.skipTranscript === true) task.ambient = true;
 }
 
@@ -208,18 +209,19 @@ function fillMetadata(task: MutableTask, payload: Record<string, unknown>): void
  */
 function applyStatus(task: MutableTask, status: BackgroundTaskStatus, at: string): void {
   const wasTerminal = isTerminalBackgroundTaskStatus(task.status);
+  const wasResting = wasTerminal || task.status === "idle";
   task.status = status;
   if (isTerminalBackgroundTaskStatus(status)) {
     if (!wasTerminal) task.endedAt = at;
     return;
   }
-  if (wasTerminal) {
+  if (wasResting && isActiveBackgroundTaskStatus(status)) {
     task.endedAt = null;
     task.result = null;
     task.error = null;
-    // A restarted task times its NEW run. Keeping the original start made a
-    // resumed watch loop claim an elapsed time spanning the gap it spent
-    // settled.
+    // A resumed task times its NEW run. Keeping the original start made a
+    // watch loop that woke up claim an elapsed time spanning the whole
+    // interval it spent settled or idle.
     task.startedAt = at;
     return;
   }
@@ -243,25 +245,56 @@ export function foldBackgroundTasks(
 ): ReadonlyArray<RuntimeBackgroundTask> {
   const tasks = new Map<string, MutableTask>();
 
-  // Pass 1 decides membership for the whole task id at once. Per-row
-  // stickiness is not enough to keep the two folds a true partition: a
-  // legacy unstamped row would be claimed here while a later stamped
-  // agent row is claimed by the subagent fold, and the task would render
-  // in both sections. The subagent fold admits a task id as soon as ANY of
-  // its rows is stamped agent, so this fold must refuse exactly those ids.
+  // Pass 1 decides membership for a whole task id at once, on EVIDENCE.
+  //
+  // Per-row stickiness let a legacy unstamped row be claimed here while a
+  // later stamped row was claimed by the subagent fold, so one task rendered
+  // in both sections. But trusting the stamp alone is just as wrong in the
+  // other direction: a thin terminal row (a reconnect drops the adapter's
+  // remembered linkage, so a notification carries only taskId + status) has
+  // no taskType, and classifyTaskAgentKind defaults those to "agent". Letting
+  // that evidence-free stamp flip a known background shell would make the
+  // shell vanish from this panel the moment it finished.
+  //
+  // So a stamp only counts when the row carries something agent-shaped to
+  // back it up, and a task is claimed here only when some row positively
+  // describes background work. An id with no evidence either way is left to
+  // the roster rather than duplicated into both surfaces.
+  const AGENT_EVIDENCE_KEYS = [
+    "taskType",
+    "role",
+    "workflowName",
+    "parentAgentId",
+    "agentIndex",
+    "phaseIndex",
+  ] as const;
+  const DESCRIPTIVE_KEYS = ["taskType", "detail", "description", "title", "summary"] as const;
+
   const agentTaskIds = new Set<string>();
+  const backgroundTaskIds = new Set<string>();
   for (const activity of activities) {
     if (typeof activity.payload !== "object" || activity.payload === null) continue;
     const payload = activity.payload as Record<string, unknown>;
     const taskId = asString(payload.taskId);
-    if (taskId && !isBackgroundTaskActivity(payload)) agentTaskIds.add(taskId);
+    if (!taskId) continue;
+    if (isBackgroundTaskActivity(payload)) {
+      if (DESCRIPTIVE_KEYS.some((key) => payload[key] !== undefined)) {
+        backgroundTaskIds.add(taskId);
+      }
+    } else if (
+      payload.timelineBypass === true ||
+      AGENT_EVIDENCE_KEYS.some((key) => payload[key] !== undefined)
+    ) {
+      agentTaskIds.add(taskId);
+    }
   }
 
   for (const activity of activities) {
     if (typeof activity.payload !== "object" || activity.payload === null) continue;
     const payload = activity.payload as Record<string, unknown>;
     const taskId = asString(payload.taskId);
-    if (!taskId || agentTaskIds.has(taskId)) continue;
+    // Contradictory evidence resolves to agent, matching the subagent fold.
+    if (!taskId || agentTaskIds.has(taskId) || !backgroundTaskIds.has(taskId)) continue;
     const at = activity.createdAt;
 
     switch (activity.kind) {
@@ -555,26 +588,37 @@ export function deriveAgentWaitReasons(
 }
 
 /**
- * Task ids the provider explicitly detached from their turn (Claude's
- * `is_backgrounded`). Backgrounded work does NOT block whoever started it —
- * the tool call returned immediately and the turn carried on — so it must
- * never appear as something an agent is waiting on. Read from the activity
- * stream because `RuntimeSubagent` carries no such field and this module
- * deliberately does not modify the subagent fold.
+ * Task ids that cannot block whoever started them: work the provider
+ * explicitly detached (Claude's `is_backgrounded`) and work that is
+ * asynchronous by protocol (Codex child agents). In both cases the launching
+ * tool call returned immediately and the turn carried on, so presenting them
+ * as a dependency would assert a relationship no provider reports.
+ *
+ * Read from the activity stream because `RuntimeSubagent` carries no such
+ * field and this module deliberately does not modify the subagent fold.
  */
-export function deriveBackgroundedTaskIds(
+export function deriveDetachedTaskIds(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ReadonlySet<string> {
-  const backgrounded = new Set<string>();
+  const detached = new Set<string>();
   for (const activity of activities) {
     if (typeof activity.payload !== "object" || activity.payload === null) continue;
     const payload = activity.payload as Record<string, unknown>;
     const taskId = asString(payload.taskId);
     if (!taskId) continue;
-    if (payload.isBackgrounded === true) backgrounded.add(taskId);
-    else if (payload.isBackgrounded === false) backgrounded.delete(taskId);
+    // Codex child agents are asynchronous by protocol: spawnAgent returns
+    // immediately and the parent only blocks if it calls the separate wait
+    // tool, which nothing on the wire reports. An active child therefore
+    // never proves the parent is waiting. Their rows are provider-synthesized
+    // and carry timelineBypass.
+    if (payload.timelineBypass === true) {
+      detached.add(taskId);
+      continue;
+    }
+    if (payload.isBackgrounded === true) detached.add(taskId);
+    else if (payload.isBackgrounded === false) detached.delete(taskId);
   }
-  return backgrounded;
+  return detached;
 }
 
 /** Minimal shape the wait derivation needs from a roster agent. */
@@ -620,8 +664,8 @@ export function deriveAgentWaitStates(input: {
   readonly requests: ReadonlyArray<OpenRequestWait>;
   /** From deriveAgentWaitReasons; empty for providers that do not name them. */
   readonly agentWaitReasons?: ReadonlyMap<string, AgentNamedWait> | undefined;
-  /** From deriveBackgroundedTaskIds — detached work blocks nobody. */
-  readonly backgroundedIds?: ReadonlySet<string> | undefined;
+  /** From deriveDetachedTaskIds — detached and async work blocks nobody. */
+  readonly detachedIds?: ReadonlySet<string> | undefined;
   /**
    * Whether the main agent's turn is actually in flight. When it is not, the
    * main agent is not waiting on anything: whatever is still running was
@@ -631,12 +675,12 @@ export function deriveAgentWaitStates(input: {
 }): ReadonlyArray<AgentWaitState> {
   const { tasks, agents, requests } = input;
   const agentWaitReasons = input.agentWaitReasons;
-  const backgroundedIds = input.backgroundedIds;
+  const detachedIds = input.detachedIds;
   const mainTurnActive = input.mainTurnActive ?? true;
   const rows: AgentWaitState[] = [];
 
   const isDetached = (id: string, backgrounded: boolean): boolean =>
-    backgrounded || backgroundedIds?.has(id) === true;
+    backgrounded || detachedIds?.has(id) === true;
 
   const approval = requests.find((request) => request.kind === "approval");
   const userInput = requests.find((request) => request.kind === "user-input");
@@ -744,24 +788,9 @@ export function deriveAgentWaitStates(input: {
     }
   }
 
-  // A subagent can finish while a foreground task it launched keeps running;
-  // that task still has an owner worth naming.
-  for (const [ownerId, ownTasks] of blockingTasksByOwner) {
-    if (reported.has(ownerId)) continue;
-    const owner = agents.find((agent) => agent.id === ownerId);
-    rows.push({
-      ownerId,
-      ownerLabel: owner?.title ?? ownerId,
-      kind: "tasks",
-      label: joinLabels(
-        ownTasks.map((task) => task.label),
-        "task",
-      ),
-      since: earliest(ownTasks.map((task) => task.startedAt)),
-      blockingIds: ownTasks.map((task) => task.id),
-      needsUser: false,
-    });
-  }
+  // A foreground task can outlive the subagent that launched it. Its owner
+  // is not waiting on it — the owner is gone — so it gets no wait line; the
+  // Tasks section still lists it under that owner's group.
 
   return rows;
 }

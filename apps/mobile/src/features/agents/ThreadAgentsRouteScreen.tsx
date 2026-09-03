@@ -9,7 +9,7 @@ import {
 import {
   deriveAgentWaitReasons,
   deriveAgentWaitStates,
-  deriveBackgroundedTaskIds,
+  deriveDetachedTaskIds,
   deriveBackgroundTasksPanelModel,
   deriveOpenRequestWaits,
   foldBackgroundTasks,
@@ -51,16 +51,27 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
   const transcriptListRef = useRef<LegendListRef>(null);
   const freeze = useSharedValue(false);
   const contentInsetEndAdjustment = useSharedValue(0);
+  // Same liveness rule web uses (derivePhase !== "disconnected"): work dies
+  // with its provider session, so a dead session must settle its rows instead
+  // of leaving them "Working"/"Running" and ticking forever. The roster needs
+  // it as much as the task fold, because those agents feed the wait lines.
+  const sessionStatus = thread?.session?.status ?? null;
+  const agentSessionLive =
+    sessionStatus !== null &&
+    sessionStatus !== "stopped" &&
+    sessionStatus !== "interrupted" &&
+    sessionStatus !== "error";
   const agents = useMemo(
     () =>
       thread
         ? foldSubagentActivities(thread.activities, {
+            sessionLive: agentSessionLive,
             // Keep the transcript being read alive even when live activity
             // pushes it past the roster cap.
             protectedAgentIds: selectedAgentId ? [selectedAgentId] : [],
           })
         : [],
-    [thread, selectedAgentId],
+    [agentSessionLive, thread, selectedAgentId],
   );
   const model = useMemo(() => deriveAgentPanelModel({ agents, v2Projection: null }), [agents]);
   const allAgents = useMemo(() => flattenAgentPanelRoster(model), [model]);
@@ -103,15 +114,6 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
   // Background work the subagent fold deliberately drops: shells, monitors,
   // and a subagent's own internal tasks. Same durable activities, so this
   // survives reload exactly as the roster does.
-  // Same liveness rule web uses (derivePhase !== "disconnected"): background
-  // work dies with its provider session, so a dead session must settle its
-  // rows as interrupted instead of leaving them "Running" and ticking forever.
-  const sessionStatus = thread?.session?.status ?? null;
-  const agentSessionLive =
-    sessionStatus !== null &&
-    sessionStatus !== "stopped" &&
-    sessionStatus !== "interrupted" &&
-    sessionStatus !== "error";
   const backgroundTasks = useMemo(
     () => (thread ? foldBackgroundTasks(thread.activities, { sessionLive: agentSessionLive }) : []),
     [agentSessionLive, thread],
@@ -138,13 +140,17 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
         })),
         requests: thread ? deriveOpenRequestWaits(thread.activities) : [],
         agentWaitReasons: thread ? deriveAgentWaitReasons(thread.activities) : new Map(),
-        backgroundedIds: thread ? deriveBackgroundedTaskIds(thread.activities) : new Set(),
+        detachedIds: thread ? deriveDetachedTaskIds(thread.activities) : new Set(),
         mainTurnActive: sessionStatus === "running",
       }),
     [allAgents, backgroundTasks, sessionStatus, thread],
   );
   const statusClock = useAgentStatusClock(
-    activeAgents.length > 0 || selectedAgentWorking || backgroundTasksModel.activeCount > 0,
+    activeAgents.length > 0 ||
+      selectedAgentWorking ||
+      backgroundTasksModel.activeCount > 0 ||
+      // A pending approval with no running work still shows a ticking wait.
+      agentWaits.length > 0,
   );
   // The status clock re-renders this screen every second while agents are
   // active; a fresh latestTurn object here would defeat ThreadFeed's memo and
