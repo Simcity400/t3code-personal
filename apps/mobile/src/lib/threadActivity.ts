@@ -1854,7 +1854,7 @@ export function buildThreadFeed(
   // Reports this conversation RECEIVED from its subagents. Same persisted rows
   // as web, so both clients show the same exchange.
   const subagentReplies = selectSubagentRepliesFor(
-    deriveSubagentReplies(thread.activities),
+    deriveSubagentReplies(thread.activities, sourceMessages),
     transcriptAgentId ?? null,
   );
   const oldestLoadedMessageCreatedAt =

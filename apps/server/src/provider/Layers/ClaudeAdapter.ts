@@ -1099,6 +1099,19 @@ function inFlightToolKey(parentToolUseId: string | null | undefined, index: numb
   return `${parentToolUseId ?? ""}\u0000${index}`;
 }
 
+/**
+ * Releases the streaming/usage state a settled task no longer needs.
+ *
+ * The map is keyed by the spawning tool's id, so without this a long parent
+ * session accumulates one entry per subagent it ever launched.
+ */
+function releaseSubagentStream(context: ClaudeSessionContext, taskId: string): void {
+  const toolUseId = context.taskAgents.get(taskId)?.toolUseId;
+  if (toolUseId) {
+    context.subagentStreams.delete(toolUseId);
+  }
+}
+
 function agentIdForParentToolUse(
   agents: Map<string, ClaudeTaskAgentState>,
   parentToolUseId: string | null | undefined,
@@ -2242,10 +2255,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (options?.parentToolUseId) {
-      const stream = context.subagentStreams.get(options.parentToolUseId);
-      if (stream) {
-        stream.lastUsage = usage;
-      }
+      // Created on demand: an agent whose usage arrives only on its assistant
+      // snapshots still needs somewhere to carry totals forward.
+      subagentStream(context, options.parentToolUseId).lastUsage = usage;
     }
 
     const turnState = context.turnState;
@@ -3830,6 +3842,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           patch.status !== undefined ? CLAUDE_TASK_PATCH_STATUS[patch.status] : undefined;
         if (status === "completed" || status === "failed" || status === "cancelled") {
           context.liveTaskIds.delete(message.task_id);
+          releaseSubagentStream(context, message.task_id);
         }
         const endedAt =
           typeof patch.end_time === "number" && Number.isFinite(patch.end_time)
@@ -3854,6 +3867,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
       case "task_notification": {
         context.liveTaskIds.delete(message.task_id);
+        releaseSubagentStream(context, message.task_id);
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
