@@ -2462,7 +2462,10 @@ describe("ClaudeAdapterLive", () => {
         parent_tool_use_id: "toolu_agent_m",
         message: {
           model: SYNTHETIC_SUBAGENT_MODEL,
-          content: [],
+          // Fork: the snapshot also carries the subagent's own message, which
+          // must reach the transcript as an agent-attributed item.completed.
+          id: "subagent-message-1",
+          content: [{ type: "text", text: "I found the relevant call site." }],
         },
         uuid: "subagent-snapshot-uuid",
         session_id: "sdk-session",
