@@ -676,6 +676,23 @@ function compactBoundaryTokenUsageSnapshot(
   });
 }
 
+/**
+ * A task_progress row reports one SUBAGENT's cumulative totals (tokens it has
+ * processed, tools it has called, how long it has run). Those are totals, not
+ * context.
+ *
+ * Fork divergence (2026-09-03, owner decision): upstream max-merged that
+ * cumulative total into the PARENT thread's `usedTokens`, which is the number
+ * the context-window meter divides by `maxTokens`. A subagent runs in its own
+ * window, so a child that burned 500k tokens pinned the parent's meter at 100%
+ * of a 200k window while the parent's own context was nearly empty. The meter
+ * now reports only what the parent itself last reported; the cumulative
+ * figures still ride along as totals (`totalProcessedTokens`, `toolUses`,
+ * `durationMs`), which is where the meter's "Total processed" line reads them.
+ *
+ * Each subagent's own context is reported separately, stamped with its
+ * `agentId` (see `emitAgentTokenUsage`).
+ */
 function normalizeClaudeTaskProgressTokenUsage(
   value: unknown,
   context: ClaudeSessionContext,
@@ -685,30 +702,43 @@ function normalizeClaudeTaskProgressTokenUsage(
     return undefined;
   }
 
-  const lastUsedTokens = context.lastKnownTokenUsage?.usedTokens;
-  const activeTokens =
-    lastUsedTokens !== undefined ? Math.max(totalTokens, lastUsedTokens) : totalTokens;
-  if (lastUsedTokens !== undefined && activeTokens === lastUsedTokens) {
+  // No reading of the parent's own context yet: a subagent's totals must not
+  // stand in for one. The parent's next own usage frame establishes it.
+  const parentUsedTokens = context.lastKnownTokenUsage?.usedTokens;
+  if (parentUsedTokens === undefined || parentUsedTokens <= 0) {
     return undefined;
   }
 
   const usage = value as Record<string, unknown>;
+  const totalProcessedTokens = Math.max(
+    totalTokens,
+    context.lastKnownTotalProcessedTokens ?? totalTokens,
+  );
+  const toolUses = finiteNonNegativeInteger(usage.tool_uses);
+  const durationMs = finiteNonNegativeInteger(usage.duration_ms);
+  // Nothing a reader would see moved. Without this the parent re-emits an
+  // identical snapshot on every subagent tick.
+  const previous = context.lastKnownTokenUsage;
+  if (
+    previous !== undefined &&
+    previous.totalProcessedTokens === totalProcessedTokens &&
+    previous.toolUses === toolUses &&
+    previous.durationMs === durationMs
+  ) {
+    return undefined;
+  }
+
   const snapshot = makeClaudeTokenUsageSnapshot({
-    activeTokens,
+    activeTokens: parentUsedTokens,
     ...(context.lastKnownContextWindow !== undefined
       ? { contextWindow: context.lastKnownContextWindow }
       : {}),
-    totalProcessedTokens: Math.max(
-      totalTokens,
-      context.lastKnownTotalProcessedTokens ?? totalTokens,
-    ),
+    totalProcessedTokens,
   });
   if (!snapshot) {
     return undefined;
   }
 
-  const toolUses = finiteNonNegativeInteger(usage.tool_uses);
-  const durationMs = finiteNonNegativeInteger(usage.duration_ms);
   return {
     ...snapshot,
     ...(toolUses !== undefined ? { toolUses } : {}),
