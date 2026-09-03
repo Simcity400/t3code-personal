@@ -1687,7 +1687,7 @@ function replyDedupeText(text: string): string {
 }
 
 function normalizedReplyKey(agentId: string, text: string): string {
-  return `${agentId} ${replyDedupeText(text)}`;
+  return `${agentId}\u0000${replyDedupeText(text)}`;
 }
 
 /**
