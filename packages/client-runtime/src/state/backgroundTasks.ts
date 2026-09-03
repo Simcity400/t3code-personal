@@ -833,7 +833,25 @@ export function deriveAgentWaitStates(input: {
       rows.push(requestRow(agent.id, agent.title, owned));
       continue;
     }
-    // A coordinator waits on the members still running under it.
+    // A named wait reason outranks any machine progress under this agent:
+    // precedence is by who can unblock it, and only the user can clear this.
+    // A coordinator blocked on an approval while its members keep running is
+    // stuck, not busy, and must read that way.
+    const named = agent.status === "waiting" ? agentWaitReasons?.get(agent.id) : undefined;
+    if (named) {
+      reported.add(agent.id);
+      rows.push({
+        ownerId: agent.id,
+        ownerLabel: agent.title,
+        kind: named.reason,
+        label: named.reason === "approval" ? "Approval" : "Your answer",
+        since: named.since,
+        blockingIds: [],
+        needsUser: true,
+      });
+      continue;
+    }
+    // Otherwise a coordinator waits on the members still running under it.
     const members = blockingMembersByParent.get(agent.id);
     if (members && members.length > 0) {
       reported.add(agent.id);
@@ -848,22 +866,6 @@ export function deriveAgentWaitStates(input: {
         since: earliest(members.map((member) => member.startedAt)),
         blockingIds: members.map((member) => member.id),
         needsUser: false,
-      });
-      continue;
-    }
-    // Otherwise a named wait reason: the provider is telling us this agent is
-    // blocked, and only the user can clear it.
-    const named = agent.status === "waiting" ? agentWaitReasons?.get(agent.id) : undefined;
-    if (named) {
-      reported.add(agent.id);
-      rows.push({
-        ownerId: agent.id,
-        ownerLabel: agent.title,
-        kind: named.reason,
-        label: named.reason === "approval" ? "Approval" : "Your answer",
-        since: named.since,
-        blockingIds: [],
-        needsUser: true,
       });
       continue;
     }

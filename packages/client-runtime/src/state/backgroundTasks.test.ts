@@ -1194,3 +1194,84 @@ describe("requests with an unresolvable owner", () => {
     expect(rows[0]).toMatchObject({ ownerId: null, ownerLabel: "Main", needsUser: true });
   });
 });
+
+describe("named wait outranks a coordinator's running members", () => {
+  /**
+   * Precedence is by who can unblock it. A coordinator that is `waiting` on an
+   * approval while its members keep working is stuck, not busy: reporting the
+   * members read as quiet machine progress and hid the one line the user had
+   * to act on.
+   */
+  it("reports the approval, not the members still running under it", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [
+        {
+          id: "wf-1",
+          title: "Spec",
+          status: "waiting",
+          startedAt: "2026-09-04T09:59:00.000Z",
+          parentAgentId: null,
+        },
+        {
+          id: "m-1",
+          title: "writer",
+          status: "running",
+          startedAt: "2026-09-04T10:00:00.000Z",
+          parentAgentId: "wf-1",
+        },
+        {
+          id: "m-2",
+          title: "checker",
+          status: "running",
+          startedAt: "2026-09-04T10:00:00.000Z",
+          parentAgentId: "wf-1",
+        },
+      ],
+      requests: [],
+      agentWaitReasons: new Map([
+        ["wf-1", { reason: "approval" as const, since: "2026-09-04T10:30:00.000Z" }],
+      ]),
+      mainTurnActive: true,
+    });
+
+    const coordinatorRow = rows.find((row) => row.ownerId === "wf-1");
+    expect(coordinatorRow).toMatchObject({
+      kind: "approval",
+      label: "Approval",
+      needsUser: true,
+      since: "2026-09-04T10:30:00.000Z",
+    });
+    // Exactly one line for the coordinator: the members must not add a second.
+    expect(rows.filter((row) => row.ownerId === "wf-1")).toHaveLength(1);
+  });
+
+  it("still reports the members when the coordinator names no wait", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [
+        {
+          id: "wf-1",
+          title: "Spec",
+          status: "running",
+          startedAt: "2026-09-04T09:59:00.000Z",
+          parentAgentId: null,
+        },
+        {
+          id: "m-1",
+          title: "writer",
+          status: "running",
+          startedAt: "2026-09-04T10:00:00.000Z",
+          parentAgentId: "wf-1",
+        },
+      ],
+      requests: [],
+      mainTurnActive: true,
+    });
+    expect(rows.find((row) => row.ownerId === "wf-1")).toMatchObject({
+      kind: "agents",
+      label: "writer",
+      needsUser: false,
+    });
+  });
+});
