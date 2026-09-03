@@ -16,8 +16,8 @@ personal customizations, backed up at
   private prerelease; `fork-mobile-preview.yml` publishes the matching iPhone OTA
   update. Official changes arrive on their own: `fork-sync.yml` runs every two hours,
   merges `upstream/main` when npm's `t3` nightly moves, re-pins the four package
-  versions, pushes `main`, and then calls `fork-release.yml` — so no machine ever
-  merges or pins locally. Only when the merge hits a genuine conflict does it stop and
+  versions, pushes `main`, and then calls both `fork-release.yml` and
+  `fork-mobile-preview.yml` — so no machine ever merges or pins locally. Only when the merge hits a genuine conflict does it stop and
   push the `needs-merge-help` marker branch, which the in-app pill turns into "open
   Claude Code and say: finish the upstream merge". Only after a release run finishes
   does the installed app have a newer version to offer: the updater compares against
