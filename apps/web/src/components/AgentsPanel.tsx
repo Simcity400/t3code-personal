@@ -24,6 +24,7 @@ import {
   formatSubagentTokenCount,
   filterWorkflowForPanelSection,
   isActiveSubagentStatus,
+  deriveSubagentReplies,
   selectSubagentTranscriptActivities,
   selectSubagentTranscriptMessages,
   subagentPanelSection,
@@ -40,9 +41,23 @@ import type {
   TimestampFormat,
 } from "@t3tools/contracts";
 import { ArrowLeft, Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import {
+  createContext,
+  use,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 
-import { deriveTimelineEntries, deriveWorkLogEntries } from "~/session-logic";
+import {
+  deriveSubagentReplyMessages,
+  deriveTimelineEntries,
+  deriveWorkLogEntries,
+} from "~/session-logic";
+import { deriveLatestContextWindowSnapshot, type ContextWindowSnapshot } from "~/lib/contextWindow";
+import { ContextWindowMeter } from "~/components/chat/ContextWindowMeter";
 import type { TurnDiffSummary } from "~/types";
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
@@ -157,7 +172,28 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
   );
 }
 
+/**
+ * Per-agent context-window snapshots, keyed by agent id.
+ *
+ * Supplied through context rather than threaded as a prop: roster rows sit
+ * three components deep (section → workflow → phase → row), and this data is
+ * read only by the leaf.
+ */
+const EMPTY_AGENT_CONTEXT_WINDOWS: ReadonlyMap<string, ContextWindowSnapshot> = new Map();
+const AgentContextWindowCtx = createContext<ReadonlyMap<string, ContextWindowSnapshot>>(
+  EMPTY_AGENT_CONTEXT_WINDOWS,
+);
+
+/** "42%" — the roster's compact form of the transcript header's full meter. */
+function formatContextPercentage(usage: ContextWindowSnapshot): string | null {
+  if (usage.usedPercentage === null || !Number.isFinite(usage.usedPercentage)) {
+    return null;
+  }
+  return `${Math.round(usage.usedPercentage)}% ctx`;
+}
+
 function AgentRow({ agent, onOpen }: { agent: RuntimeSubagent; onOpen: () => void }) {
+  const contextWindow = use(AgentContextWindowCtx).get(agent.id) ?? null;
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
@@ -169,6 +205,10 @@ function AgentRow({ agent, onOpen }: { agent: RuntimeSubagent; onOpen: () => voi
   const metadata = [
     modelLabel,
     agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok",
+    // Context occupancy, next to the cumulative token counter it is often
+    // confused with: one says how full this agent's window is right now, the
+    // other how many tokens it has burned in total.
+    contextWindow ? formatContextPercentage(contextWindow) : null,
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
@@ -727,7 +767,7 @@ function AgentTranscript({
   const title = formatSubagentTitle(agent.title);
   const listRef = useRef<LegendListRef | null>(null);
   const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
-  const transcriptMessages = useMemo(
+  const ownMessages = useMemo(
     () => selectSubagentTranscriptMessages(messages, activities, agent.id),
     [activities, agent.id, messages],
   );
@@ -735,8 +775,38 @@ function AgentTranscript({
     () => selectSubagentTranscriptActivities(activities, agent.id),
     [activities, agent.id],
   );
+  // Reports this agent's OWN sub-subagents sent back to it, rendered exactly
+  // as the parent thread renders the reports it receives.
+  const nestedReplies = useMemo(
+    () =>
+      deriveSubagentReplyMessages(deriveSubagentReplies(activities), agent.id, (reply) =>
+        formatSubagentTitle(reply.agentTitle ?? reply.agentId),
+      ),
+    [activities, agent.id],
+  );
+  const subagentReplyByMessageId = useMemo(
+    () =>
+      new Map(
+        nestedReplies.map((reply) => [
+          reply.message.id,
+          { agentId: reply.agentId, label: reply.label },
+        ]),
+      ),
+    [nestedReplies],
+  );
+  const transcriptMessages = useMemo(
+    () =>
+      nestedReplies.length === 0
+        ? ownMessages
+        : [...ownMessages, ...nestedReplies.map((reply) => reply.message)],
+    [nestedReplies, ownMessages],
+  );
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(transcriptActivities),
+    [transcriptActivities],
+  );
+  const contextWindow = useMemo(
+    () => deriveLatestContextWindowSnapshot(transcriptActivities),
     [transcriptActivities],
   );
   const timelineEntries = useMemo(
@@ -780,6 +850,10 @@ function AgentTranscript({
         <span className="text-[.65rem] text-muted-foreground">
           {STATUS_VISUALS[agent.status].label}
         </span>
+        {/* The same meter the main chat shows, on this agent's own window. */}
+        {contextWindow ? (
+          <ContextWindowMeter usage={contextWindow} modelDisplayName={agent.model} />
+        ) : null}
       </header>
       <div className="relative min-h-0 flex-1">
         <MessagesTimeline
@@ -788,6 +862,7 @@ function AgentTranscript({
           activeTurnStartedAt={isWorking ? (agent.startedAt ?? agent.firstSeenAt) : null}
           listRef={listRef}
           timelineEntries={timelineEntries}
+          subagentReplyByMessageId={subagentReplyByMessageId}
           latestTurn={latestTurn}
           runningTurnId={isWorking ? turnId : null}
           turnDiffSummaryByAssistantMessageId={EMPTY_TURN_DIFFS}
@@ -845,6 +920,8 @@ export function AgentsPanel({
   resolvedTheme = "light",
   timestampFormat = "locale",
   selectedAgentIdRef,
+  requestedAgentId = null,
+  onRequestedAgentHandled,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
@@ -858,8 +935,20 @@ export function AgentsPanel({
   timestampFormat?: TimestampFormat;
   /** Reported to the owner's fold so the open transcript survives roster-cap eviction. */
   selectedAgentIdRef?: MutableRefObject<string | null>;
+  /**
+   * Agent to open directly, set when the chat asks for one (clicking a
+   * "From <agent>" reply). Cleared through `onRequestedAgentHandled` so the
+   * user can navigate away again without the request re-opening it.
+   */
+  requestedAgentId?: string | null;
+  onRequestedAgentHandled?: () => void;
 }) {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!requestedAgentId) return;
+    setSelectedAgentId(requestedAgentId);
+    onRequestedAgentHandled?.();
+  }, [onRequestedAgentHandled, requestedAgentId]);
   useEffect(() => {
     if (selectedAgentIdRef) {
       selectedAgentIdRef.current = selectedAgentId;
@@ -954,6 +1043,18 @@ export function AgentsPanel({
     previousPhaseStateByKeyRef.current = nextStates;
   }, [model.workflows]);
   const selectedAgent = allAgents.find((agent) => agent.id === selectedAgentId) ?? null;
+  // One pass over the thread's activities yields every agent's meter; each row
+  // then reads its own by id instead of re-walking the list per agent.
+  const contextWindowByAgentId = useMemo(() => {
+    const byAgentId = new Map<string, ContextWindowSnapshot>();
+    for (const agent of allAgents) {
+      const usage = deriveLatestContextWindowSnapshot(activities, agent.id);
+      if (usage) {
+        byAgentId.set(agent.id, usage);
+      }
+    }
+    return byAgentId;
+  }, [activities, allAgents]);
 
   if (selectedAgent && threadRef) {
     return (
@@ -985,64 +1086,66 @@ export function AgentsPanel({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-2 p-2">
-          <AgentRosterSection
-            title="Active"
-            workflows={sections.activeWorkflows}
-            directAgents={sections.activeDirectAgents}
-            environmentId={environmentId}
-            threadId={threadId}
-            workflowOpenById={workflowOpenById}
-            phaseOpenByKey={phaseOpenByKey}
-            onWorkflowOpenChange={(workflowId, open) =>
-              setWorkflowOpenById((current) => ({ ...current, [workflowId]: open }))
-            }
-            onPhaseOpenChange={(workflowId, phaseIndex, open) =>
-              setPhaseOpenByKey((current) => ({
-                ...current,
-                [workflowPhaseDisclosureKey(workflowId, phaseIndex)]: open,
-              }))
-            }
-            onOpenAgent={(agent) => setSelectedAgentId(agent.id)}
-          />
-          <AgentRosterSection
-            title="Idle"
-            workflows={sections.idleWorkflows}
-            directAgents={sections.idleDirectAgents}
-            environmentId={environmentId}
-            threadId={threadId}
-            open={idleOpen}
-            onToggle={() => setIdleOpen((value) => !value)}
-            workflowOpenById={workflowOpenById}
-            phaseOpenByKey={phaseOpenByKey}
-            onWorkflowOpenChange={(workflowId, open) =>
-              setWorkflowOpenById((current) => ({ ...current, [workflowId]: open }))
-            }
-            onPhaseOpenChange={(workflowId, phaseIndex, open) =>
-              setPhaseOpenByKey((current) => ({
-                ...current,
-                [workflowPhaseDisclosureKey(workflowId, phaseIndex)]: open,
-              }))
-            }
-            onOpenAgent={(agent) => setSelectedAgentId(agent.id)}
-          />
-        </div>
-      </ScrollArea>
-      <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
-        <span className="flex items-center gap-2">
-          {model.runningCount + model.waitingCount > 0 ? (
-            <span className="text-info-foreground">
-              ● {model.runningCount + model.waitingCount} working
-            </span>
-          ) : null}
-          {model.idleCount + model.settledCount > 0 ? (
-            <span>{model.idleCount + model.settledCount} idle</span>
-          ) : null}
-        </span>
-        <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
-      </footer>
-    </div>
+    <AgentContextWindowCtx value={contextWindowByAgentId}>
+      <div className="flex h-full min-h-0 flex-col">
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex flex-col gap-2 p-2">
+            <AgentRosterSection
+              title="Active"
+              workflows={sections.activeWorkflows}
+              directAgents={sections.activeDirectAgents}
+              environmentId={environmentId}
+              threadId={threadId}
+              workflowOpenById={workflowOpenById}
+              phaseOpenByKey={phaseOpenByKey}
+              onWorkflowOpenChange={(workflowId, open) =>
+                setWorkflowOpenById((current) => ({ ...current, [workflowId]: open }))
+              }
+              onPhaseOpenChange={(workflowId, phaseIndex, open) =>
+                setPhaseOpenByKey((current) => ({
+                  ...current,
+                  [workflowPhaseDisclosureKey(workflowId, phaseIndex)]: open,
+                }))
+              }
+              onOpenAgent={(agent) => setSelectedAgentId(agent.id)}
+            />
+            <AgentRosterSection
+              title="Idle"
+              workflows={sections.idleWorkflows}
+              directAgents={sections.idleDirectAgents}
+              environmentId={environmentId}
+              threadId={threadId}
+              open={idleOpen}
+              onToggle={() => setIdleOpen((value) => !value)}
+              workflowOpenById={workflowOpenById}
+              phaseOpenByKey={phaseOpenByKey}
+              onWorkflowOpenChange={(workflowId, open) =>
+                setWorkflowOpenById((current) => ({ ...current, [workflowId]: open }))
+              }
+              onPhaseOpenChange={(workflowId, phaseIndex, open) =>
+                setPhaseOpenByKey((current) => ({
+                  ...current,
+                  [workflowPhaseDisclosureKey(workflowId, phaseIndex)]: open,
+                }))
+              }
+              onOpenAgent={(agent) => setSelectedAgentId(agent.id)}
+            />
+          </div>
+        </ScrollArea>
+        <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
+          <span className="flex items-center gap-2">
+            {model.runningCount + model.waitingCount > 0 ? (
+              <span className="text-info-foreground">
+                ● {model.runningCount + model.waitingCount} working
+              </span>
+            ) : null}
+            {model.idleCount + model.settledCount > 0 ? (
+              <span>{model.idleCount + model.settledCount} idle</span>
+            ) : null}
+          </span>
+          <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
+        </footer>
+      </div>
+    </AgentContextWindowCtx>
   );
 }

@@ -1061,23 +1061,31 @@ export function isAgentAttributedToolActivity(activity: OrchestrationThreadActiv
 }
 
 /**
- * Selects one agent's tool lifecycle for replay through the ordinary chat
- * timeline renderers. Attribution is removed from the returned copies so the
- * parent-timeline quieting rule does not discard rows after they have already
- * been explicitly scoped to the selected agent.
+ * Selects one agent's activity stream for replay through the ordinary chat
+ * timeline renderers.
+ *
+ * Every row the server stamped with this `agentId` is returned, whatever its
+ * kind — tool lifecycle, the agent's own plan (`turn.plan.updated`), a denial,
+ * the tasks it spawned itself, its context-window updates. Selecting by
+ * attribution rather than by an allowlist of kinds is what makes the agent
+ * transcript identical to the parent chat: the SAME derivations
+ * (`deriveWorkLogEntries`, `deriveTurnPlans`, `deriveLatestContextWindowSnapshot`)
+ * run over the same shape of input and apply their own filters, instead of a
+ * thinner tool-only feed that silently dropped everything else.
+ *
+ * Attribution is removed from the returned copies so the parent-timeline
+ * quieting rule (`isAgentInternalActivity`) does not discard rows that have
+ * already been explicitly scoped to the selected agent.
+ *
+ * Assistant and user message items stay out: they are the transcript's
+ * messages, delivered through `selectSubagentTranscriptMessages`, and would
+ * otherwise render a second time as tool cards.
  */
 export function selectSubagentTranscriptActivities(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   agentId: string,
 ): ReadonlyArray<OrchestrationThreadActivity> {
   return activities.flatMap((activity) => {
-    if (
-      activity.kind !== "tool.started" &&
-      activity.kind !== "tool.updated" &&
-      activity.kind !== "tool.completed"
-    ) {
-      return [];
-    }
     if (typeof activity.payload !== "object" || activity.payload === null) {
       return [];
     }
@@ -1097,6 +1105,22 @@ export function selectSubagentTranscriptActivities(
       },
     ];
   });
+}
+
+/**
+ * Rows that belong to the PARENT conversation's own surfaces (its work log,
+ * its plan chip, its context meter).
+ *
+ * A row the server attributed to a subagent is that agent's, and the parent
+ * must skip it rather than render it or — worse for single-value surfaces like
+ * the context meter and the plan chip — read a child's value as its own.
+ */
+export function isParentScopedActivity(activity: OrchestrationThreadActivity): boolean {
+  if (typeof activity.payload !== "object" || activity.payload === null) {
+    return true;
+  }
+  const payload = activity.payload as Record<string, unknown>;
+  return asString(payload.agentId) === undefined;
 }
 
 interface SubagentPromptCandidate {
@@ -1611,6 +1635,155 @@ export function deriveSubagentTranscript({
       left.updatedAt.localeCompare(right.updatedAt) ||
       left.id.localeCompare(right.id),
   );
+}
+
+/**
+ * One message a subagent sent back to the conversation that owns it.
+ *
+ * The mirror image of the parent instructions `deriveSubagentPromptCandidates`
+ * recovers: those go parent → child, these go child → parent. Both directions
+ * render as ordinary chat messages so a reader can follow the whole exchange.
+ */
+export interface SubagentReplyEntry {
+  /** Stable row id (activities upsert, so the activity id is the identity). */
+  readonly id: string;
+  readonly activityId: string;
+  /** The agent that sent the message. */
+  readonly agentId: string;
+  /** Best known display name for the sender at the time it replied. */
+  readonly agentTitle: string | null;
+  /**
+   * Conversation that RECEIVED it: null for the parent thread, otherwise the
+   * agent whose transcript owns the collaboration call (a subagent reading its
+   * own sub-subagent's report).
+   */
+  readonly ownerAgentId: string | null;
+  readonly turnId: OrchestrationThreadActivity["turnId"];
+  readonly text: string;
+  readonly createdAt: string;
+}
+
+function normalizedReplyKey(agentId: string, text: string): string {
+  return `${agentId} ${text.trim()}`;
+}
+
+/**
+ * Recovers every message a subagent sent back, from persisted rows only.
+ *
+ * Two provider shapes carry one:
+ * - the collaboration tool's own result (`data.agentReply`, retained verbatim
+ *   by the activity projection) — a foreground Task/Agent/SendMessage call
+ *   returning the child's report;
+ * - a terminal task row's `summary` — how a BACKGROUND agent's report arrives,
+ *   since a detached task has no tool result to return into.
+ *
+ * The same report can arrive both ways for a task that was backgrounded
+ * mid-flight, so a task summary that merely repeats a reply already recovered
+ * from the tool result is dropped rather than rendered twice.
+ */
+export function deriveSubagentReplies(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyArray<SubagentReplyEntry> {
+  // Launching tool call -> the agent it launched, and each agent's best title.
+  const agentIdByToolUseId = new Map<string, string>();
+  const agentIdByAlias = new Map<string, string>();
+  const titleByAgentId = new Map<string, string>();
+  for (const activity of activities) {
+    if (!activity.kind.startsWith("task.")) continue;
+    const payload = asRecord(activity.payload);
+    const taskId = payload ? asString(payload.taskId) : undefined;
+    if (!payload || !taskId) continue;
+    const toolUseId = asString(payload.toolUseId);
+    if (toolUseId) agentIdByToolUseId.set(toolUseId, taskId);
+    const title = asString(payload.title) ?? asString(payload.description);
+    if (title && !isOpaqueSubagentTitle(title, taskId)) titleByAgentId.set(taskId, title);
+    agentIdByAlias.set(taskId.toLowerCase(), taskId);
+    const pathAlias = agentPathLeaf(payload.agentPath);
+    if (pathAlias) agentIdByAlias.set(pathAlias.toLowerCase(), taskId);
+    if (title) agentIdByAlias.set(title.toLowerCase(), taskId);
+  }
+
+  const replies: SubagentReplyEntry[] = [];
+  const seenReplyKeys = new Set<string>();
+  const seenActivityIds = new Set<string>();
+
+  for (const activity of activities) {
+    if (activity.kind !== "tool.completed") continue;
+    const payload = asRecord(activity.payload);
+    if (!payload || payload.itemType !== "collab_agent_tool_call") continue;
+    const data = asRecord(payload.data);
+    const text = asString(data?.agentReply);
+    if (!text) continue;
+    const itemId = asString(payload.itemId) ?? asString(payload.toolCallId);
+    const input = asRecord(data?.input);
+    const recipient = asString(input?.to) ?? asString(input?.agentId) ?? asString(input?.agent_id);
+    const agentId =
+      (itemId ? agentIdByToolUseId.get(itemId) : undefined) ??
+      (recipient ? agentIdByAlias.get(recipient.toLowerCase()) : undefined);
+    // An unresolvable reply is a tool result like any other: without knowing
+    // which agent spoke, a "From …" message would be a guess, and the row
+    // still renders as the ordinary tool card it already was.
+    if (!agentId) continue;
+    // A subagent reading its own sub-subagent's report owns that exchange.
+    const ownerAgentId = asString(payload.agentId) ?? null;
+    if (ownerAgentId === agentId) continue;
+    seenReplyKeys.add(normalizedReplyKey(agentId, text));
+    seenActivityIds.add(activity.id);
+    replies.push({
+      id: `subagent-reply:${activity.id}`,
+      activityId: activity.id,
+      agentId,
+      agentTitle: titleByAgentId.get(agentId) ?? null,
+      ownerAgentId,
+      turnId: activity.turnId,
+      text,
+      createdAt: activity.createdAt,
+    });
+  }
+
+  for (const activity of activities) {
+    if (activity.kind !== "task.completed") continue;
+    const payload = asRecord(activity.payload);
+    const agentId = payload ? asString(payload.taskId) : undefined;
+    if (!payload || !agentId) continue;
+    if (isBackgroundTaskActivity(payload)) continue;
+    const text = asString(payload.summary);
+    if (!text) continue;
+    if (seenReplyKeys.has(normalizedReplyKey(agentId, text))) continue;
+    if (seenActivityIds.has(activity.id)) continue;
+    seenReplyKeys.add(normalizedReplyKey(agentId, text));
+    seenActivityIds.add(activity.id);
+    // `agentId` on a task row names the conversation that OWNS the task, which
+    // is exactly the conversation its report is addressed to.
+    const ownerAgentId = asString(payload.agentId) ?? null;
+    replies.push({
+      id: `subagent-reply:${activity.id}`,
+      activityId: activity.id,
+      agentId,
+      agentTitle: titleByAgentId.get(agentId) ?? null,
+      ownerAgentId,
+      turnId: activity.turnId,
+      text,
+      createdAt: activity.createdAt,
+    });
+  }
+
+  // Mobile Hermes does not provide the ES2023 change-by-copy array methods.
+  return replies.sort(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+  );
+}
+
+/**
+ * The replies one conversation received: the parent thread (`null`) or one
+ * subagent reading its own children's reports.
+ */
+export function selectSubagentRepliesFor(
+  replies: ReadonlyArray<SubagentReplyEntry>,
+  ownerAgentId: string | null,
+): ReadonlyArray<SubagentReplyEntry> {
+  return replies.filter((reply) => reply.ownerAgentId === ownerAgentId);
 }
 
 /** Timeline-bypassing synthesized rows (Codex children, workflow members). */

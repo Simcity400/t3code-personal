@@ -63,6 +63,24 @@ function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity
 }
 
 /**
+ * Owner of a context-window row: the parent thread (null) or one subagent.
+ *
+ * Supersession is per owner as well as per turn. The parent and its children
+ * report usage under the SAME turn id, so an owner-blind rule would let the
+ * newest row — whichever conversation produced it — evict every other meter's
+ * only value, and the surviving meters would read whatever agent happened to
+ * speak last.
+ */
+function contextWindowActivityOwner(activity: OrchestrationThreadActivity): string | null {
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  const agentId = payload?.agentId;
+  return typeof agentId === "string" && agentId.length > 0 ? agentId : null;
+}
+
+/**
  * Apply a single orchestration event to an `OrchestrationThread`, returning
  * the updated thread, a deletion signal, or an "unchanged" marker when the
  * event doesn't affect this thread.
@@ -634,6 +652,9 @@ export function applyThreadDetailEvent(
           },
         };
       }
+      const contextWindowOwner = supersedesContextWindow
+        ? contextWindowActivityOwner(activity)
+        : null;
       const activities = pipe(
         thread.activities,
         Arr.filter(
@@ -642,6 +663,7 @@ export function applyThreadDetailEvent(
             !(
               supersedesContextWindow &&
               entry.turnId === activity.turnId &&
+              contextWindowActivityOwner(entry) === contextWindowOwner &&
               isResolvableContextWindowActivity(entry)
             ),
         ),

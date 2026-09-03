@@ -100,6 +100,7 @@ import {
   derivePendingUserInputs,
   derivePhase,
   deriveTimelineEntries,
+  deriveSubagentReplyMessages,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   findLatestProposedPlan,
@@ -180,7 +181,9 @@ import { RightPanelTabs, type PullRequestTabStatus } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
 import {
   deriveAgentPanelModel,
+  deriveSubagentReplies,
   foldSubagentActivities,
+  formatSubagentTitle,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
@@ -2473,6 +2476,34 @@ function ChatViewContent(props: ChatViewProps) {
       }),
     });
   }, [agentSessionLive, threadActivities]);
+  // Messages the thread's subagents sent BACK. Derived from the same persisted
+  // rows the panel folds, so they survive reload and resume; the parent used
+  // to see only a collapsed tool row where its agent actually answered.
+  const subagentReplies = useMemo(
+    () => deriveSubagentReplies(threadActivities),
+    [threadActivities],
+  );
+  const subagentReplyMessages = useMemo(
+    () =>
+      deriveSubagentReplyMessages(subagentReplies, null, (reply) =>
+        formatSubagentTitle(
+          agentPanelModel.directAgents.find((agent) => agent.id === reply.agentId)?.title ??
+            reply.agentTitle ??
+            reply.agentId,
+        ),
+      ),
+    [agentPanelModel.directAgents, subagentReplies],
+  );
+  const subagentReplyByMessageId = useMemo(
+    () =>
+      new Map(
+        subagentReplyMessages.map((reply) => [
+          reply.message.id,
+          { agentId: reply.agentId, label: reply.label },
+        ]),
+      ),
+    [subagentReplyMessages],
+  );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -2852,10 +2883,20 @@ function ChatViewContent(props: ChatViewProps) {
     feedbackSubmissions,
     optimisticUserMessages,
   ]);
+  // Appended after the agent-attributed filter above: a reply is a message the
+  // PARENT received, so it belongs in the parent timeline even though it
+  // carries the sending agent's id.
+  const timelineMessagesWithReplies = useMemo(
+    () =>
+      subagentReplyMessages.length === 0
+        ? timelineMessages
+        : [...timelineMessages, ...subagentReplyMessages.map((reply) => reply.message)],
+    [subagentReplyMessages, timelineMessages],
+  );
   const timelineEntries = useMemo(
     () =>
-      deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
-    [activeThread?.proposedPlans, timelineMessages, workLogEntries],
+      deriveTimelineEntries(timelineMessagesWithReplies, activeThread?.proposedPlans ?? [], workLogEntries),
+    [activeThread?.proposedPlans, timelineMessagesWithReplies, workLogEntries],
   );
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
   const draftHeroDockRequested =
@@ -3671,6 +3712,18 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().open(activeThreadRef, "agents");
   }, [activeThreadRef]);
+  // Opening the panel ON a specific agent: clicking a "From <agent>" reply in
+  // the chat lands in that agent's transcript rather than the roster.
+  const [requestedAgentId, setRequestedAgentId] = useState<string | null>(null);
+  const openAgentTranscript = useCallback(
+    (agentId: string) => {
+      if (!activeThreadRef) return;
+      useRightPanelStore.getState().open(activeThreadRef, "agents");
+      setRequestedAgentId(agentId);
+    },
+    [activeThreadRef],
+  );
+  const clearRequestedAgent = useCallback(() => setRequestedAgentId(null), []);
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
@@ -7731,6 +7784,8 @@ function ChatViewContent(props: ChatViewProps) {
         resolvedTheme={resolvedTheme}
         timestampFormat={timestampFormat}
         selectedAgentIdRef={agentsPanelSelectedIdRef}
+        requestedAgentId={requestedAgentId}
+        onRequestedAgentHandled={clearRequestedAgent}
       />
     ) : (renderedRightPanelSurface?.kind === "files" ||
         renderedRightPanelSurface?.kind === "file") &&
@@ -7949,6 +8004,8 @@ function ChatViewContent(props: ChatViewProps) {
                 onCiteAssistantText={citeAssistantText}
                 agentPanelModel={agentPanelModel}
                 onOpenAgents={addAgentsSurface}
+                subagentReplyByMessageId={subagentReplyByMessageId}
+                onOpenAgent={openAgentTranscript}
                 key={activeThread.id}
                 isWorking={isWorking}
                 isPreparingWorktree={isPreparingWorktree}
