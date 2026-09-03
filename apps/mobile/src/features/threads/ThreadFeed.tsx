@@ -1,10 +1,6 @@
 import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
-import {
-  LegendList,
-  useViewabilityAmount,
-  type LegendListRef,
-} from "@legendapp/list/react-native";
+import { LegendList, useViewabilityAmount, type LegendListRef } from "@legendapp/list/react-native";
 import type {
   AssetResource,
   ChatAttachment,
