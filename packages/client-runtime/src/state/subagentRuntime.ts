@@ -1681,8 +1681,21 @@ function normalizedReplyKey(agentId: string, text: string): string {
  * mid-flight, so a task summary that merely repeats a reply already recovered
  * from the tool result is dropped rather than rendered twice.
  */
+/**
+ * Statuses that end one of a subagent's turns. A child that goes idle has
+ * finished answering; a terminal one obviously has.
+ */
+const REPLY_BOUNDARY_STATUSES: ReadonlySet<string> = new Set([
+  "idle",
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+
 export function deriveSubagentReplies(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  messages: ReadonlyArray<OrchestrationMessage> = [],
 ): ReadonlyArray<SubagentReplyEntry> {
   // Launching tool call -> the agent it launched, and each agent's best title.
   const agentIdByToolUseId = new Map<string, string>();
@@ -1766,6 +1779,84 @@ export function deriveSubagentReplies(
       text,
       createdAt: activity.createdAt,
     });
+  }
+
+  // Third source, for providers whose collaboration protocol carries no result
+  // payload at all: the child's own turn-final message.
+  //
+  // Codex is the case in point — its `collabAgentToolCall` thread item has
+  // fields for the prompt, the receivers, the model and the status, but none
+  // for output, so the parent's call cannot carry the child's answer. What the
+  // parent read is the last thing the child said before it went idle.
+  //
+  // Applied ONLY to agents that produced no reply from the two authoritative
+  // sources above. That partitions cleanly by provider (a Claude agent always
+  // returns a tool result or a task summary; a Codex child never does) and
+  // makes double-rendering the same report structurally impossible rather than
+  // dependent on comparing texts that a provider may have reformatted.
+  const agentsWithExplicitReplies = new Set(replies.map((reply) => reply.agentId));
+  const boundariesByAgent = new Map<
+    string,
+    Array<{
+      createdAt: string;
+      turnId: OrchestrationThreadActivity["turnId"];
+      owner: string | null;
+    }>
+  >();
+  for (const activity of activities) {
+    if (activity.kind !== "task.updated" && activity.kind !== "task.completed") continue;
+    const payload = asRecord(activity.payload);
+    const taskId = payload ? asString(payload.taskId) : undefined;
+    if (!payload || !taskId || agentsWithExplicitReplies.has(taskId)) continue;
+    if (isBackgroundTaskActivity(payload)) continue;
+    const status = asString(payload.status);
+    if (!status || !REPLY_BOUNDARY_STATUSES.has(status)) continue;
+    const boundaries = boundariesByAgent.get(taskId) ?? [];
+    boundaries.push({
+      createdAt: activity.createdAt,
+      turnId: activity.turnId,
+      owner: asString(payload.agentId) ?? null,
+    });
+    boundariesByAgent.set(taskId, boundaries);
+  }
+
+  for (const [agentId, boundaries] of boundariesByAgent) {
+    const agentMessages = messages
+      .filter((message) => message.agentId === agentId && message.role === "assistant")
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    if (agentMessages.length === 0) continue;
+    const ordered = [...boundaries].sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt),
+    );
+    let nextUnclaimed = 0;
+    for (const boundary of ordered) {
+      let claimed = -1;
+      for (let index = nextUnclaimed; index < agentMessages.length; index += 1) {
+        if (agentMessages[index]!.createdAt.localeCompare(boundary.createdAt) <= 0) {
+          claimed = index;
+        } else {
+          break;
+        }
+      }
+      // Nothing new since the previous boundary: repeated idle rows (a status
+      // patch and a turn completion often both land) must not re-send the same
+      // message.
+      if (claimed < nextUnclaimed) continue;
+      const message = agentMessages[claimed]!;
+      nextUnclaimed = claimed + 1;
+      const text = message.text.trim();
+      if (text.length === 0) continue;
+      replies.push({
+        id: `subagent-reply:message:${message.id}`,
+        activityId: message.id,
+        agentId,
+        agentTitle: titleByAgentId.get(agentId) ?? null,
+        ownerAgentId: boundary.owner,
+        turnId: message.turnId,
+        text,
+        createdAt: boundary.createdAt,
+      });
+    }
   }
 
   // Mobile Hermes does not provide the ES2023 change-by-copy array methods.

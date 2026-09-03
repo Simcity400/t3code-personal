@@ -779,10 +779,10 @@ function AgentTranscript({
   // as the parent thread renders the reports it receives.
   const nestedReplies = useMemo(
     () =>
-      deriveSubagentReplyMessages(deriveSubagentReplies(activities), agent.id, (reply) =>
+      deriveSubagentReplyMessages(deriveSubagentReplies(activities, messages), agent.id, (reply) =>
         formatSubagentTitle(reply.agentTitle ?? reply.agentId),
       ),
-    [activities, agent.id],
+    [activities, agent.id, messages],
   );
   const subagentReplyByMessageId = useMemo(
     () =>

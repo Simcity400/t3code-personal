@@ -445,6 +445,7 @@ import { useAssetUrls } from "../assets/assetUrls";
 const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached files.]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
@@ -2480,8 +2481,8 @@ function ChatViewContent(props: ChatViewProps) {
   // rows the panel folds, so they survive reload and resume; the parent used
   // to see only a collapsed tool row where its agent actually answered.
   const subagentReplies = useMemo(
-    () => deriveSubagentReplies(threadActivities),
-    [threadActivities],
+    () => deriveSubagentReplies(threadActivities, activeThread?.messages ?? EMPTY_MESSAGES),
+    [activeThread?.messages, threadActivities],
   );
   const subagentReplyMessages = useMemo(
     () =>
