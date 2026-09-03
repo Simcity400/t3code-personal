@@ -603,7 +603,9 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
   it.effect("carries child model metadata through every task event", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
-      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 10)).pipe(
+      // 11, not 10: the fork's collabAgent/item mapping emits an
+      // agent-attributed item.completed alongside the task.progress row.
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 11)).pipe(
         Effect.forkChild,
       );
 
@@ -663,20 +665,26 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           "task.updated",
           "task.progress",
           "task.progress",
+          "item.completed",
           "task.updated",
           "task.updated",
           "task.updated",
         ],
       );
       for (const event of events.slice(0, -1)) {
+        // The fork's item lifecycle row carries item metadata, not the child's
+        // task linkage, so it is not part of "every task event".
+        if (event.type === "item.completed") {
+          continue;
+        }
         const payload = event.payload as Record<string, unknown>;
         NodeAssert.equal(payload.model, "gpt-5.6-sol");
         NodeAssert.equal(payload.effort, "high");
       }
 
-      const metadataPayload = events[8]?.payload as Record<string, unknown>;
+      const metadataPayload = events[9]?.payload as Record<string, unknown>;
       NodeAssert.equal("status" in metadataPayload, false);
-      const blankMetadataPayload = events[9]?.payload as Record<string, unknown>;
+      const blankMetadataPayload = events[10]?.payload as Record<string, unknown>;
       NodeAssert.equal("status" in blankMetadataPayload, false);
       NodeAssert.equal("model" in blankMetadataPayload, false);
       NodeAssert.equal("effort" in blankMetadataPayload, false);
