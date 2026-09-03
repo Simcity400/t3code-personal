@@ -31,7 +31,11 @@ import {
   subagentPanelSection,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
+import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
+import type { ChatFileAttachment } from "../types";
 import type {
+  AssistantCitation,
   EnvironmentId,
   MessageId,
   OrchestrationMessage,
@@ -768,6 +772,10 @@ function AgentTranscript({
   timestampFormat,
   onBack,
   onOpenAgent,
+  onFileOpen,
+  onFileDownload,
+  onUseArtifactTemplate,
+  onCiteAssistantText,
 }: {
   agent: RuntimeSubagent;
   /** The whole roster: nested-agent rows read their live state from it, the
@@ -783,6 +791,18 @@ function AgentTranscript({
   onBack: () => void;
   /** Opens another agent's transcript (a nested spawn row, or a reply header). */
   onOpenAgent: (agentId: string) => void;
+  /**
+   * The row affordances the main chat wires up. A subagent transcript renders
+   * the same rows through the same component, so without these a file it
+   * produced is drawn but dead on click, and its text cannot be cited —
+   * identical-looking rows that quietly do less.
+   */
+  onFileOpen?: ((attachment: ChatFileAttachment) => void) | undefined;
+  onFileDownload?: ((attachment: ChatFileAttachment) => void) | undefined;
+  onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
+  onCiteAssistantText?:
+    | ((citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => boolean)
+    | undefined;
 }) {
   const title = formatSubagentTitle(agent.title);
   const listRef = useRef<LegendListRef | null>(null);
@@ -905,6 +925,10 @@ function AgentTranscript({
           agentPanelModel={model}
           onOpenAgents={() => onOpenAgent(agent.id)}
           onOpenAgent={onOpenAgent}
+          {...(onFileOpen ? { onFileOpen } : {})}
+          {...(onFileDownload ? { onFileDownload } : {})}
+          {...(onUseArtifactTemplate ? { onUseArtifactTemplate } : {})}
+          {...(onCiteAssistantText ? { onCiteAssistantText } : {})}
           latestTurn={latestTurn}
           runningTurnId={isWorking ? turnId : null}
           turnDiffSummaryByAssistantMessageId={EMPTY_TURN_DIFFS}
@@ -964,6 +988,10 @@ export function AgentsPanel({
   selectedAgentIdRef,
   requestedAgentId = null,
   onRequestedAgentHandled,
+  onFileOpen,
+  onFileDownload,
+  onUseArtifactTemplate,
+  onCiteAssistantText,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
@@ -984,6 +1012,18 @@ export function AgentsPanel({
    */
   requestedAgentId?: string | null;
   onRequestedAgentHandled?: () => void;
+  /**
+   * The row affordances the main chat wires up. A subagent transcript renders
+   * the same rows through the same component, so without these a file it
+   * produced is drawn but dead on click, and its text cannot be cited —
+   * identical-looking rows that quietly do less.
+   */
+  onFileOpen?: ((attachment: ChatFileAttachment) => void) | undefined;
+  onFileDownload?: ((attachment: ChatFileAttachment) => void) | undefined;
+  onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
+  onCiteAssistantText?:
+    | ((citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => boolean)
+    | undefined;
 }) {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   useEffect(() => {
@@ -1100,6 +1140,10 @@ export function AgentsPanel({
         timestampFormat={timestampFormat}
         onBack={() => setSelectedAgentId(null)}
         onOpenAgent={setSelectedAgentId}
+        {...(onFileOpen ? { onFileOpen } : {})}
+        {...(onFileDownload ? { onFileDownload } : {})}
+        {...(onUseArtifactTemplate ? { onUseArtifactTemplate } : {})}
+        {...(onCiteAssistantText ? { onCiteAssistantText } : {})}
       />
     );
   }

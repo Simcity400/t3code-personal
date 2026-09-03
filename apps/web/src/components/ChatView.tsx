@@ -7800,6 +7800,10 @@ function ChatViewContent(props: ChatViewProps) {
         selectedAgentIdRef={agentsPanelSelectedIdRef}
         requestedAgentId={requestedAgentId}
         onRequestedAgentHandled={clearRequestedAgent}
+        onFileOpen={openFileAttachment}
+        onFileDownload={downloadFileAttachment}
+        onUseArtifactTemplate={useArtifactTemplate}
+        onCiteAssistantText={citeAssistantText}
       />
     ) : (renderedRightPanelSurface?.kind === "files" ||
         renderedRightPanelSurface?.kind === "file") &&
