@@ -1089,7 +1089,7 @@ export function isAgentAttributedToolActivity(activity: OrchestrationThreadActiv
  * the tasks it spawned itself, its context-window updates. Selecting by
  * attribution rather than by an allowlist of kinds is what makes the agent
  * transcript identical to the parent chat: the SAME derivations
- * (`deriveWorkLogEntries`, `deriveTurnPlans`, `deriveLatestContextWindowSnapshot`)
+ * (`deriveWorkLogEntries`, `deriveLatestContextWindowSnapshot`)
  * run over the same shape of input and apply their own filters, instead of a
  * thinner tool-only feed that silently dropped everything else.
  *
