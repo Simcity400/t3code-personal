@@ -3,10 +3,12 @@ import {
   isActiveSubagentStatus,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/contextWindow";
 import { memo } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
+import { ContextWindowChip } from "./ContextWindowChip";
 import { agentStatusAccessibilityLabel, formatAgentElapsed } from "./ThreadAgentsRouteScreen.logic";
 import type { AgentStatusClockSnapshot } from "./agentStatusClock";
 
@@ -67,10 +69,13 @@ export function AgentStatus({
 function AgentCardImpl({
   agent,
   clock,
+  contextWindow = null,
   onOpen,
 }: {
   readonly agent: RuntimeSubagent;
   readonly clock: AgentStatusClockSnapshot;
+  /** This agent's own context occupancy, when it has reported any. */
+  readonly contextWindow?: ContextWindowSnapshot | null;
   readonly onOpen: (agentId: string) => void;
 }) {
   const title = formatSubagentTitle(agent.title);
@@ -86,6 +91,12 @@ function AgentCardImpl({
         <Text className="min-w-0 flex-1 text-sm font-t3-semibold text-foreground" numberOfLines={1}>
           {title}
         </Text>
+        {contextWindow ? (
+          <ContextWindowChip
+            usage={contextWindow}
+            accessibilityPrefix={`${title} context window`}
+          />
+        ) : null}
         <AgentStatus agent={agent} clock={clock} />
       </View>
       <Text className="mt-1 text-xs text-foreground-muted" numberOfLines={1}>
