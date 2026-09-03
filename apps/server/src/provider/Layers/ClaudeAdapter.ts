@@ -277,6 +277,11 @@ interface ClaudeTaskAgentState {
   subagentType: string | undefined;
   taskType: string | undefined;
   workflowName: string | undefined;
+  /** Shell command line, from the launching Bash tool call's own input. */
+  command: string | undefined;
+  /** MCP server / tool behind a monitor or backgrounded MCP task. */
+  server: string | undefined;
+  tool: string | undefined;
   skipTranscript: boolean;
   runHandles: TaskRunHandles | undefined;
   /** Set when this task was launched from inside a subagent. */
@@ -375,6 +380,13 @@ interface ClaudeSessionContext {
   /** Task ids that have started and not yet reached a terminal state. */
   readonly liveTaskIds: Set<string>;
   turnState: ClaudeTurnState | undefined;
+  /**
+   * Whether the CLI last reported `status: "compacting"`. Held so the two
+   * compaction edges can be marked exactly once each: the CLI republishes
+   * `status` freely, and an un-edged signal would make ingestion write a
+   * durable compaction row on every heartbeat.
+   */
+  compacting: boolean;
   lastKnownContextWindow: number | undefined;
   /**
    * Context window per model id, learned from result `modelUsage`. Subagents
@@ -1280,6 +1292,9 @@ function taskLinkageFor(
     ...(agent.taskType ? { taskType: agent.taskType } : {}),
     ...(agent.owningAgentId ? { agentId: agent.owningAgentId } : {}),
     ...(agent.description ? { title: agent.description } : {}),
+    ...(agent.command ? { command: agent.command } : {}),
+    ...(agent.server ? { server: agent.server } : {}),
+    ...(agent.tool ? { tool: agent.tool } : {}),
     ...(agent.subagentType ? { role: agent.subagentType } : {}),
     ...(agent.model ? { model: agent.model } : {}),
     ...(agent.effort ? { effort: agent.effort } : {}),
@@ -1295,6 +1310,10 @@ function taskLinkageFor(
  * 'monitor', 'workflow'); the task_started stream carries the raw
  * discriminant instead. Map back so a rehydrated entry classifies exactly as
  * a live one would.
+ *
+ * Only the hook payload uses the friendly labels — the stream snapshot sends
+ * the raw discriminant (see rehydrateTaskAgentsFromRoster) — so in practice
+ * this table is a pass-through guard for the day the two converge.
  */
 const ROSTER_TASK_TYPES: Readonly<Record<string, string>> = {
   shell: "local_bash",
@@ -1303,48 +1322,166 @@ const ROSTER_TASK_TYPES: Readonly<Record<string, string>> = {
   subagent: "local_agent",
 };
 
+/** The MCP tool-name convention: `mcp__<server>__<tool>`. */
+function mcpServerAndTool(
+  toolName: string | undefined,
+): { readonly server: string; readonly tool: string } | undefined {
+  if (toolName === undefined || !toolName.startsWith("mcp__")) return undefined;
+  const parts = toolName.slice("mcp__".length).split("__");
+  if (parts.length < 2) return undefined;
+  const server = trimmedString(parts[0]);
+  const tool = trimmedString(parts.slice(1).join("__"));
+  return server && tool ? { server, tool } : undefined;
+}
+
 /**
- * Refills task identity from a background_tasks_changed roster snapshot.
+ * The reader-facing details a task row needs beyond its description, taken
+ * from whatever the stream actually carries.
  *
- * Fill-if-missing only: a live entry already holds richer identity than the
- * summary does, and must not be overwritten by it. A later real task_started
- * replaces the seed wholesale, so a seed cannot go stale.
+ * The CLI keeps `command`, `server` and `tool` on its internal TaskState but
+ * projects them onto the wire only in the Stop/SubagentStop HOOK payload
+ * (`BackgroundTaskSummary`), never on `task_started` or the
+ * `background_tasks_changed` snapshot. Both are still recoverable from the
+ * stream:
  *
- * The seed is deliberately partial. BackgroundTaskSummary carries no parent,
- * so a rehydrated task that a subagent had launched groups under the main
- * agent until a live row supplies `agentId`, and skipTranscript stays false
- * until a row carries it (the terminal notification does, which is the case
- * that matters). Both degrade presentation, not classification.
+ * - a background shell's launching tool call is the Bash call itself, whose
+ *   input carries the command line verbatim;
+ * - an MCP monitor / backgrounded MCP task is launched by an
+ *   `mcp__<server>__<tool>` call, and the CLI additionally builds that task's
+ *   description as `server/tool` (its `mcpTaskDescription` helper), so the
+ *   pair survives even when the launching call has aged out.
+ */
+function taskLaunchDetails(input: {
+  readonly taskType: string | undefined;
+  readonly description: string | undefined;
+  readonly launchToolName: string | undefined;
+  readonly launchInput: Record<string, unknown> | undefined;
+}): { command?: string; server?: string; tool?: string } {
+  const details: { command?: string; server?: string; tool?: string } = {};
+  const command = trimmedString(input.launchInput?.command);
+  if (command !== undefined) details.command = command;
+  const fromToolName = mcpServerAndTool(input.launchToolName);
+  if (fromToolName) {
+    details.server = fromToolName.server;
+    details.tool = fromToolName.tool;
+    return details;
+  }
+  // `server/tool`, exactly as the CLI composes an mcp_task's description.
+  // Guarded on the task type so an ordinary description containing a slash
+  // (a shell running `ls src/state`) is never mistaken for one.
+  if (input.taskType === "mcp_task" && input.description !== undefined) {
+    const separator = input.description.indexOf("/");
+    if (separator > 0) {
+      const server = trimmedString(input.description.slice(0, separator));
+      const tool = trimmedString(input.description.slice(separator + 1));
+      if (server !== undefined && tool !== undefined) {
+        details.server = server;
+        details.tool = tool;
+      }
+    }
+  }
+  return details;
+}
+
+/**
+ * Merges a `background_tasks_changed` roster snapshot into remembered task
+ * identity, and reports the task ids whose identity actually changed.
+ *
+ * The snapshot is the ONLY way to recover a task's identity after the
+ * remembered linkage is lost (a resumed session starts with an empty
+ * registry), and it is the only row that carries the CLI's `ambient` flag —
+ * a superset of `skip_transcript` that also covers auto-started live-update
+ * watchers, which the CLI asks hosts to keep out of activity indicators.
+ *
+ * Wire shape, read from the installed CLI's own schema for this subtype:
+ * `{tasks: [{task_id, task_type, description, ambient?}]}` with REPLACE
+ * semantics. It is NOT the SDK's `BackgroundTaskSummary`
+ * (`{id, type, status, command, server, tool, agent_type, name}`) — that shape
+ * exists only in the Stop/SubagentStop hook payload. The previous reader took
+ * the documented summary shape at face value and looked up `summary.id`,
+ * which is never present, so every snapshot was silently discarded and the
+ * rehydration this fork relies on never once ran. Both shapes are accepted
+ * now, so the reader survives whichever way the two converge.
+ *
+ * Fill-if-absent per field: a live entry holds richer identity than the
+ * snapshot and must not be overwritten by it, but a live entry that is merely
+ * missing a field still gets it filled.
  */
 function rehydrateTaskAgentsFromRoster(
   context: { readonly taskAgents: Map<string, ClaudeTaskAgentState> },
   message: Record<string, unknown>,
-): void {
+): ReadonlyArray<string> {
   const tasks = message.tasks;
   if (!Array.isArray(tasks)) {
-    return;
+    return [];
   }
+  const changed: Array<string> = [];
   for (const entry of tasks) {
     if (typeof entry !== "object" || entry === null) continue;
     const summary = entry as Record<string, unknown>;
-    const taskId = trimmedString(summary.id);
-    if (!taskId || context.taskAgents.has(taskId)) continue;
-    const rawType = trimmedString(summary.type);
+    const taskId = trimmedString(summary.task_id) ?? trimmedString(summary.id);
+    if (!taskId) continue;
+    const rawType = trimmedString(summary.task_type) ?? trimmedString(summary.type);
     const taskType = rawType ? (ROSTER_TASK_TYPES[rawType] ?? rawType) : undefined;
-    context.taskAgents.set(taskId, {
+    const description = trimmedString(summary.command) ?? trimmedString(summary.description);
+    const existing = context.taskAgents.get(taskId);
+    const seeded: ClaudeTaskAgentState = existing ?? {
       taskId,
       toolUseId: undefined,
-      description: trimmedString(summary.command) ?? trimmedString(summary.description),
-      subagentType: trimmedString(summary.agent_type),
-      taskType,
-      workflowName: trimmedString(summary.name),
+      description: undefined,
+      subagentType: undefined,
+      taskType: undefined,
+      workflowName: undefined,
+      command: undefined,
+      server: undefined,
+      tool: undefined,
       skipTranscript: false,
       runHandles: undefined,
       owningAgentId: undefined,
       model: undefined,
       effort: undefined,
-    });
+    };
+    let dirty = existing === undefined;
+    const fill = <K extends keyof ClaudeTaskAgentState>(
+      key: K,
+      value: ClaudeTaskAgentState[K] | undefined,
+    ): void => {
+      if (value === undefined || seeded[key] !== undefined) return;
+      seeded[key] = value;
+      dirty = true;
+    };
+    fill("taskType", taskType);
+    fill("description", description);
+    fill("subagentType", trimmedString(summary.agent_type));
+    fill("workflowName", trimmedString(summary.name));
+    fill("command", trimmedString(summary.command));
+    fill("server", trimmedString(summary.server));
+    fill("tool", trimmedString(summary.tool));
+    // The snapshot's `ambient` covers every skip_transcript task PLUS the
+    // CLI's own live-update watchers, so it may only ever be raised here.
+    if (summary.ambient === true && !seeded.skipTranscript) {
+      seeded.skipTranscript = true;
+      dirty = true;
+    }
+    // Server/tool recovered from an mcp_task description, for a snapshot that
+    // arrived after the launching call aged out.
+    if (seeded.server === undefined && seeded.tool === undefined) {
+      const derived = taskLaunchDetails({
+        taskType: seeded.taskType,
+        description: seeded.description,
+        launchToolName: undefined,
+        launchInput: undefined,
+      });
+      if (derived.server !== undefined && derived.tool !== undefined) {
+        seeded.server = derived.server;
+        seeded.tool = derived.tool;
+        dirty = true;
+      }
+    }
+    context.taskAgents.set(taskId, seeded);
+    if (dirty) changed.push(taskId);
   }
+  return changed;
 }
 
 const WORKFLOW_PHASE_CAP = 64;
@@ -3562,6 +3699,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             subagentType: existing?.subagentType,
             taskType: existing?.taskType ?? "local_workflow",
             workflowName: existing?.workflowName,
+            command: existing?.command,
+            server: existing?.server,
+            tool: existing?.tool,
             skipTranscript: existing?.skipTranscript ?? false,
             runHandles,
             owningAgentId: existing?.owningAgentId,
@@ -3915,17 +4055,45 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // ({provider, url, repo}) are informational CLI notices; the work log
     // already shows the underlying git/gh tool calls.
     switch (message.subtype as string) {
-      case "background_tasks_changed":
-        // Roster snapshot ({tasks:[{id,type,description,command,...}]}). It
-        // emits nothing, but it is the ONLY way to recover a task's identity
+      case "background_tasks_changed": {
+        // Roster snapshot ({tasks:[{task_id,task_type,description,ambient?}]},
+        // REPLACE semantics). It is the ONLY way to recover a task's identity
         // after the remembered linkage is lost — a resumed session has an
         // empty registry, so a terminal row for a task started before the
         // restart would carry no taskType, and ingestion defaults a
         // type-less row to "agent". That mis-stamp puts a background shell
         // in the agents roster. Rehydrating here keeps classification
         // truthful for every later row.
-        rehydrateTaskAgentsFromRoster(context, message as unknown as Record<string, unknown>);
+        const changed = rehydrateTaskAgentsFromRoster(
+          context,
+          message as unknown as Record<string, unknown>,
+        );
+        // Recovered identity has to reach the client, not just the registry.
+        // Waiting for the task's next lifecycle row means a resumed shell sits
+        // mis-stamped — or with no label at all — until it finishes, which for
+        // a watch loop can be hours. A status-less task.updated is pure
+        // metadata: both client folds fill-if-absent from it and neither
+        // treats it as a transition.
+        for (const taskId of changed) {
+          const linkage = taskLinkageFor(context.taskAgents, taskId);
+          if (Object.keys(linkage).length === 0) continue;
+          // A fresh stamp per row: activities upsert by event id, so reusing
+          // this message's one id would make each enrichment overwrite the
+          // last and only the final task in the snapshot would survive.
+          const stamp = yield* makeEventStamp();
+          yield* offerRuntimeEvent({
+            ...base,
+            eventId: stamp.eventId,
+            createdAt: stamp.createdAt,
+            type: "task.updated",
+            payload: {
+              taskId: RuntimeTaskId.make(taskId),
+              ...linkage,
+            },
+          });
+        }
         return;
+      }
       case "vcs_state_changed":
       case "code_change_published":
         return;
@@ -3941,18 +4109,49 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
-      case "status":
+      case "status": {
+        // `system/status` is the only place the CLI names compaction: its
+        // SDKStatus is 'compacting' | 'requesting' | null, and
+        // session_state_changed (idle | running | requires_action, verified in
+        // the shipped binary) never mentions it. Reporting it as a bare
+        // `waiting` lost the one fact worth showing — the thread is paused on
+        // the machine, not on the user — so the state now says so, and the
+        // transition edges are marked for the durable row.
+        const compacting = message.status === "compacting";
+        const wasCompacting = context.compacting;
+        context.compacting = compacting;
         yield* offerRuntimeEvent({
           ...base,
           type: "session.state.changed",
           payload: {
-            state: message.status === "compacting" ? "waiting" : "running",
+            state: compacting ? "compacting" : "running",
             reason: `status:${message.status ?? "active"}`,
+            ...(compacting === wasCompacting ? {} : { compacting }),
             detail: message,
           },
         });
         return;
+      }
       case "compact_boundary":
+        // The boundary is the compaction's receipt. A `status: null` normally
+        // closes the wait first, but a compaction that ends by producing its
+        // boundary without one would otherwise leave the panel claiming the
+        // thread is still compacting for the rest of the session.
+        if (context.compacting) {
+          context.compacting = false;
+          const stamp = yield* makeEventStamp();
+          yield* offerRuntimeEvent({
+            ...base,
+            eventId: stamp.eventId,
+            createdAt: stamp.createdAt,
+            type: "session.state.changed",
+            payload: {
+              state: "running",
+              reason: "compact_boundary",
+              compacting: false,
+            },
+          });
+        }
         if (context.turnState) {
           context.turnState.latestAssistantUsage = undefined;
           context.turnState.compactedSinceLatestAssistantUsage = true;
@@ -4047,6 +4246,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           (typeof rawLaunchEffort === "number" && Number.isFinite(rawLaunchEffort)
             ? String(rawLaunchEffort)
             : context.currentEffort);
+        // Reader-facing details the CLI keeps off the stream's task rows but
+        // leaves recoverable from the call that launched the task.
+        const launchDetails = taskLaunchDetails({
+          taskType: message.task_type,
+          description: message.description,
+          launchToolName: launchingTool?.toolName,
+          launchInput,
+        });
         // Remember the agent identity so every later task.* payload for this
         // taskId is self-describing (identity must survive activity retention).
         context.taskAgents.set(message.task_id, {
@@ -4056,6 +4263,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           subagentType: message.subagent_type,
           taskType: message.task_type,
           workflowName: message.workflow_name,
+          command: launchDetails.command,
+          server: launchDetails.server,
+          tool: launchDetails.tool,
           skipTranscript: message.skip_transcript === true,
           runHandles: context.taskAgents.get(message.task_id)?.runHandles,
           owningAgentId,
@@ -4076,6 +4286,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(message.task_type ? { taskType: message.task_type } : {}),
             ...(owningAgentId ? { agentId: owningAgentId } : {}),
             ...(message.description ? { title: message.description } : {}),
+            ...(launchDetails.command ? { command: launchDetails.command } : {}),
+            ...(launchDetails.server ? { server: launchDetails.server } : {}),
+            ...(launchDetails.tool ? { tool: launchDetails.tool } : {}),
             ...(message.subagent_type ? { role: message.subagent_type } : {}),
             ...(model ? { model } : {}),
             ...(effort ? { effort } : {}),
@@ -5284,6 +5497,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         workflowMemberFingerprints,
         liveTaskIds,
         turnState: undefined,
+        compacting: false,
         lastKnownContextWindow: initialContextWindow,
         contextWindowByModel,
         lastKnownTokenUsage: undefined,

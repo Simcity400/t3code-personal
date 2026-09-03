@@ -23,6 +23,8 @@ import {
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
 
+import { deriveTaskSurfaces, isBackgroundTaskActivity } from "./taskSurface.ts";
+
 export type RuntimeSubagentStatus =
   | "pending"
   | "running"
@@ -174,16 +176,12 @@ const SUMMARY_CHAR_LIMIT = 180;
 const ROSTER_LIMIT = 100;
 
 /**
- * True when this activity's payload does NOT belong on the Agents surface.
- * Classification happens exactly once, server-side at ingestion
- * (classifyTaskAgentKind → the persisted agentKind stamp); the client only
- * reads it. Rows without a stamp — legacy threads, pre-stamp servers — are
- * background by definition: they render in the ordinary work log, exactly
- * as they did before this feature existed.
+ * Re-exported from the shared membership module so existing importers (the
+ * web work log's agent-internal filter) keep their import site. New callers
+ * that need to know which SURFACE owns a task must use `deriveTaskSurfaces`
+ * instead — a single row cannot see the evidence carried by its siblings.
  */
-export function isBackgroundTaskActivity(payload: Record<string, unknown>): boolean {
-  return payload.agentKind !== "agent";
-}
+export { isBackgroundTaskActivity };
 
 function bounded(value: string): string {
   return value.length <= SUMMARY_CHAR_LIMIT ? value : `${value.slice(0, SUMMARY_CHAR_LIMIT - 1)}…`;
@@ -544,6 +542,13 @@ export function foldSubagentActivities(
   },
 ): ReadonlyArray<RuntimeSubagent> {
   const agents = new Map<string, MutableAgent>();
+  // ONE membership decision per task id, shared with foldBackgroundTasks, so
+  // the two surfaces cannot both claim the same task. Per-row stickiness let
+  // a thin terminal row from a resumed session (taskId + status only, stamped
+  // "agent" by ingestion's default) build a phantom agent out of a task the
+  // Tasks panel was rightly still showing as a background shell.
+  const surfaces = deriveTaskSurfaces(activities);
+  const isRosterTask = (taskId: string): boolean => surfaces.get(taskId) === "agent";
 
   for (const activity of activities) {
     if (typeof activity.payload !== "object" || activity.payload === null) {
@@ -557,9 +562,10 @@ export function foldSubagentActivities(
         const taskId = asString(payload.taskId);
         if (!taskId) break;
         // Only real agents join the roster. Shells, monitors, and plan-mode
-        // tasks are background work — they render in the ordinary work log,
-        // not the Agents surface (a "Run 12s stall" shell is not a subagent).
-        if (isBackgroundTaskActivity(payload)) break;
+        // tasks are background work — they render in the Tasks panel and the
+        // ordinary work log, not the Agents surface (a "Run 12s stall" shell
+        // is not a subagent).
+        if (!isRosterTask(taskId)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         // Order-robustness: a start row arriving after a terminal state is a
@@ -584,11 +590,11 @@ export function foldSubagentActivities(
       case "task.progress": {
         const taskId = asString(payload.taskId);
         if (!taskId) break;
-        // Membership is sticky per taskId: rows after the first (terminal
-        // rows often carry only taskId+status, no marker fields) inherit the
-        // first row's classification instead of being re-judged.
+        // Membership is decided once per taskId (see `surfaces` above), so
+        // rows that carry only taskId+status — as terminal rows usually do —
+        // are never re-judged on their own thin evidence.
         const existed = agents.has(taskId);
-        if (!existed && isBackgroundTaskActivity(payload)) break;
+        if (!isRosterTask(taskId)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;
@@ -623,10 +629,8 @@ export function foldSubagentActivities(
       case "task.updated": {
         const taskId = asString(payload.taskId);
         if (!taskId) break;
-        // Membership is sticky per taskId: rows after the first (terminal
-        // rows often carry only taskId+status, no marker fields) inherit the
-        // first row's classification instead of being re-judged.
-        if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
+        // Membership is decided once per taskId (see `surfaces` above).
+        if (!isRosterTask(taskId)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         // A task first seen via task.updated (start row aged out) has run at
@@ -651,10 +655,8 @@ export function foldSubagentActivities(
       case "task.completed": {
         const taskId = asString(payload.taskId);
         if (!taskId) break;
-        // Membership is sticky per taskId: rows after the first (terminal
-        // rows often carry only taskId+status, no marker fields) inherit the
-        // first row's classification instead of being re-judged.
-        if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
+        // Membership is decided once per taskId (see `surfaces` above).
+        if (!isRosterTask(taskId)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;
