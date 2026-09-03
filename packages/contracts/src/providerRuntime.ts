@@ -55,6 +55,15 @@ const RuntimeSessionState = Schema.Literals([
   "ready",
   "running",
   "waiting",
+  /**
+   * The provider is compacting its own context. A machine wait: no user action
+   * clears it, and the session is emphatically not idle — flattening it to
+   * `ready` (or to a bare `running`) is what stopped the Agents panel from
+   * naming the one pause a long thread reliably hits. Only Claude reports it
+   * (`system/status` with `status: "compacting"`); every other adapter keeps
+   * the states it already emitted.
+   */
+  "compacting",
   "stopped",
   "error",
 ]);
@@ -281,6 +290,17 @@ const SessionStateChangedPayload = Schema.Struct({
   state: RuntimeSessionState,
   reason: Schema.optional(TrimmedNonEmptyStringSchema),
   detail: Schema.optional(Schema.Unknown),
+  /**
+   * Compaction boundary marker, present ONLY on the transition edges (true when
+   * compaction begins, false when it ends) and absent on every other state
+   * event.
+   *
+   * `state` alone cannot carry this: heartbeats republish `running` constantly
+   * (Claude's api_retry does), so ingestion would have to write a durable row
+   * per heartbeat to know when a compaction ended. Edge-marking keeps the
+   * persisted compaction row to exactly two writes per compaction.
+   */
+  compacting: Schema.optional(Schema.Boolean),
 });
 export type SessionStateChangedPayload = typeof SessionStateChangedPayload.Type;
 
@@ -591,6 +611,17 @@ export const MONITOR_TASK_TYPES: ReadonlySet<string> = new Set([
   "monitor_mcp",
   "local_bash",
   "shell",
+  // The installed Claude CLI's own background-work set is
+  // {local_bash, monitor_mcp, monitor_ws, mcp_task} (its `isBackgroundish`
+  // predicate, verified in the shipped binary). `monitor_ws` (websocket watch
+  // loop), `mcp_task` (a backgrounded MCP tool call, whose description is
+  // `server/tool`) and `auto_mode_scan` were missing here, so all three fell
+  // through classifyTaskAgentKind's agent default and landed a watch loop in
+  // the subagent roster. `monitor`/`shell` are kept for other providers and
+  // for rows already persisted under those names.
+  "monitor_ws",
+  "mcp_task",
+  "auto_mode_scan",
 ]);
 /** Task types that are neither agents nor watch loops (plan-mode bookkeeping). */
 export const INERT_TASK_TYPES: ReadonlySet<string> = new Set(["plan", "dream"]);
@@ -640,6 +671,17 @@ const taskAgentLinkageFields = {
    */
   agentId: Schema.optional(TrimmedNonEmptyStringSchema),
   title: Schema.optional(TrimmedNonEmptyStringSchema),
+  /**
+   * Shell command line for a background shell, read from the launching tool
+   * call's own input. The provider's `description` for such a task is a
+   * humanized summary; the command is what the reader actually needs to
+   * identify which of five `pnpm test` shells this row is.
+   */
+  command: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** MCP server behind a monitor / backgrounded MCP task. */
+  server: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** MCP tool behind a monitor / backgrounded MCP task. */
+  tool: Schema.optional(TrimmedNonEmptyStringSchema),
   role: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Reasoning effort when known (e.g. "high"). Open string: provider vocabularies differ. */

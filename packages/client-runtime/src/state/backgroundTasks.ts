@@ -13,15 +13,13 @@
  * foldBackgroundTasks). Both read the same durable `thread.activities`, so
  * the panel survives reload, resume and reconnect with no extra persistence.
  *
- * The two folds agree on every row the providers actually emit. They can
- * still disagree in one residual case: if a task's identity is lost
- * server-side (a resumed session whose registry is empty) AND the roster
- * snapshot that repairs it has not arrived yet, a terminal row carries no
- * taskType, ingestion defaults it to "agent", and the untouched subagent fold
- * will build a phantom agent from it. This fold refuses to compound that by
- * also dropping the real task. Closing it for good means making the stamp
- * authoritative inside subagentRuntime.ts, which is deliberately not modified
- * here; ClaudeAdapter's roster rehydration removes the usual cause.
+ * Membership is one shared decision, taken per TASK ID in `taskSurface.ts`
+ * and read by both folds, so a task can never render on both surfaces. It
+ * used to be taken twice — this fold judged the whole id on evidence while
+ * the roster fold judged each row on its stamp — and the two disagreed
+ * whenever a resumed session lost a task's identity: the thin terminal row
+ * that followed carried no taskType, ingestion defaulted it to "agent", and
+ * the roster built a phantom agent beside the real background row here.
  *
  * The wait model is deliberately provider-neutral: it is derived from the
  * shared request pipeline (`approval.requested` / `user-input.requested`,
@@ -30,7 +28,8 @@
  */
 import { MONITOR_TASK_TYPES, type OrchestrationThreadActivity } from "@t3tools/contracts";
 
-import { isBackgroundTaskActivity, type RuntimeSubagentStatus } from "./subagentRuntime.ts";
+import type { RuntimeSubagentStatus } from "./subagentRuntime.ts";
+import { deriveTaskSurfaces } from "./taskSurface.ts";
 
 /**
  * Presentation bucket for a background task. Derived from the provider's
@@ -50,6 +49,15 @@ export interface RuntimeBackgroundTask {
   readonly taskType: string | null;
   /** Command line, monitor name, or description, whichever the provider gave. */
   readonly label: string;
+  /**
+   * Shell command line, when the provider exposed the launching call. Shell
+   * rows lead with it: a provider description humanizes ("Running tests"),
+   * and with five test shells in flight only the command tells them apart.
+   */
+  readonly command: string | null;
+  /** MCP server / tool behind a monitor or backgrounded MCP task. */
+  readonly server: string | null;
+  readonly tool: string | null;
   /** Owning subagent's task id; null means the main agent launched it. */
   readonly ownerAgentId: string | null;
   readonly status: BackgroundTaskStatus;
@@ -151,6 +159,9 @@ interface MutableTask {
   kind: BackgroundTaskKind;
   taskType: string | null;
   label: string;
+  command: string | null;
+  server: string | null;
+  tool: string | null;
   ownerAgentId: string | null;
   status: BackgroundTaskStatus;
   startedAt: string | null;
@@ -172,6 +183,9 @@ function getOrCreate(tasks: Map<string, MutableTask>, taskId: string, at: string
     kind: "other",
     taskType: null,
     label: taskId,
+    command: null,
+    server: null,
+    tool: null,
     ownerAgentId: null,
     status: "running",
     startedAt: null,
@@ -201,11 +215,25 @@ function fillMetadata(task: MutableTask, payload: Record<string, unknown>): void
   }
   const owner = asString(payload.agentId);
   if (owner && task.ownerAgentId === null) task.ownerAgentId = owner;
-  // `detail` is ingestion's truncated copy of the provider description; for a
-  // shell that is the command line, which is the only label a shell ever gets.
+  const command = asString(payload.command);
+  if (command && task.command === null) task.command = bounded(command);
+  const server = asString(payload.server);
+  if (server && task.server === null) task.server = bounded(server);
+  const tool = asString(payload.tool);
+  if (tool && task.tool === null) task.tool = bounded(tool);
+  // `detail` is ingestion's truncated copy of the provider description.
+  //
+  // The command line outranks all of them for a shell: the provider's
+  // description is a humanized summary of the call, and a panel showing five
+  // "Running tests" rows names none of them. It may arrive after the
+  // description (the launching call is only read at task_started, and a
+  // resumed task recovers it from a later snapshot), so it is allowed to
+  // replace a label that came from a description — but never one it already
+  // set itself.
   const label =
     asString(payload.title) ?? asString(payload.description) ?? asString(payload.detail);
   if (label && task.label === task.id) task.label = bounded(label);
+  if (task.command !== null) task.label = task.command;
   if (payload.isBackgrounded === true) task.backgrounded = true;
   else if (payload.isBackgrounded === false) task.backgrounded = false;
   if (payload.skipTranscript === true) task.ambient = true;
@@ -260,56 +288,16 @@ export function foldBackgroundTasks(
 ): ReadonlyArray<RuntimeBackgroundTask> {
   const tasks = new Map<string, MutableTask>();
 
-  // Pass 1 decides membership for a whole task id at once, on EVIDENCE.
-  //
-  // Per-row stickiness let a legacy unstamped row be claimed here while a
-  // later stamped row was claimed by the subagent fold, so one task rendered
-  // in both sections. But trusting the stamp alone is just as wrong in the
-  // other direction: a thin terminal row (a reconnect drops the adapter's
-  // remembered linkage, so a notification carries only taskId + status) has
-  // no taskType, and classifyTaskAgentKind defaults those to "agent". Letting
-  // that evidence-free stamp flip a known background shell would make the
-  // shell vanish from this panel the moment it finished.
-  //
-  // So a stamp only counts when the row carries something agent-shaped to
-  // back it up, and a task is claimed here only when some row positively
-  // describes background work. An id with no evidence either way is left to
-  // the roster rather than duplicated into both surfaces.
-  const AGENT_EVIDENCE_KEYS = [
-    "taskType",
-    "role",
-    "workflowName",
-    "parentAgentId",
-    "agentIndex",
-    "phaseIndex",
-  ] as const;
-  const DESCRIPTIVE_KEYS = ["taskType", "detail", "description", "title", "summary"] as const;
-
-  const agentTaskIds = new Set<string>();
-  const backgroundTaskIds = new Set<string>();
-  for (const activity of activities) {
-    if (typeof activity.payload !== "object" || activity.payload === null) continue;
-    const payload = activity.payload as Record<string, unknown>;
-    const taskId = asString(payload.taskId);
-    if (!taskId) continue;
-    if (isBackgroundTaskActivity(payload)) {
-      if (DESCRIPTIVE_KEYS.some((key) => payload[key] !== undefined)) {
-        backgroundTaskIds.add(taskId);
-      }
-    } else if (
-      payload.timelineBypass === true ||
-      AGENT_EVIDENCE_KEYS.some((key) => payload[key] !== undefined)
-    ) {
-      agentTaskIds.add(taskId);
-    }
-  }
+  // ONE membership decision per task id, shared with foldSubagentActivities
+  // (see taskSurface.ts for the rule and the bug that forced it). This fold
+  // renders exactly the ids that surface says are background work.
+  const surfaces = deriveTaskSurfaces(activities);
 
   for (const activity of activities) {
     if (typeof activity.payload !== "object" || activity.payload === null) continue;
     const payload = activity.payload as Record<string, unknown>;
     const taskId = asString(payload.taskId);
-    // Contradictory evidence resolves to agent, matching the subagent fold.
-    if (!taskId || agentTaskIds.has(taskId) || !backgroundTaskIds.has(taskId)) continue;
+    if (!taskId || surfaces.get(taskId) !== "background") continue;
     const at = activity.createdAt;
 
     switch (activity.kind) {
@@ -436,7 +424,7 @@ export function foldBackgroundTasks(
  * ---------------------------------------------------------------------- */
 
 /** What an agent is blocked on, most user-actionable first. */
-export type AgentWaitKind = "approval" | "user-input" | "agents" | "tasks";
+export type AgentWaitKind = "approval" | "user-input" | "compacting" | "agents" | "tasks";
 
 export interface OpenRequestWait {
   readonly requestId: string;
@@ -607,6 +595,37 @@ export function deriveAgentWaitReasons(
 }
 
 /**
+ * When the provider started compacting its own context, or null when it is
+ * not compacting.
+ *
+ * Compaction is the one long pause a thread hits that nothing else on this
+ * surface can explain: no task is running, no request is open, the turn is
+ * simply stopped while the provider rewrites its history. It is a MACHINE
+ * wait — no user action shortens it — so the strip names it without tinting.
+ *
+ * Read from the single `session.compacting` row ingestion rewrites on each
+ * compaction edge; `since` is that row's timestamp, which is when compaction
+ * began (the row is only rewritten when the state actually flips). Only
+ * Claude reports it today; every other provider's threads simply have no such
+ * row and get no line.
+ */
+export function deriveCompactingSince(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): string | null {
+  let since: string | null = null;
+  for (const activity of activities) {
+    if (activity.kind !== "session.compacting") continue;
+    if (typeof activity.payload !== "object" || activity.payload === null) continue;
+    const payload = activity.payload as Record<string, unknown>;
+    // Latest edge wins. Rows are scanned in order rather than filtered-and-
+    // sorted because the caller already hands them over ordered, and a
+    // rewritten row keeps one position.
+    since = payload.compacting === true ? activity.createdAt : null;
+  }
+  return since;
+}
+
+/**
  * Task ids that cannot block whoever started them: work the provider
  * explicitly detached (Claude's `is_backgrounded`) and work that is
  * asynchronous by protocol (Codex child agents). In both cases the launching
@@ -695,6 +714,11 @@ export function deriveAgentWaitStates(input: {
   /** From deriveDetachedTaskIds — detached and async work blocks nobody. */
   readonly detachedIds?: ReadonlySet<string> | undefined;
   /**
+   * From deriveCompactingSince. A compacting provider blocks the main agent
+   * outright, whatever else is or is not running under it.
+   */
+  readonly compactingSince?: string | null | undefined;
+  /**
    * Whether the main agent's turn is actually in flight. When it is not, the
    * main agent is not waiting on anything: whatever is still running was
    * detached and outlived the turn, and it is reported under Tasks instead.
@@ -769,8 +793,24 @@ export function deriveAgentWaitStates(input: {
   );
 
   const mainRequests = requestsByOwner.get(null);
+  const compactingSince = input.compactingSince ?? null;
   if (mainRequests && mainRequests.length > 0) {
     rows.push(requestRow(null, "Main", mainRequests));
+  } else if (compactingSince !== null) {
+    // Compaction outranks every machine wait below it and does NOT depend on
+    // mainTurnActive: the provider compacts between turns as readily as
+    // during one, and it is precisely then — turn over, nothing running, the
+    // thread apparently frozen — that a reader needs to be told why. It sits
+    // below an open request because only a request needs the user.
+    rows.push({
+      ownerId: null,
+      ownerLabel: "Main",
+      kind: "compacting",
+      label: "Compacting context",
+      since: compactingSince,
+      blockingIds: [],
+      needsUser: false,
+    });
   } else if (mainTurnActive) {
     const mainTasks = blockingTasks.filter((task) => task.ownerAgentId === null);
     if (topLevelBlockingAgents.length > 0) {
@@ -1030,6 +1070,18 @@ export function deriveBackgroundTasksPanelModel(input: {
 /* -------------------------------------------------------------------------
  * Formatting
  * ---------------------------------------------------------------------- */
+
+/**
+ * Where a monitor's work actually happens: `server · tool`.
+ *
+ * Returns null for rows that have neither, and the one it has when only one
+ * arrived — a partially-recovered row should still say what it can. Shared by
+ * both panels so the separator and the fallback do not drift between them.
+ */
+export function backgroundTaskSourceLabel(task: RuntimeBackgroundTask): string | null {
+  if (task.server !== null && task.tool !== null) return `${task.server} · ${task.tool}`;
+  return task.server ?? task.tool;
+}
 
 /**
  * Compact elapsed label: `42s`, `7m 03s`, `2h 14m`. Shared by the tasks list

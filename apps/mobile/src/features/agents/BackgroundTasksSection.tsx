@@ -10,6 +10,7 @@
  * re-renders while a watch loop ticks beside it.
  */
 import {
+  backgroundTaskSourceLabel,
   formatElapsedBetween,
   isActiveBackgroundTaskStatus,
   type AgentWaitState,
@@ -83,6 +84,9 @@ function TaskRowImpl({
   const badges = [
     ownerLabel,
     TASK_KIND_LABEL[task.kind],
+    // A monitor's identity is its MCP server and tool; without them every
+    // watch loop in a thread reads as the same anonymous "Monitor" row.
+    backgroundTaskSourceLabel(task),
     task.backgrounded ? "detached" : null,
     task.ambient ? "ambient" : null,
   ].filter((value): value is string => value !== undefined && value !== null);

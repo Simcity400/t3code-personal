@@ -291,13 +291,27 @@ function normalizeRuntimeTurnState(
 }
 
 function orchestrationSessionStatusFromRuntimeState(
-  state: "starting" | "running" | "waiting" | "ready" | "interrupted" | "stopped" | "error",
+  state:
+    | "starting"
+    | "running"
+    | "waiting"
+    | "compacting"
+    | "ready"
+    | "interrupted"
+    | "stopped"
+    | "error",
 ): "starting" | "running" | "ready" | "interrupted" | "stopped" | "error" {
   switch (state) {
     case "starting":
       return "starting";
     case "running":
     case "waiting":
+    // A compacting session is busy, not resting: the composer, the sidebar
+    // and every "can I send now" check read this status, and reporting
+    // `ready` would invite a prompt into a thread that cannot take one. The
+    // compaction itself is named on the durable activity below, not here —
+    // this enum is upstream's and shared by every provider.
+    case "compacting":
       return "running";
     case "ready":
       return "ready";
@@ -355,6 +369,12 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     "taskType",
     "agentId",
     "title",
+    // Reader-facing task detail: a shell's command line and a monitor's
+    // MCP server/tool. Ride the bundle like every other identity field so a
+    // row that outlives its start still names what it is running.
+    "command",
+    "server",
+    "tool",
     "role",
     "model",
     "effort",
@@ -834,6 +854,34 @@ export function runtimeEventToActivities(
               : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
             ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "session.state.changed": {
+      // Only the two compaction edges are persisted. Session state otherwise
+      // lives on the session row, and `running` in particular is republished
+      // on every heartbeat — a row per state change would be an activity
+      // stream made of nothing else.
+      if (event.payload.compacting === undefined) {
+        return [];
+      }
+      return [
+        {
+          // One row per thread, rewritten by each edge: the panel asks "is it
+          // compacting, and since when", which is latest-state. A row per edge
+          // would accumulate one pair per compaction for no reader.
+          id: EventId.make(`session-compacting:${event.threadId}`),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "session.compacting",
+          summary: event.payload.compacting ? "Compacting context" : "Context compaction finished",
+          payload: {
+            compacting: event.payload.compacting,
+            ...(event.payload.reason ? { reason: event.payload.reason } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

@@ -866,6 +866,11 @@ export function deriveWorkLogEntries(
     if (activity.kind === "task.updated") continue;
     if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
+    // Panel state, not a log entry: one row per thread, rewritten on each
+    // compaction edge. The Agents panel names the wait while it is live and
+    // `context-compaction` is the receipt afterwards, so leaving it in the
+    // log would park a stale "Context compaction finished" line mid-history.
+    if (activity.kind === "session.compacting") continue;
     if (activity.kind === "turn.plan.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isNoContentRuntimeWarning(activity)) continue;

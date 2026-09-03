@@ -13,6 +13,7 @@
  *   reason the thread is quietly wrong.
  */
 import {
+  backgroundTaskSourceLabel,
   isActiveBackgroundTaskStatus,
   formatElapsedBetween,
   type AgentWaitState,
@@ -27,6 +28,7 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardList,
+  Layers,
   MessageSquare,
   Radar,
   ShieldAlert,
@@ -158,6 +160,9 @@ function TaskRow({ task, ownerLabel }: { task: RuntimeBackgroundTask; ownerLabel
   const badges = [
     ownerLabel,
     TASK_KIND_LABEL[task.kind],
+    // A monitor's identity is its MCP server and tool; without them every
+    // watch loop in a thread reads as the same anonymous "Monitor" row.
+    backgroundTaskSourceLabel(task),
     task.backgrounded ? "detached" : null,
     task.ambient ? "ambient" : null,
   ].filter((value): value is string => value !== undefined && value !== null);
@@ -221,6 +226,7 @@ function TaskOwnerGroup({ group, showOwner }: { group: BackgroundTaskGroup; show
 const WAIT_ICON = {
   approval: ShieldAlert,
   "user-input": MessageSquare,
+  compacting: Layers,
   agents: Users,
   tasks: Terminal,
 } as const;

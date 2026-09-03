@@ -188,6 +188,7 @@ import {
 import {
   deriveAgentWaitReasons,
   deriveAgentWaitStates,
+  deriveCompactingSince,
   deriveDetachedTaskIds,
   deriveBackgroundTasksPanelModel,
   deriveOpenRequestWaits,
@@ -2599,11 +2600,14 @@ function ChatViewContent(props: ChatViewProps) {
         requests: deriveOpenRequestWaits(threadActivities),
         agentWaitReasons: deriveAgentWaitReasons(threadActivities),
         detachedIds: deriveDetachedTaskIds(threadActivities),
+        // A dead session cannot still be compacting: the wait dies with the
+        // provider process exactly as running tasks do.
+        compactingSince: agentSessionLive ? deriveCompactingSince(threadActivities) : null,
         // Nothing blocks a turn that is not running: work still alive then
         // was detached, and Tasks reports it without claiming a dependency.
         mainTurnActive: phase === "running",
       }),
-    [backgroundTasks, phase, rosterAgents, threadActivities],
+    [agentSessionLive, backgroundTasks, phase, rosterAgents, threadActivities],
   );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),

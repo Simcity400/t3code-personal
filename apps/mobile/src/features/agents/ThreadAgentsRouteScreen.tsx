@@ -9,6 +9,7 @@ import {
 import {
   deriveAgentWaitReasons,
   deriveAgentWaitStates,
+  deriveCompactingSince,
   deriveDetachedTaskIds,
   deriveBackgroundTasksPanelModel,
   deriveOpenRequestWaits,
@@ -143,9 +144,13 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
         requests: thread ? deriveOpenRequestWaits(thread.activities) : [],
         agentWaitReasons: thread ? deriveAgentWaitReasons(thread.activities) : new Map(),
         detachedIds: thread ? deriveDetachedTaskIds(thread.activities) : new Set(),
+        // A dead session cannot still be compacting: the wait dies with the
+        // provider process exactly as running tasks do.
+        compactingSince:
+          thread && agentSessionLive ? deriveCompactingSince(thread.activities) : null,
         mainTurnActive: sessionStatus === "running",
       }),
-    [allAgents, backgroundTasks, sessionStatus, thread],
+    [agentSessionLive, allAgents, backgroundTasks, sessionStatus, thread],
   );
   const statusClock = useAgentStatusClock(
     activeAgents.length > 0 ||
