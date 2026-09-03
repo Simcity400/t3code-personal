@@ -5,7 +5,7 @@ import { foldSubagentActivities } from "./subagentRuntime.ts";
 import {
   backgroundTaskKind,
   deriveAgentWaitReasons,
-  deriveBackgroundedTaskIds,
+  deriveDetachedTaskIds,
   deriveAgentWaitStates,
   deriveBackgroundTasksPanelModel,
   deriveOpenRequestWaits,
@@ -428,7 +428,7 @@ describe("deriveAgentWaitStates", () => {
         tasks: [],
         agents: [agent("a1", "Reviewer", "running")],
         requests: [],
-        backgroundedIds: new Set(["a1"]),
+        detachedIds: new Set(["a1"]),
       }),
     ).toEqual([]);
   });
@@ -545,14 +545,17 @@ describe("deriveAgentWaitStates", () => {
     expect(rows[1]).toMatchObject({ ownerId: "a1", kind: "user-input", needsUser: true });
   });
 
-  it("still reports a shell that outlived the subagent that launched it", () => {
-    const rows = deriveAgentWaitStates({
-      tasks: [task("t1", "tail -f log", "a1")],
-      agents: [agent("a1", "Reviewer", "completed")],
-      requests: [],
-    });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ ownerId: "a1", ownerLabel: "Reviewer", label: "tail -f log" });
+  it("claims no wait for a shell that outlived the agent that launched it", () => {
+    // The owner has finished, so it is not waiting on anything. The task is
+    // still listed under that owner in the Tasks section; asserting a wait
+    // would invent a blocked agent that no longer exists.
+    expect(
+      deriveAgentWaitStates({
+        tasks: [task("t1", "tail -f log", "a1")],
+        agents: [agent("a1", "Reviewer", "completed")],
+        requests: [],
+      }),
+    ).toEqual([]);
   });
 
   it("does not attribute a settled task to anyone", () => {
@@ -682,10 +685,17 @@ describe("fold exclusivity with the subagent fold", () => {
    * stamped agent row claimed it in the subagent fold, showing one task in
    * both sections.
    */
-  it("yields a task id to the subagent fold when any row stamps it as an agent", () => {
+  it("yields a task id to the subagent fold when a row shows real agent evidence", () => {
     const rows = [
       legacyActivity("task.started", { taskId: "amb-1", detail: "unstamped legacy start" }),
-      activity("task.progress", { taskId: "amb-1", agentKind: "agent", summary: "thinking" }),
+      // A real agent row repeats its linkage — taskType and role — which is
+      // what makes the stamp trustworthy.
+      activity("task.progress", {
+        taskId: "amb-1",
+        taskType: "local_agent",
+        role: "reviewer",
+        summary: "thinking",
+      }),
     ];
     expect(foldBackgroundTasks(rows)).toEqual([]);
     expect(foldSubagentActivities(rows).map((agent) => agent.id)).toEqual(["amb-1"]);
@@ -787,19 +797,38 @@ describe("foldBackgroundTasks timing", () => {
   });
 });
 
-describe("deriveBackgroundedTaskIds", () => {
+describe("deriveDetachedTaskIds", () => {
   it("tracks detachment and undetachment", () => {
     expect(
-      deriveBackgroundedTaskIds([
-        activity("task.updated", { taskId: "t1", isBackgrounded: true }),
-      ]).has("t1"),
+      deriveDetachedTaskIds([activity("task.updated", { taskId: "t1", isBackgrounded: true })]).has(
+        "t1",
+      ),
     ).toBe(true);
     expect(
-      deriveBackgroundedTaskIds([
+      deriveDetachedTaskIds([
         activity("task.updated", { taskId: "t1", isBackgrounded: true }),
         activity("task.updated", { taskId: "t1", isBackgrounded: false }),
       ]).has("t1"),
     ).toBe(false);
+  });
+
+  it("treats provider-synthesized child agents as asynchronous", () => {
+    // Codex spawnAgent returns immediately; only its separate wait tool
+    // blocks, and nothing on the wire reports that call.
+    expect(
+      deriveDetachedTaskIds([
+        activity("task.updated", { taskId: "c1", timelineBypass: true, status: "running" }),
+      ]).has("c1"),
+    ).toBe(true);
+  });
+
+  it("clears the folded flag when a task is undetached", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "sh-1", taskType: "local_bash", detail: "dev" }),
+      activity("task.updated", { taskId: "sh-1", taskType: "local_bash", isBackgrounded: true }),
+      activity("task.updated", { taskId: "sh-1", taskType: "local_bash", isBackgrounded: false }),
+    ]);
+    expect(byId(tasks, "sh-1").backgrounded).toBe(false);
   });
 });
 
@@ -825,5 +854,88 @@ describe("deriveOpenRequestWaits failure handling", () => {
       }),
     ]);
     expect(open).toEqual([]);
+  });
+});
+
+describe("evidence-based classification", () => {
+  /**
+   * A reconnect drops the adapter's remembered linkage, so a terminal
+   * notification can arrive carrying only taskId + status.
+   * classifyTaskAgentKind defaults those to "agent". That evidence-free stamp
+   * must not flip a shell we already know about, or the task would vanish
+   * from the panel exactly when it finished.
+   */
+  it("keeps a known background task when a thin terminal row is stamped agent", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "sh-1", taskType: "local_bash", detail: "pnpm test" }),
+      {
+        ...activity("task.completed", { taskId: "sh-1", status: "completed" }),
+        payload: { taskId: "sh-1", status: "completed", agentKind: "agent" },
+      } as OrchestrationThreadActivity,
+    ]);
+    expect(byId(tasks, "sh-1").status).toBe("completed");
+  });
+
+  it("claims nothing for a task id that never describes itself", () => {
+    // No start row and no descriptive field: there is no evidence it is
+    // background work, so it is left to the roster rather than duplicated.
+    expect(
+      foldBackgroundTasks([
+        {
+          ...activity("task.completed", { taskId: "orphan", status: "completed" }),
+          payload: { taskId: "orphan", status: "completed", agentKind: "agent" },
+        } as OrchestrationThreadActivity,
+      ]),
+    ).toEqual([]);
+  });
+});
+
+describe("resuming an idle task", () => {
+  it("times the new run rather than spanning the idle gap", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "m-1", taskType: "monitor" }, "2026-09-03T10:00:00.000Z"),
+      activity(
+        "task.updated",
+        { taskId: "m-1", taskType: "monitor", status: "idle" },
+        "2026-09-03T10:01:00.000Z",
+      ),
+      activity(
+        "task.updated",
+        { taskId: "m-1", taskType: "monitor", status: "running" },
+        "2026-09-03T11:30:00.000Z",
+      ),
+    ]);
+    expect(byId(tasks, "m-1").startedAt).toBe("2026-09-03T11:30:00.000Z");
+  });
+});
+
+describe("Codex child agents do not block main", () => {
+  it("claims no main wait for an active provider-async child", () => {
+    expect(
+      deriveAgentWaitStates({
+        tasks: [],
+        agents: [
+          { id: "c1", title: "math_one", status: "running", startedAt: "2026-09-03T10:00:00.000Z" },
+        ],
+        requests: [],
+        detachedIds: new Set(["c1"]),
+      }),
+    ).toEqual([]);
+  });
+
+  it("still reports that child's own named wait", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [
+        { id: "c1", title: "math_one", status: "waiting", startedAt: "2026-09-03T10:00:00.000Z" },
+      ],
+      requests: [],
+      detachedIds: new Set(["c1"]),
+      agentWaitReasons: new Map([
+        ["c1", { reason: "approval" as const, since: "2026-09-03T10:20:00.000Z" }],
+      ]),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ ownerId: "c1", kind: "approval", needsUser: true });
   });
 });

@@ -104,39 +104,37 @@ describe("BackgroundTasksSection", () => {
     expect(markup).not.toContain("git fetch");
   });
 
-  it("attributes finished rows to their owner when several owners exist", () => {
+  it("attributes a finished row to its owner when main owns all the live work", () => {
+    // Deriving attribution from the visible groups alone dropped the owner
+    // whenever the only subagent-owned row had already finished.
     const model = deriveBackgroundTasksPanelModel({
       tasks: [
-        task({ id: "live", label: "pnpm test", ownerAgentId: "ag-1" }),
+        task({ id: "live", label: "pnpm test" }),
         task({ id: "done", label: "git fetch", status: "completed", ownerAgentId: "ag-1" }),
       ],
       agentTitles: new Map([["ag-1", "Reviewer"]]),
     });
     expect(model.finished[0]?.ownerLabel).toBe("Reviewer");
+    // The only visible group is main's, so attribution has to come from the
+    // finished rows themselves.
+    expect(model.groups.map((group) => group.ownerId)).toEqual([null]);
+    expect(renderToStaticMarkup(<BackgroundTasksSection model={model} />)).toContain("Finished");
   });
 
-  it("omits owner headings when only the main agent owns tasks", () => {
-    const markup = renderToStaticMarkup(
-      <BackgroundTasksSection
-        model={deriveBackgroundTasksPanelModel({ tasks: [task({ id: "t1", label: "pnpm test" })] })}
-      />,
-    );
-    expect(markup).not.toContain("Main");
-  });
-
-  it("names the owning subagent once background work is split across owners", () => {
+  it("renders finished rows with their owner when they are the only content", () => {
     const markup = renderToStaticMarkup(
       <BackgroundTasksSection
         model={deriveBackgroundTasksPanelModel({
           tasks: [
-            task({ id: "t1", label: "pnpm test" }),
-            task({ id: "t2", label: "cargo build", ownerAgentId: "ag-1" }),
+            task({ id: "done", label: "git fetch", status: "completed", ownerAgentId: "ag-1" }),
           ],
           agentTitles: new Map([["ag-1", "Reviewer"]]),
         })}
       />,
     );
-    expect(markup).toContain("Main");
+    // Nothing else to show, so the disclosure starts open rather than leaving
+    // the section looking empty.
+    expect(markup).toContain("git fetch");
     expect(markup).toContain("Reviewer");
   });
 

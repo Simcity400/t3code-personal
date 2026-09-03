@@ -295,10 +295,19 @@ export function WaitingOnStrip({ waits }: { waits: ReadonlyArray<AgentWaitState>
 
 export function BackgroundTasksSection({ model }: { model: BackgroundTasksPanelModel }) {
   const [open, setOpen] = useState(true);
-  const [finishedOpen, setFinishedOpen] = useState(false);
+  // Open by default when finished work is all there is: collapsing the only
+  // content behind a toggle leaves the section looking empty.
+  const [finishedOpen, setFinishedOpen] = useState(model.groups.length === 0);
   if (!model.hasTasks) return null;
 
-  const showOwners = model.groups.length > 1 || model.groups[0]?.ownerId !== null;
+  // Attribution is needed whenever ANY row belongs to a subagent — including
+  // one that only appears under Finished. Deriving this from the visible
+  // groups alone dropped the owner from finished rows whenever main happened
+  // to own all the live work.
+  const showOwners =
+    model.groups.length > 1 ||
+    model.groups.some((group) => group.ownerId !== null) ||
+    model.finished.some((entry) => entry.task.ownerAgentId !== null);
   const visibleCount = model.groups.reduce((total, group) => total + group.tasks.length, 0);
 
   return (
