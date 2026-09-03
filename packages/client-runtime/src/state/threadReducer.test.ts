@@ -1085,6 +1085,59 @@ describe("applyThreadDetailEvent", () => {
       }
     });
 
+    it("keeps each conversation's own context-window row for the same turn", () => {
+      // The parent and its subagents report usage under the SAME turn id, so
+      // an owner-blind supersession rule let whichever conversation spoke last
+      // evict every other meter's only value.
+      const contextWindowActivity = (
+        id: string,
+        sequence: number,
+        usedTokens: number,
+        agentId?: string,
+      ) => ({
+        id: EventId.make(id),
+        tone: "info" as const,
+        kind: "context-window.updated",
+        summary: "Context window updated",
+        payload: { usedTokens, ...(agentId ? { agentId } : {}) },
+        turnId: TurnId.make("turn-1"),
+        sequence,
+        createdAt: "2026-04-01T11:00:00.000Z",
+      });
+
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          activities: [
+            contextWindowActivity("activity-parent-1", 1, 1_000),
+            contextWindowActivity("activity-agent-a-1", 2, 2_000, "agent-a"),
+            contextWindowActivity("activity-agent-b-1", 3, 3_000, "agent-b"),
+          ],
+        },
+        {
+          ...baseEventFields,
+          sequence: 22,
+          occurredAt: "2026-04-01T11:04:00.000Z",
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          type: "thread.activity-appended",
+          payload: {
+            threadId: ThreadId.make("thread-1"),
+            activity: contextWindowActivity("activity-agent-a-2", 4, 2_500, "agent-a"),
+          },
+        },
+      );
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.activities.map((activity) => activity.id)).toEqual([
+          "activity-parent-1",
+          "activity-agent-b-1",
+          "activity-agent-a-2",
+        ]);
+      }
+    });
+
     it("does not collapse context-window history for a malformed update", () => {
       const resolvable = {
         id: EventId.make("activity-cw-resolvable"),

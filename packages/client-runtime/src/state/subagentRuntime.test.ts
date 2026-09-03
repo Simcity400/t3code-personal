@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import {
   ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER,
+  deriveSubagentReplies,
   deriveSubagentTranscript,
   deriveAgentPanelModel,
   foldSubagentActivities,
@@ -13,8 +14,10 @@ import {
   formatSubagentTitle,
   formatSubagentTokenCount,
   isAgentAttributedToolActivity,
+  isParentScopedActivity,
   isSubagentActivityKind,
   isTimelineBypassActivity,
+  selectSubagentRepliesFor,
   filterWorkflowForPanelSection,
   selectSubagentTranscriptActivities,
   selectSubagentTranscriptMessages,
@@ -964,10 +967,9 @@ describe("selectSubagentTranscriptMessages", () => {
 });
 
 describe("selectSubagentTranscriptActivities", () => {
-  it("returns only the selected agent's ordinary tool lifecycle without attribution", () => {
+  it("returns only the selected agent's rows, without attribution", () => {
     const selected = selectSubagentTranscriptActivities(
       [
-        activity("task.progress", { agentId: "agent-1", taskId: "agent-1" }),
         activity("tool.updated", {
           agentId: "agent-1",
           timelineBypass: true,
@@ -998,6 +1000,49 @@ describe("selectSubagentTranscriptActivities", () => {
     });
     expect(selected[0]?.payload).not.toHaveProperty("agentId");
     expect(selected[0]?.payload).not.toHaveProperty("timelineBypass");
+  });
+
+  // Parity with the main chat: the transcript runs the SAME derivations over
+  // the same shape of input, so selection is by attribution, not by an
+  // allowlist of kinds. A tool-only feed silently dropped the agent's own
+  // plan, its denials, its context usage, and the tasks it spawned.
+  it("carries every kind the agent owns, not just tool lifecycle", () => {
+    const selected = selectSubagentTranscriptActivities(
+      [
+        activity("turn.plan.updated", {
+          agentId: "agent-1",
+          plan: [{ step: "read the file", status: "inProgress" }],
+        }),
+        activity("context-window.updated", { agentId: "agent-1", usedTokens: 4200 }),
+        activity("tool.denied", { agentId: "agent-1", toolName: "Bash" }),
+        activity("task.started", { agentId: "agent-1", taskId: "nested-1", title: "Nested" }),
+        activity("turn.plan.updated", {
+          agentId: "agent-2",
+          plan: [{ step: "not mine", status: "pending" }],
+        }),
+        activity("context-window.updated", { usedTokens: 999 }),
+      ],
+      "agent-1",
+    );
+
+    expect(selected.map((row) => row.kind)).toEqual([
+      "turn.plan.updated",
+      "context-window.updated",
+      "tool.denied",
+      "task.started",
+    ]);
+    for (const row of selected) {
+      expect(row.payload).not.toHaveProperty("agentId");
+    }
+  });
+
+  it("leaves unattributed parent rows alone", () => {
+    const rows = [
+      activity("context-window.updated", { usedTokens: 10 }),
+      activity("turn.plan.updated", { plan: [{ step: "parent", status: "pending" }] }),
+    ];
+    expect(selectSubagentTranscriptActivities(rows, "agent-1")).toEqual([]);
+    expect(rows.every((row) => isParentScopedActivity(row))).toBe(true);
   });
 
   it("keeps user-message lifecycle out of the tool feed", () => {
@@ -1958,5 +2003,188 @@ describe("nested agents vs subagent shells", () => {
       }),
     ]);
     expect(agents.map((agent) => agent.id)).toEqual(["nested-1"]);
+  });
+});
+
+describe("deriveSubagentReplies", () => {
+  function message(
+    id: string,
+    agentId: string | undefined,
+    text: string,
+    at: string,
+    role: "assistant" | "user" = "assistant",
+  ): OrchestrationMessage {
+    return {
+      id,
+      role,
+      text,
+      ...(agentId ? { agentId } : {}),
+      turnId: null,
+      streaming: false,
+      createdAt: at,
+      updatedAt: at,
+    } as unknown as OrchestrationMessage;
+  }
+
+  it("recovers a foreground report from the collaboration tool's result", () => {
+    const replies = deriveSubagentReplies([
+      activity("task.started", {
+        taskId: "agent-1",
+        title: "Reviewer",
+        toolUseId: "toolu_1",
+        taskType: "local_agent",
+      }),
+      activity("tool.completed", {
+        itemType: "collab_agent_tool_call",
+        itemId: "toolu_1",
+        data: { toolName: "Task", agentReply: "Found the bug in parser.ts." },
+      }),
+    ]);
+
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({
+      agentId: "agent-1",
+      agentTitle: "Reviewer",
+      ownerAgentId: null,
+      text: "Found the bug in parser.ts.",
+    });
+  });
+
+  it("recovers a background report from the terminal task row's summary", () => {
+    const replies = deriveSubagentReplies([
+      activity("task.started", { taskId: "agent-bg", title: "Watcher", taskType: "local_agent" }),
+      activity("task.completed", {
+        taskId: "agent-bg",
+        title: "Watcher",
+        taskType: "local_agent",
+        status: "completed",
+        summary: "The build went green.",
+      }),
+    ]);
+
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ agentId: "agent-bg", text: "The build went green." });
+  });
+
+  it("does not render the same report twice when it arrives both ways", () => {
+    const replies = deriveSubagentReplies([
+      activity("task.started", {
+        taskId: "agent-1",
+        title: "Reviewer",
+        toolUseId: "toolu_1",
+        taskType: "local_agent",
+      }),
+      activity("tool.completed", {
+        itemType: "collab_agent_tool_call",
+        itemId: "toolu_1",
+        data: { agentReply: "Same report." },
+      }),
+      activity("task.completed", {
+        taskId: "agent-1",
+        taskType: "local_agent",
+        status: "completed",
+        summary: "Same report.",
+      }),
+    ]);
+
+    expect(replies).toHaveLength(1);
+  });
+
+  it("falls back to the child's turn-final message when the protocol has no result field", () => {
+    // Codex: `collabAgentToolCall` carries no output, so what the parent read
+    // is the last thing the child said before it went idle.
+    const replies = deriveSubagentReplies(
+      [
+        activity("task.started", { taskId: "child-1", title: "math_one", taskType: "collab" }),
+        activity(
+          "task.updated",
+          { taskId: "child-1", status: "idle", taskType: "collab" },
+          "2026-08-01T10:05:00.000Z",
+        ),
+      ],
+      [
+        message("m1", "child-1", "Working on it.", "2026-08-01T10:01:00.000Z"),
+        message("m2", "child-1", "The answer is 42.", "2026-08-01T10:04:00.000Z"),
+        message("m3", undefined, "parent text", "2026-08-01T10:04:30.000Z"),
+      ],
+    );
+
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ agentId: "child-1", text: "The answer is 42." });
+  });
+
+  it("does not resend a turn-final message when repeated idle rows land", () => {
+    const replies = deriveSubagentReplies(
+      [
+        activity("task.started", { taskId: "child-1", title: "child", taskType: "collab" }),
+        activity(
+          "task.updated",
+          { taskId: "child-1", status: "idle", taskType: "collab" },
+          "2026-08-01T10:05:00.000Z",
+        ),
+        activity(
+          "task.updated",
+          { taskId: "child-1", status: "idle", taskType: "collab" },
+          "2026-08-01T10:06:00.000Z",
+        ),
+      ],
+      [message("m1", "child-1", "done", "2026-08-01T10:04:00.000Z")],
+    );
+
+    expect(replies).toHaveLength(1);
+  });
+
+  it("routes a nested agent's report to the subagent that owns it, not the parent", () => {
+    const replies = deriveSubagentReplies([
+      activity("task.started", {
+        taskId: "nested-1",
+        title: "Nested",
+        toolUseId: "toolu_nested",
+        taskType: "local_agent",
+        agentId: "agent-1",
+      }),
+      activity("tool.completed", {
+        itemType: "collab_agent_tool_call",
+        itemId: "toolu_nested",
+        agentId: "agent-1",
+        data: { agentReply: "Nested finding." },
+      }),
+    ]);
+
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.ownerAgentId).toBe("agent-1");
+    expect(selectSubagentRepliesFor(replies, null)).toEqual([]);
+    expect(selectSubagentRepliesFor(replies, "agent-1")).toHaveLength(1);
+  });
+
+  it("ignores a collaboration result it cannot attribute to an agent", () => {
+    const replies = deriveSubagentReplies([
+      activity("tool.completed", {
+        itemType: "collab_agent_tool_call",
+        itemId: "toolu_orphan",
+        data: { agentReply: "Whose report is this?" },
+      }),
+    ]);
+
+    expect(replies).toEqual([]);
+  });
+
+  it("links a follow-up SendMessage result by the agent name it addressed", () => {
+    const replies = deriveSubagentReplies([
+      activity("task.started", {
+        taskId: "agent-1",
+        title: "marlow",
+        toolUseId: "toolu_launch",
+        taskType: "local_agent",
+      }),
+      activity("tool.completed", {
+        itemType: "collab_agent_tool_call",
+        itemId: "toolu_followup",
+        data: { toolName: "SendMessage", input: { to: "marlow" }, agentReply: "Acknowledged." },
+      }),
+    ]);
+
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ agentId: "agent-1", text: "Acknowledged." });
   });
 });
