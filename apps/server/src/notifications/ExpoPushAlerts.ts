@@ -167,19 +167,17 @@ export const make = Effect.gen(function* () {
   });
 
   const refreshState = readPersistedState.pipe(
-    Effect.map(
-      (persisted): RuntimeState => ({
-        registrations: new Map(
-          persisted.registrations.map(({ clientId, token }) => [clientId, token]),
-        ),
-        observations: new Map(
-          persisted.observations.map((observation) => [
-            observation.threadId as ThreadId,
-            observation,
-          ]),
-        ),
-      }),
-    ),
+    Effect.map((persisted): RuntimeState => ({
+      registrations: new Map(
+        persisted.registrations.map(({ clientId, token }) => [clientId, token]),
+      ),
+      observations: new Map(
+        persisted.observations.map((observation) => [
+          observation.threadId as ThreadId,
+          observation,
+        ]),
+      ),
+    })),
     Effect.tap((state) => Ref.set(stateRef, state)),
     Effect.catch(() => Ref.get(stateRef)),
   );
