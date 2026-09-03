@@ -94,6 +94,15 @@ machine.
   (`apps/web/src/components/ChatView.tsx`) and the mobile one
   (`apps/mobile/src/features/threads/use-composer-command-menu.ts` +
   `apps/mobile/src/state/use-thread-composer-state.ts`). See `docs/user/side-chats.md`.
+  Since the 2026-09-04 sync the mobile `/side` entry lives _inside_ upstream's
+  `buildComposerSlashCommandItems`, which upstream extracted in #9348 — so an upstream
+  rewrite of that builder can drop it without a conflict. `use-composer-command-menu.test.ts`
+  pins the two properties that make it a fork command rather than an upstream one: it is
+  listed whether or not the provider offers interaction modes, and it is not position-gated
+  the way provider commands are. On the server, the fork's fork-from-parent validation in
+  `ProviderService.startSession` now sits directly below upstream's instance-switch
+  continuation-key check; both must survive, and only the fork's block reads
+  `forkFromThreadId`.
 - **Mobile Agents screen & durable transcripts** (2026-08-15):
   `apps/mobile/src/features/agents/` renders the same roster and transcripts on the
   phone, which is why `threadActivity.ts` re-homes nested agent rows out of the chat feed
