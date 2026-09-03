@@ -290,14 +290,15 @@ machine.
   still ships.
 - **Background tasks & "waiting on" in the Agents panel** (2026-09-03): the Agents
   right panel gained a **Waiting on** strip and a **Tasks** section beside the subagent
-  roster, so a thread's background work is visible instead of buried. Tasks covers what
-  the subagent roster deliberately drops — background shells (`run_in_background`),
-  Monitor watch loops, plan-mode bookkeeping, and a subagent's own internal shells —
-  each with its command, live-ticking elapsed time, latest progress line, and result.
-  Live work and failures stay on screen; successes collapse behind a **Finished**
-  disclosure. Waiting on prints one dependency line per blocked agent
-  (`Main ← Reviewer + 1 more agent · 42m 13s`), tinted only when the user is the one
-  holding it up (a pending approval or an unanswered question). Everything derives from
+  roster, so a thread's background work is visible instead of buried. Tasks covers the
+  work the subagent roster leaves out — background shells (`run_in_background`), Monitor
+  watch loops, plan-mode bookkeeping, and a subagent's own internal shells — each with
+  its command, live-ticking elapsed time, latest progress line, and result. Live work,
+  failures and interrupted work stay on screen; completed and stopped tasks collapse
+  behind a **Finished** disclosure that keeps their owner's name. Waiting on prints one
+  line per blocked agent (`Main ← Reviewer + 1 more agent · 42m 13s`), tinted only when
+  the user is the one holding it up (a pending approval or an unanswered question); an
+  agent with nothing blocking it gets no line at all. Everything derives from
   the same durable thread activities as the roster, so it survives reload, resume, and
   reconnect. Web, desktop, and mobile all render it from one shared model
   (`packages/client-runtime/src/state/backgroundTasks.ts`). Two provider-side fixes came
@@ -308,16 +309,20 @@ machine.
   what it is blocked on. A wait is only claimed on evidence — an open approval or
   question, a provider-named wait flag, or non-detached work while the turn is actually
   running — because Claude backgrounding and Codex's asynchronous `spawnAgent` both mean
-  running work frequently blocks nobody. Coverage is per provider: Claude full, Codex
-  agent-level only (its protocol exposes child agents but no shells, monitors or
-  workflows), Grok and OpenCode wait-states only — ACP has no task concept at all, and
-  OpenCode's tool parts are foreground calls the work log already shows, with its
-  `subtask` part carrying identity but no status or timestamps. Known gaps: Claude's
-  `background_tasks_changed` roster snapshot is still discarded, so a task whose start
-  was missed is not reconciled; the SDK's richer `BackgroundTaskSummary` (shell command,
-  MCP server/tool) and scheduled-cron summaries reach hooks and a control request but
-  not the stream, so they are not shown; and Claude's thread-level `compacting` wait is
-  flattened to a running session at ingestion, so the panel cannot name it.
+  running work frequently blocks nobody. Codex requests now carry the child thread that
+  raised them, so a child's approval is attributed to that child instead of reading as
+  the main agent being stuck. Coverage is per provider: Claude has the full task
+  lifecycle; Codex is agent-level only (its protocol exposes child agents but no shells,
+  monitors or workflows); Grok and OpenCode get wait states only — ACP has no task
+  concept at all, and OpenCode's tool parts are foreground calls the work log already
+  shows, with its `subtask` part carrying identity but no status or timestamps. Known
+  gaps: the SDK's richer `BackgroundTaskSummary` fields (MCP server/tool) and
+  scheduled-cron summaries reach hooks and a control request but not the stream, so they
+  are not shown; Claude's thread-level `compacting` wait is flattened to a running
+  session at ingestion, so the panel cannot name it; and if a resumed session loses a
+  task's identity before its roster snapshot arrives, that one task can still show up in
+  both the roster and Tasks — closing that needs a change inside the subagent fold,
+  which this work deliberately leaves alone.
 - **Nightly version pin**: `version` in `apps/server`, `apps/desktop`, `apps/web`, and
   `packages/contracts` package.json is pinned to the published npm nightly so the app
   identifies as Nightly and device connections install a matching published

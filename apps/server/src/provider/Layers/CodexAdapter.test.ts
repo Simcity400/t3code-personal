@@ -1985,6 +1985,61 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       }),
   );
 
+  it.effect("attributes a child thread's request to that child, not to main", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 2)).pipe(
+        Effect.forkChild,
+      );
+
+      // Codex stamps the originating thread on every request. A child's
+      // approval must not read as the main agent being blocked.
+      yield* runtime.emit({
+        id: asEventId("evt-child-approval"),
+        kind: "request",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/commandExecution/requestApproval",
+        requestId: ApprovalRequestId.make("req-child-1"),
+        payload: {
+          itemId: "item-1",
+          threadId: "child-thread-1",
+          turnId: "turn-1",
+          command: "rm -rf build",
+          startedAtMs: 1_778_000_000_000,
+        },
+      } satisfies ProviderEvent);
+
+      yield* runtime.emit({
+        id: asEventId("evt-main-approval"),
+        kind: "request",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        method: "item/commandExecution/requestApproval",
+        requestId: ApprovalRequestId.make("req-main-1"),
+        payload: {
+          itemId: "item-2",
+          threadId: "thread-1",
+          turnId: "turn-1",
+          command: "git push",
+          startedAtMs: 1_778_000_000_000,
+        },
+      } satisfies ProviderEvent);
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      NodeAssert.equal(events[0]?.type, "request.opened");
+      if (events[0]?.type === "request.opened") {
+        NodeAssert.equal(events[0].payload.agentId, "child-thread-1");
+      }
+      // The root thread's own request stays unattributed, so it belongs to main.
+      NodeAssert.equal(events[1]?.type, "request.opened");
+      if (events[1]?.type === "request.opened") {
+        NodeAssert.equal(events[1].payload.agentId, undefined);
+      }
+    }),
+  );
   it.effect("gives a Codex collaboration child its own context-window meter", () =>
     Effect.gen(function* () {
       // The child's tokenUsage notification IS a thread/tokenUsage/updated

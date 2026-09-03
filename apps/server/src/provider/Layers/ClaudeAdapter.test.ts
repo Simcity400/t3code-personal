@@ -2063,6 +2063,71 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("rehydrates lost task identity from the background roster snapshot", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const taskEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.completed"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "resume",
+        attachments: [],
+      });
+
+      // A resumed session has an empty task registry. Without the roster the
+      // terminal row below carries no taskType, and ingestion defaults a
+      // type-less row to "agent" — putting a shell in the agents roster.
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [
+          {
+            id: "task-resumed",
+            type: "shell",
+            status: "running",
+            description: "watch the build",
+            command: "pnpm build --watch",
+          },
+        ],
+        uuid: "roster-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-resumed",
+        status: "completed",
+        output_file: "/tmp/task-resumed.jsonl",
+        summary: "watcher exited",
+        uuid: "task-resumed-done-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      const events = Array.from(yield* Fiber.join(taskEventsFiber));
+      const completed = events[0];
+      assert.equal(completed?.type, "task.completed");
+      if (completed?.type === "task.completed") {
+        assert.equal(completed.payload.taskType, "local_bash");
+        assert.equal(completed.payload.title, "pnpm build --watch");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("interruptTurn settles live tasks and closes the provider session", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

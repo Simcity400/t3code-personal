@@ -295,9 +295,14 @@ export function WaitingOnStrip({ waits }: { waits: ReadonlyArray<AgentWaitState>
 
 export function BackgroundTasksSection({ model }: { model: BackgroundTasksPanelModel }) {
   const [open, setOpen] = useState(true);
-  // Open by default when finished work is all there is: collapsing the only
-  // content behind a toggle leaves the section looking empty.
-  const [finishedOpen, setFinishedOpen] = useState(model.groups.length === 0);
+  // Derived, not initialized: useState would freeze this at whatever the
+  // model looked like on first mount (usually empty), so the section would
+  // keep the wrong default as work started and finished, and would carry the
+  // previous thread's state across a thread switch. null means "follow the
+  // model"; a click pins the user's choice.
+  const [finishedOverride, setFinishedOverride] = useState<boolean | null>(null);
+  const finishedOpen = finishedOverride ?? model.groups.length === 0;
+  const setFinishedOpen = (value: boolean) => setFinishedOverride(value);
   if (!model.hasTasks) return null;
 
   // Attribution is needed whenever ANY row belongs to a subagent — including
@@ -354,7 +359,7 @@ export function BackgroundTasksSection({ model }: { model: BackgroundTasksPanelM
             <>
               <button
                 type="button"
-                onClick={() => setFinishedOpen((value) => !value)}
+                onClick={() => setFinishedOpen(!finishedOpen)}
                 aria-expanded={finishedOpen}
                 className="flex w-full items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[.6rem] font-medium uppercase tracking-wider text-muted-foreground/70 hover:bg-accent/40"
               >

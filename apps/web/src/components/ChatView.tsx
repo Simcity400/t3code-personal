@@ -2489,10 +2489,11 @@ function ChatViewContent(props: ChatViewProps) {
   // The panel's own flatten, reused rather than repeated: the roster must be
   // the same set here, in the title map, and in the Agents panel.
   const rosterAgents = useMemo(() => flattenAgentPanelRoster(agentPanelModel), [agentPanelModel]);
-  // Background-task fold: the exact complement of the subagent fold above,
-  // over the same durable activities, so a task appears in one section or the
-  // other and never both. Same sessionLive derivation, for the same reason —
-  // background work dies with its provider session.
+  // Background-task fold: the counterpart of the subagent fold above, over the
+  // same durable activities. Membership is decided from evidence, not from the
+  // agentKind stamp alone — see the module header for the one residual case
+  // where a lost identity can still show up in both sections. Same sessionLive
+  // derivation, for the same reason: background work dies with its session.
   const backgroundTasks = useMemo(
     () => foldBackgroundTasks(threadActivities, { sessionLive: agentSessionLive }),
     [agentSessionLive, threadActivities],

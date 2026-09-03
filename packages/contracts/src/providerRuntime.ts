@@ -499,7 +499,8 @@ const RequestOpenedPayload = Schema.Struct({
    * Owning subagent when a child raised this request. Only the user can answer
    * it, so the prompt still surfaces on the thread; the stamp is what lets the
    * request also appear in that agent's transcript instead of only the
-   * parent's work log.
+   * parent's work log, and what attributes the wait to the child — without it
+   * every approval reads as the main agent being blocked.
    */
   agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
@@ -533,7 +534,7 @@ export type UserInputQuestion = typeof UserInputQuestion.Type;
 
 const UserInputRequestedPayload = Schema.Struct({
   questions: Schema.Array(UserInputQuestion),
-  /** Owning subagent when a child asked the question. */
+  /** Owning subagent when a child asked the question; routed and attributed as above. */
   agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
