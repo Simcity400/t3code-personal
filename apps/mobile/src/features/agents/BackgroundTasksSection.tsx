@@ -197,9 +197,14 @@ export function BackgroundTasksSection({
   readonly model: BackgroundTasksPanelModel;
   readonly clock: AgentStatusClockSnapshot;
 }) {
-  // Open by default when finished work is all there is: collapsing the only
-  // content behind a toggle leaves the section looking empty.
-  const [finishedOpen, setFinishedOpen] = useState(model.groups.length === 0);
+  // Derived, not initialized: useState would freeze this at whatever the
+  // model looked like on first mount (usually empty), so the section would
+  // keep the wrong default as work started and finished, and would carry the
+  // previous thread's state across a thread switch. null means "follow the
+  // model"; a click pins the user's choice.
+  const [finishedOverride, setFinishedOverride] = useState<boolean | null>(null);
+  const finishedOpen = finishedOverride ?? model.groups.length === 0;
+  const setFinishedOpen = (value: boolean) => setFinishedOverride(value);
   const chevronColor = useThemeColor("--color-chevron");
   if (!model.hasTasks) return null;
 
@@ -254,7 +259,7 @@ export function BackgroundTasksSection({
             accessibilityRole="button"
             accessibilityLabel={`${finishedOpen ? "Hide" : "Show"} finished tasks`}
             accessibilityState={{ expanded: finishedOpen }}
-            onPress={() => setFinishedOpen((value) => !value)}
+            onPress={() => setFinishedOpen(!finishedOpen)}
             className="flex-row items-center gap-2 rounded-lg px-1 py-1 active:opacity-70"
           >
             <SymbolView

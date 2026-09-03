@@ -456,6 +456,7 @@ describe("deriveAgentWaitStates", () => {
           kind: "approval",
           label: "Command approval",
           since: "2026-09-03T10:09:00.000Z",
+          ownerId: null,
         },
       ],
       mainTurnActive: false,
@@ -489,6 +490,7 @@ describe("deriveAgentWaitStates", () => {
           kind: "approval",
           label: "Command approval",
           since: "2026-09-03T10:09:00.000Z",
+          ownerId: null,
         },
       ],
     });
@@ -814,10 +816,16 @@ describe("deriveDetachedTaskIds", () => {
 
   it("treats provider-synthesized child agents as asynchronous", () => {
     // Codex spawnAgent returns immediately; only its separate wait tool
-    // blocks, and nothing on the wire reports that call.
+    // blocks, and nothing on the wire reports that call. agentPath is what
+    // marks a Codex child (see the detachment-marker suite).
     expect(
       deriveDetachedTaskIds([
-        activity("task.updated", { taskId: "c1", timelineBypass: true, status: "running" }),
+        activity("task.updated", {
+          taskId: "c1",
+          timelineBypass: true,
+          agentPath: "/root/audit",
+          status: "running",
+        }),
       ]).has("c1"),
     ).toBe(true);
   });
@@ -937,5 +945,122 @@ describe("Codex child agents do not block main", () => {
     });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ ownerId: "c1", kind: "approval", needsUser: true });
+  });
+});
+
+describe("request ownership", () => {
+  it("attributes a request to the child that raised it, not to main", () => {
+    const open = deriveOpenRequestWaits([
+      activity("approval.requested", {
+        requestId: "r1",
+        requestKind: "command",
+        agentId: "child-1",
+      }),
+    ]);
+    expect(open[0]?.ownerId).toBe("child-1");
+  });
+
+  it("leaves an unattributed request with the main agent", () => {
+    const open = deriveOpenRequestWaits([
+      activity("approval.requested", { requestId: "r1", requestKind: "command" }),
+    ]);
+    expect(open[0]?.ownerId).toBeNull();
+  });
+
+  it("does not claim main is blocked when only a detached child is asking", () => {
+    // The child raised the approval; main is free. Reporting both
+    // "Main <- Command approval" and "child <- Approval" was a false line.
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [
+        { id: "c1", title: "math_one", status: "waiting", startedAt: "2026-09-03T10:00:00.000Z" },
+      ],
+      requests: [
+        {
+          requestId: "r1",
+          kind: "approval",
+          label: "Command approval",
+          since: "2026-09-03T10:20:00.000Z",
+          ownerId: "c1",
+        },
+      ],
+      detachedIds: new Set(["c1"]),
+      mainTurnActive: false,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ ownerId: "c1", ownerLabel: "math_one", needsUser: true });
+  });
+
+  it("shows every simultaneous request instead of only the first", () => {
+    const rows = deriveAgentWaitStates({
+      tasks: [],
+      agents: [],
+      requests: [
+        {
+          requestId: "r1",
+          kind: "approval",
+          label: "Command approval",
+          since: "2026-09-03T10:00:00.000Z",
+          ownerId: null,
+        },
+        {
+          requestId: "r2",
+          kind: "approval",
+          label: "File-change approval",
+          since: "2026-09-03T10:01:00.000Z",
+          ownerId: null,
+        },
+      ],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("Command approval + 1 more request");
+    expect(rows[0]?.since).toBe("2026-09-03T10:00:00.000Z");
+  });
+});
+
+describe("detachment marker", () => {
+  it("does not treat a Claude workflow member as asynchronous", () => {
+    // Claude stamps timelineBypass on workflow members purely to keep
+    // synthetic rows out of the parent timeline; a coordinator does block
+    // its parent. Only Codex children carry agentPath.
+    expect(
+      deriveDetachedTaskIds([
+        activity("task.updated", {
+          taskId: "wf-member",
+          timelineBypass: true,
+          workflowName: "spec",
+          status: "running",
+        }),
+      ]).has("wf-member"),
+    ).toBe(false);
+    expect(
+      deriveDetachedTaskIds([
+        activity("task.updated", {
+          taskId: "codex-child",
+          timelineBypass: true,
+          agentPath: "/root/audit",
+          status: "running",
+        }),
+      ]).has("codex-child"),
+    ).toBe(true);
+  });
+});
+
+describe("terminal then idle", () => {
+  it("ignores a late idle row instead of leaving a settled task inconsistent", () => {
+    const tasks = foldBackgroundTasks([
+      activity("task.started", { taskId: "sh-1", taskType: "local_bash", detail: "build" }),
+      activity("task.completed", {
+        taskId: "sh-1",
+        taskType: "local_bash",
+        status: "completed",
+        summary: "built",
+      }),
+      activity("task.updated", { taskId: "sh-1", taskType: "local_bash", status: "idle" }),
+    ]);
+    const task = byId(tasks, "sh-1");
+    expect(task.status).toBe("completed");
+    expect(task.result).toBe("built");
+    expect(task.endedAt).not.toBeNull();
   });
 });

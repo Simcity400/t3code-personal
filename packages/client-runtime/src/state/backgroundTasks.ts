@@ -8,10 +8,20 @@
  * module existed it had no home but the ordinary work log, where a
  * long-running `pnpm test --watch` was one grey line that never updated.
  *
- * This fold keeps precisely the rows the subagent fold drops, so the two are
- * partitions of the same persisted stream and a task can never appear twice.
- * Both read the same durable `thread.activities`, so the panel survives
- * reload, resume, and reconnect with no extra persistence.
+ * This fold keeps the rows the subagent fold drops, deciding membership from
+ * EVIDENCE rather than from the stamp alone (see pass 1 of
+ * foldBackgroundTasks). Both read the same durable `thread.activities`, so
+ * the panel survives reload, resume and reconnect with no extra persistence.
+ *
+ * The two folds agree on every row the providers actually emit. They can
+ * still disagree in one residual case: if a task's identity is lost
+ * server-side (a resumed session whose registry is empty) AND the roster
+ * snapshot that repairs it has not arrived yet, a terminal row carries no
+ * taskType, ingestion defaults it to "agent", and the untouched subagent fold
+ * will build a phantom agent from it. This fold refuses to compound that by
+ * also dropping the real task. Closing it for good means making the stamp
+ * authoritative inside subagentRuntime.ts, which is deliberately not modified
+ * here; ClaudeAdapter's roster rehydration removes the usual cause.
  *
  * The wait model is deliberately provider-neutral: it is derived from the
  * shared request pipeline (`approval.requested` / `user-input.requested`,
@@ -209,6 +219,11 @@ function fillMetadata(task: MutableTask, payload: Record<string, unknown>): void
  */
 function applyStatus(task: MutableTask, status: BackgroundTaskStatus, at: string): void {
   const wasTerminal = isTerminalBackgroundTaskStatus(task.status);
+  // Terminal -> idle is late metadata, not a transition: a settled task did
+  // not become resumable. Applying it left the old endedAt, result and error
+  // hanging off a row now claiming to be idle. The roster fold ignores it for
+  // the same reason.
+  if (wasTerminal && status === "idle") return;
   const wasResting = wasTerminal || task.status === "idle";
   task.status = status;
   if (isTerminalBackgroundTaskStatus(status)) {
@@ -429,6 +444,8 @@ export interface OpenRequestWait {
   /** Human label, e.g. "Command approval". */
   readonly label: string;
   readonly since: string;
+  /** Owning subagent when a child raised it; null means the main agent. */
+  readonly ownerId: string | null;
 }
 
 /** A wait the provider itself named, with the instant it began. */
@@ -510,6 +527,7 @@ export function deriveOpenRequestWaits(
           kind: "approval",
           label: (requestKind ? APPROVAL_LABELS[requestKind] : undefined) ?? "Approval",
           since: activity.createdAt,
+          ownerId: asString(payload?.agentId) ?? null,
         });
         break;
       }
@@ -519,6 +537,7 @@ export function deriveOpenRequestWaits(
           kind: "user-input",
           label: "Your answer",
           since: activity.createdAt,
+          ownerId: asString(payload?.agentId) ?? null,
         });
         break;
       case "approval.resolved":
@@ -609,9 +628,12 @@ export function deriveDetachedTaskIds(
     // Codex child agents are asynchronous by protocol: spawnAgent returns
     // immediately and the parent only blocks if it calls the separate wait
     // tool, which nothing on the wire reports. An active child therefore
-    // never proves the parent is waiting. Their rows are provider-synthesized
-    // and carry timelineBypass.
-    if (payload.timelineBypass === true) {
+    // never proves the parent is waiting.
+    //
+    // agentPath is the marker, NOT timelineBypass: Claude stamps that on
+    // workflow members too, purely to keep synthetic rows out of the parent
+    // timeline, and a workflow coordinator genuinely does block its parent.
+    if (payload.timelineBypass === true && asString(payload.agentPath) !== undefined) {
       detached.add(taskId);
       continue;
     }
@@ -682,47 +704,66 @@ export function deriveAgentWaitStates(input: {
   const isDetached = (id: string, backgrounded: boolean): boolean =>
     backgrounded || detachedIds?.has(id) === true;
 
-  const approval = requests.find((request) => request.kind === "approval");
-  const userInput = requests.find((request) => request.kind === "user-input");
-  const blockingRequest = approval ?? userInput;
+  // Requests are grouped by whoever raised them. Every open request is a real
+  // wait only the user can clear, so each owner gets a line — showing only the
+  // first hid simultaneous approvals entirely. An unattributed request (every
+  // provider but Codex, whose child threads identify themselves) belongs to
+  // the main agent, and stands whether or not a turn is running: someone must
+  // still answer it.
+  const requestsByOwner = new Map<string | null, OpenRequestWait[]>();
+  for (const request of requests) {
+    const bucket = requestsByOwner.get(request.ownerId);
+    if (bucket) bucket.push(request);
+    else requestsByOwner.set(request.ownerId, [request]);
+  }
+
+  const requestRow = (
+    ownerId: string | null,
+    ownerLabel: string,
+    owned: ReadonlyArray<OpenRequestWait>,
+  ): AgentWaitState => {
+    const first = owned[0] as OpenRequestWait;
+    return {
+      ownerId,
+      ownerLabel,
+      kind: first.kind,
+      label:
+        owned.length === 1
+          ? first.label
+          : `${first.label} + ${owned.length - 1} more request${owned.length > 2 ? "s" : ""}`,
+      since: earliest(owned.map((request) => request.since)),
+      blockingIds: [],
+      needsUser: true,
+    };
+  };
+
+  const activeAgents = agents.filter((agent) => isActiveBackgroundTaskStatus(agent.status));
 
   // Only work that actually holds someone up counts. Detached work does not:
   // the provider returned the tool call immediately and the turn moved on, so
   // rendering it as a dependency was the panel asserting a relationship no
   // provider reports.
-  const blockingAgents = agents.filter(
-    (agent) => isActiveBackgroundTaskStatus(agent.status) && !isDetached(agent.id, false),
-  );
+  const blockingAgents = activeAgents.filter((agent) => !isDetached(agent.id, false));
   const blockingTasks = tasks.filter(
     (task) => isActiveBackgroundTaskStatus(task.status) && !isDetached(task.id, task.backgrounded),
   );
 
-  if (blockingRequest) {
-    // An open request is a real, provider-reported wait and stands whether or
-    // not a turn is running — it is exactly what the user must act on.
-    rows.push({
-      ownerId: null,
-      ownerLabel: "Main",
-      kind: blockingRequest.kind,
-      label: blockingRequest.label,
-      since: blockingRequest.since,
-      blockingIds: [],
-      needsUser: true,
-    });
+  const mainRequests = requestsByOwner.get(null);
+  if (mainRequests && mainRequests.length > 0) {
+    rows.push(requestRow(null, "Main", mainRequests));
   } else if (mainTurnActive) {
-    const mainAgents = blockingAgents;
     const mainTasks = blockingTasks.filter((task) => task.ownerAgentId === null);
-    if (mainAgents.length > 0) {
+    if (blockingAgents.length > 0) {
       rows.push({
         ownerId: null,
         ownerLabel: "Main",
         kind: "agents",
         label: joinLabels(
-          mainAgents.map((agent) => agent.title),
+          blockingAgents.map((agent) => agent.title),
           "agent",
         ),
-        since: earliest(mainAgents.map((agent) => agent.startedAt)),
-        blockingIds: mainAgents.map((agent) => agent.id),
+        since: earliest(blockingAgents.map((agent) => agent.startedAt)),
+        blockingIds: blockingAgents.map((agent) => agent.id),
         needsUser: false,
       });
     } else if (mainTasks.length > 0) {
@@ -754,8 +795,16 @@ export function deriveAgentWaitStates(input: {
   const reported = new Set<string>();
   for (const agent of agents) {
     if (!isActiveBackgroundTaskStatus(agent.status)) continue;
-    // A named wait reason outranks everything: the provider is telling us
-    // exactly who is blocked and on what, and only the user can clear it.
+    // A request this agent raised is the most concrete answer there is, and
+    // replaces the generic named flag rather than duplicating it.
+    const owned = requestsByOwner.get(agent.id);
+    if (owned && owned.length > 0) {
+      reported.add(agent.id);
+      rows.push(requestRow(agent.id, agent.title, owned));
+      continue;
+    }
+    // Otherwise a named wait reason: the provider is telling us this agent is
+    // blocked, and only the user can clear it.
     const named = agent.status === "waiting" ? agentWaitReasons?.get(agent.id) : undefined;
     if (named) {
       reported.add(agent.id);

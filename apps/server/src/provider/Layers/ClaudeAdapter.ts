@@ -1290,6 +1290,55 @@ function taskLinkageFor(
   };
 }
 
+/**
+ * SDK BackgroundTaskSummary.type is a friendly label ('shell', 'subagent',
+ * 'monitor', 'workflow'); the task_started stream carries the raw
+ * discriminant instead. Map back so a rehydrated entry classifies exactly as
+ * a live one would.
+ */
+const ROSTER_TASK_TYPES: Readonly<Record<string, string>> = {
+  shell: "local_bash",
+  monitor: "monitor",
+  workflow: "local_workflow",
+  subagent: "local_agent",
+};
+
+/**
+ * Refills task identity from a background_tasks_changed roster snapshot.
+ * Fill-if-missing only: a live entry already holds richer identity than the
+ * summary does, and must not be overwritten by it.
+ */
+function rehydrateTaskAgentsFromRoster(
+  context: { readonly taskAgents: Map<string, ClaudeTaskAgentState> },
+  message: Record<string, unknown>,
+): void {
+  const tasks = message.tasks;
+  if (!Array.isArray(tasks)) {
+    return;
+  }
+  for (const entry of tasks) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const summary = entry as Record<string, unknown>;
+    const taskId = trimmedString(summary.id);
+    if (!taskId || context.taskAgents.has(taskId)) continue;
+    const rawType = trimmedString(summary.type);
+    const taskType = rawType ? (ROSTER_TASK_TYPES[rawType] ?? rawType) : undefined;
+    context.taskAgents.set(taskId, {
+      taskId,
+      toolUseId: undefined,
+      description: trimmedString(summary.command) ?? trimmedString(summary.description),
+      subagentType: trimmedString(summary.agent_type),
+      taskType,
+      workflowName: trimmedString(summary.name),
+      skipTranscript: false,
+      runHandles: undefined,
+      owningAgentId: undefined,
+      model: undefined,
+      effort: undefined,
+    });
+  }
+}
+
 const WORKFLOW_PHASE_CAP = 64;
 const WORKFLOW_AGENT_CAP = 100;
 
@@ -3858,6 +3907,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // already shows the underlying git/gh tool calls.
     switch (message.subtype as string) {
       case "background_tasks_changed":
+        // Roster snapshot ({tasks:[{id,type,description,command,...}]}). It
+        // emits nothing, but it is the ONLY way to recover a task's identity
+        // after the remembered linkage is lost — a resumed session has an
+        // empty registry, so a terminal row for a task started before the
+        // restart would carry no taskType, and ingestion defaults a
+        // type-less row to "agent". That mis-stamp puts a background shell
+        // in the agents roster. Rehydrating here keeps classification
+        // truthful for every later row.
+        rehydrateTaskAgentsFromRoster(context, message as unknown as Record<string, unknown>);
+        return;
       case "vcs_state_changed":
       case "code_change_published":
         return;

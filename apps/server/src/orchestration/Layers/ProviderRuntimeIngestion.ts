@@ -463,7 +463,7 @@ export function runtimeEventToActivities(
             // Owning subagent, when a child raised the request. The prompt is
             // still derived from this row for the thread (only the user can
             // answer); the stamp re-homes the timeline row into that agent's
-            // transcript.
+            // transcript, and names which agent is actually blocked.
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,

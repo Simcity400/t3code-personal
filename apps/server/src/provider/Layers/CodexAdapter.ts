@@ -1233,6 +1233,19 @@ function mapToRuntimeEvents(
   }
 
   if (event.kind === "request") {
+    // Codex stamps the originating thread on every request. A request from a
+    // child conversation belongs to that child, not to the main agent: child
+    // thread ids are the task ids collab agents fold under (see
+    // mapCollabAgentEvent). Without this the panel reports the main agent as
+    // blocked whenever any child asks for approval.
+    const requestAgentId = (() => {
+      const payload = event.payload;
+      if (typeof payload !== "object" || payload === null) return undefined;
+      const threadId = (payload as Record<string, unknown>).threadId;
+      if (typeof threadId !== "string" || threadId.trim().length === 0) return undefined;
+      return threadId === canonicalThreadId ? undefined : threadId;
+    })();
+
     if (event.method === "item/tool/requestUserInput") {
       const payload =
         readPayload(EffectCodexSchema.ServerRequest__ToolRequestUserInputParams, event.payload) ??
@@ -1247,6 +1260,7 @@ function mapToRuntimeEvents(
           type: "user-input.requested",
           payload: {
             questions,
+            ...(requestAgentId ? { agentId: requestAgentId } : {}),
           },
         },
       ];
@@ -1315,6 +1329,7 @@ function mapToRuntimeEvents(
               }
             : {}),
           ...(event.payload !== undefined ? { args: event.payload } : {}),
+          ...(requestAgentId ? { agentId: requestAgentId } : {}),
         },
       },
     ];
