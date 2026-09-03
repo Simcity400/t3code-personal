@@ -190,9 +190,23 @@ machine.
   the job is written to be correct under both readings rather than betting on one, and
   when a push is refused anyway it raises the marker from the commit `origin/main`
   already holds — a ref create that introduces no new commit, the weakest push there
-  is. Local scenarios drive the shipped step against bare repos that model each
-  reading, and the marker lands under both; only a remote that refuses even a no-op
-  ref create leaves no pill, and the run says so explicitly.
+  is. Local scenarios drive the shipped steps — extracted verbatim from this YAML —
+  against throwaway bare repos whose `pre-receive` hook models each reading. The
+  end-to-end pair is the one that matters, because it is the only reachable strict
+  case: upstream touches a workflow, the merge step deletes it so the net diff is
+  empty and the guard passes, yet the pushed range still introduces a
+  workflow-touching commit. A per-commit remote refuses that push and the marker
+  lands on the pre-push `origin/main`; a net-diff remote accepts it and no marker
+  appears. Only a remote that refuses even a no-op ref create leaves no pill, and
+  the run says so explicitly.
+
+  What is **not** covered locally: a literal tab in a workflow filename. Git on
+  Windows rejects one at both layers — the filesystem maps it into the private-use
+  plane, and `git update-index --cacheinfo` answers `error: Invalid path` — so no
+  scenario here can build that case, and an earlier claim that one did was wrong.
+  Coverage does not actually depend on it: the bug being fixed is git's C-quoting of
+  unusual paths in newline-delimited output, and a non-ASCII byte is C-quoted by the
+  same mechanism, which the `deploiement.yml` scenarios do exercise.
   Upstream's `infra/relay/scripts/deploy.test.ts` guard over `release.yml` was dropped
   with it. `fork-release.yml`'s old `sync_upstream` job — a second, weaker copy of the
   same merge — was deleted; `fork-sync.yml` is the only place that merges upstream.
@@ -201,6 +215,7 @@ machine.
   workflow for a push made with `GITHUB_TOKEN`, so before this the iPhone OTA silently
   stopped following `main` whenever the scheduled sync — rather than a person — was what
   moved it; only the desktop release was being called explicitly.
+
 - **One-line composer (web)**: retired 2026-09-03 — upstream's "collapse the resting
   composer" (#7855) collapses the desktop composer to a single line at rest and expands
   it on focus, replacing the fork's `min-h-[1lh]` on the composer `ContentEditable` in
