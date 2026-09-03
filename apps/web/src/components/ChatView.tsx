@@ -6233,6 +6233,7 @@ function ChatViewContent(props: ChatViewProps) {
     if (sideChatCommand !== null && sideChatCommand.prompt.length === 0) {
       const hasAttachedContent =
         composerImages.length > 0 ||
+        composerFiles.length > 0 ||
         sendableComposerTerminalContexts.length > 0 ||
         composerElementContexts.length > 0 ||
         composerPreviewAnnotations.length > 0 ||
