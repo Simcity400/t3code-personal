@@ -87,6 +87,29 @@ machine.
   controls (Settings → Appearance), which replaced the fork's 13–20px `uiFontSize`
   slider. A previously customized text size resets to the default once; re-set it
   in the official controls.
+- **Native subagent & workflow observability** (2026-08-01 onward): the Agents panel in
+  the web app (`apps/web/src/components/AgentsPanel.tsx`, opened from `ChatView`), the
+  spawn CTA row, sidebar liveness beyond the turn ("Working"/"Monitoring"), and the
+  client-runtime fold behind them (`packages/client-runtime/src/state/subagentRuntime.ts`,
+  ~720 fork-only lines). Server side: Claude `SendMessage` is classified as a subagent
+  instruction, Codex `collabAgent/*` events carry the child's prompt and `promptId`, and
+  subagent-owned traffic is attributed with `agentId` so it stays out of the parent
+  transcript (`agent_id` on `projection_thread_messages`, fork migration 041). See
+  `docs/user/agent-transcripts.md`.
+- **Side chats** (2026-08-16): `/side [prompt]` forks the current thread into a
+  provider-native side conversation — `forkedFromThreadId` / `sideChatPromotedAt` on the
+  thread contracts, fork migration 042, and the `/side` command in both the web composer
+  (`apps/web/src/components/ChatView.tsx`) and the mobile one
+  (`apps/mobile/src/features/threads/use-composer-command-menu.ts` +
+  `apps/mobile/src/state/use-thread-composer-state.ts`). See `docs/user/side-chats.md`.
+- **Mobile Agents screen & durable transcripts** (2026-08-15):
+  `apps/mobile/src/features/agents/` renders the same roster and transcripts on the
+  phone, which is why `threadActivity.ts` re-homes nested agent rows out of the chat feed
+  instead of showing them there the way upstream does.
+- **Mobile composer that opens at one line** (2026-08-15): `composerEditorHeight.ts`
+  measures the draft and sizes the editor to it, and `markSubmitted()` /
+  `composerEditorRevision.ts` keep a post-submit clear from being overwritten by native
+  events still in flight. (The WEB one-line composer was retired 2026-09-03, below.)
 - **Test runs ignore the root `.env`** (2026-08-12): `apps/web/vite.config.ts` skips
   `loadRepoEnv()` when vitest is running, so tests see the same empty public config
   as upstream CI. Without this, the `.env` below leaked the Clerk CLI OAuth client
@@ -175,6 +198,16 @@ machine.
   construction; since 2026-08-08 `fork-sync.yml` resolves that class automatically
   (upstream's side wins, then the pin re-stamps), so the `needs-merge-help` pill
   only appears for genuine code conflicts.
+
+## Notes on upstream files kept as-is
+
+`docs/` (notably `docs/internals/ci.md` and `docs/operations/release.md`),
+`infra/relay/README.md` and `packaging/aur/README.md` still describe upstream's CI and
+point at `.github/workflows/ci.yml`, `release.yml`, `deploy-relay.yml` and
+`publish-aur.yml`. Those workflows do not exist on this fork (see the allowlist above).
+They are left untouched on purpose: they document the official project, and editing them
+would put a permanent merge conflict in the path of every upstream docs change. Read them
+as upstream's documentation, not as a description of this fork.
 
 ## Repo layout
 

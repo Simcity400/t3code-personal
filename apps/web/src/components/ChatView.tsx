@@ -93,6 +93,7 @@ import {
   type ComposerSubmissionIntent,
   parseSideChatSlashCommand,
   parseStandaloneComposerSlashCommand,
+  sideChatWouldDiscardAttachedContent,
 } from "../composer-logic";
 import {
   derivePendingApprovals,
@@ -6231,13 +6232,14 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
     if (sideChatCommand !== null && sideChatCommand.prompt.length === 0) {
-      const hasAttachedContent =
-        composerImages.length > 0 ||
-        composerFiles.length > 0 ||
-        sendableComposerTerminalContexts.length > 0 ||
-        composerElementContexts.length > 0 ||
-        composerPreviewAnnotations.length > 0 ||
-        composerReviewComments.length > 0;
+      const hasAttachedContent = sideChatWouldDiscardAttachedContent({
+        images: composerImages.length,
+        files: composerFiles.length,
+        terminalContexts: sendableComposerTerminalContexts.length,
+        elementContexts: composerElementContexts.length,
+        previewAnnotations: composerPreviewAnnotations.length,
+        reviewComments: composerReviewComments.length,
+      });
       if (hasAttachedContent) {
         toastManager.add(
           stackedThreadToast({
