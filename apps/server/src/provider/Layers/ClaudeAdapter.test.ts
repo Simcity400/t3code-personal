@@ -2443,7 +2443,7 @@ describe("ClaudeAdapterLive", () => {
               type: "tool_use",
               id: "toolu_mcp_1",
               name: "mcp__github__list_issues",
-              input: { repo: "t3" },
+              input: { repo: "t3", command: "list" },
             },
           },
         } as unknown as SDKMessage);
@@ -2474,6 +2474,9 @@ describe("ClaudeAdapterLive", () => {
         if (monitor?.type === "task.started") {
           assert.equal(monitor.payload.server, "github");
           assert.equal(monitor.payload.tool, "list_issues");
+          // An MCP tool may take an argument named `command`; that is not a
+          // shell command line and must not relabel the monitor row.
+          assert.equal(monitor.payload.command, undefined);
         }
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),

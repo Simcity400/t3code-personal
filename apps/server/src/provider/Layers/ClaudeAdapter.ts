@@ -1322,6 +1322,9 @@ const ROSTER_TASK_TYPES: Readonly<Record<string, string>> = {
   subagent: "local_agent",
 };
 
+/** Task types whose launching call is a shell command. */
+const SHELL_TASK_TYPES: ReadonlySet<string> = new Set(["local_bash", "shell"]);
+
 /** The MCP tool-name convention: `mcp__<server>__<tool>`. */
 function mcpServerAndTool(
   toolName: string | undefined,
@@ -1358,8 +1361,14 @@ function taskLaunchDetails(input: {
   readonly launchInput: Record<string, unknown> | undefined;
 }): { command?: string; server?: string; tool?: string } {
   const details: { command?: string; server?: string; tool?: string } = {};
-  const command = trimmedString(input.launchInput?.command);
-  if (command !== undefined) details.command = command;
+  // Gated on the task type, not merely on the input having a `command` key:
+  // an MCP tool is free to take an argument by that name, and stamping it as
+  // a shell command line would relabel a monitor row with a value that is not
+  // one. `local_bash` is the only shell task type the CLI emits.
+  if (input.taskType !== undefined && SHELL_TASK_TYPES.has(input.taskType)) {
+    const command = trimmedString(input.launchInput?.command);
+    if (command !== undefined) details.command = command;
+  }
   const fromToolName = mcpServerAndTool(input.launchToolName);
   if (fromToolName) {
     details.server = fromToolName.server;
