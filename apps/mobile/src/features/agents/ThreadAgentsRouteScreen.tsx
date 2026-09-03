@@ -316,7 +316,11 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
                 ) : null}
               </View>
             ) : null}
-            <BackgroundTasksSection model={backgroundTasksModel} clock={statusClock} />
+            <BackgroundTasksSection
+              model={backgroundTasksModel}
+              clock={statusClock}
+              chevronColor={chevronColor}
+            />
           </>
         )}
       </ScrollView>

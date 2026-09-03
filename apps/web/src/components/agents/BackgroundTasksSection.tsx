@@ -33,7 +33,7 @@ import {
   Terminal,
   Users,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 
@@ -115,7 +115,10 @@ function TaskElapsed({
 }) {
   const textRef = useRef<HTMLSpanElement>(null);
 
-  useEffect(() => {
+  // A live row's first value is written here, not during render: reading the
+  // clock while rendering is impure, and a layout effect still lands before
+  // paint so there is no flash of an empty timer.
+  useLayoutEffect(() => {
     if (!live || startedAt === null) return;
     const update = () => {
       if (textRef.current) {
@@ -129,7 +132,9 @@ function TaskElapsed({
   if (startedAt === null) return null;
   return (
     <span ref={textRef} className="tabular-nums">
-      {formatElapsedBetween(startedAt, live ? null : endedAt, Date.now())}
+      {/* Settled rows render their final value directly — `now` is unused
+          once an end instant is known, so this stays pure. */}
+      {live ? "" : formatElapsedBetween(startedAt, endedAt, 0)}
     </span>
   );
 }

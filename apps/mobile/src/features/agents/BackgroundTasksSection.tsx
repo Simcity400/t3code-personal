@@ -22,7 +22,6 @@ import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
-import { useThemeColor } from "../../lib/useThemeColor";
 import type { AgentStatusClockSnapshot } from "./agentStatusClock";
 
 const TASK_KIND_LABEL: Record<BackgroundTaskKind, string> = {
@@ -193,9 +192,13 @@ export function WaitingOnSection({
 export function BackgroundTasksSection({
   model,
   clock,
+  chevronColor,
 }: {
   readonly model: BackgroundTasksPanelModel;
   readonly clock: AgentStatusClockSnapshot;
+  /** Passed in rather than read here: the theme escape hatch belongs to the
+   * one screen that already owns it, not to every section it renders. */
+  readonly chevronColor: string;
 }) {
   // Derived, not initialized: useState would freeze this at whatever the
   // model looked like on first mount (usually empty), so the section would
@@ -205,7 +208,6 @@ export function BackgroundTasksSection({
   const [finishedOverride, setFinishedOverride] = useState<boolean | null>(null);
   const finishedOpen = finishedOverride ?? model.groups.length === 0;
   const setFinishedOpen = (value: boolean) => setFinishedOverride(value);
-  const chevronColor = useThemeColor("--color-chevron");
   if (!model.hasTasks) return null;
 
   // Attribution is needed whenever ANY row belongs to a subagent, including
