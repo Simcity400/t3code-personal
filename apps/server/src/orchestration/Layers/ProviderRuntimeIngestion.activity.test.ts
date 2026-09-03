@@ -179,3 +179,24 @@ describe("runtimeEventToActivities task.updated", () => {
     expect(updated({ taskType: "local_bash" }).agentKind).toBe("background");
   });
 });
+
+describe("runtimeEventToActivities task.started", () => {
+  const started = (payload: Record<string, unknown>) =>
+    runtimeEventToActivities({
+      ...base,
+      type: "task.started",
+      eventId: EventId.make("evt-started"),
+      payload: { taskId: RuntimeTaskId.make("task-1"), ...payload },
+    } as ProviderRuntimeEvent)[0]?.payload as Record<string, unknown>;
+
+  it("persists detachment reported at start", () => {
+    // Backgrounded shells/agents and resumed subagents never send a later
+    // task_updated patch, so the start row is the only place it is reported.
+    expect(started({ taskType: "local_bash", isBackgrounded: true }).isBackgrounded).toBe(true);
+    expect(started({ taskType: "local_bash", isBackgrounded: false }).isBackgrounded).toBe(false);
+  });
+
+  it("omits it when the provider did not say", () => {
+    expect("isBackgrounded" in started({ taskType: "local_bash" })).toBe(false);
+  });
+});

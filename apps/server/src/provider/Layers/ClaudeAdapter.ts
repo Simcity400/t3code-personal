@@ -4062,6 +4062,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           effort,
         });
         context.liveTaskIds.add(message.task_id);
+        const startedBackgrounded = (() => {
+          const raw = (message as unknown as Record<string, unknown>).is_backgrounded;
+          return typeof raw === "boolean" ? raw : undefined;
+        })();
         yield* offerRuntimeEvent({
           ...base,
           type: "task.started",
@@ -4075,6 +4079,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(model ? { model } : {}),
             ...(effort ? { effort } : {}),
             ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),
+            // Registered-in-background flag, present on the CLI's task_started
+            // but missing from the bundled sdk.d.ts (stale typings), hence the
+            // widened read. Backgrounded local_agent/local_bash tasks and every
+            // resumed subagent are detached from the very first row and never
+            // send a task_updated patch, so without this the panel reports them
+            // as blocking the main agent while it is demonstrably free.
+            ...(startedBackgrounded !== undefined ? { isBackgrounded: startedBackgrounded } : {}),
             // Ambient housekeeping: the SDK asks clients to keep it out of the
             // inline transcript but says it "may still appear in a tasks panel".
             ...(message.skip_transcript === true ? { skipTranscript: true } : {}),

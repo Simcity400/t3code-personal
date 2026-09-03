@@ -137,6 +137,8 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
           title: formatSubagentTitle(agent.title),
           status: agent.status,
           startedAt: agent.startedAt,
+          // Members block their coordinator, not main.
+          parentAgentId: agent.parentAgentId,
         })),
         requests: thread ? deriveOpenRequestWaits(thread.activities) : [],
         agentWaitReasons: thread ? deriveAgentWaitReasons(thread.activities) : new Map(),
