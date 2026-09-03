@@ -12,14 +12,6 @@
   color: var(--foreground);
 }
 
-/* ── Fork tweak: brighter composer placeholder ────────────────────────
-   The official placeholder fades muted-foreground to 35%; lift it so the
-   hint text is comfortably readable. */
-
-.composer-editor-surface .pointer-events-none {
-  color: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
-}
-
 /* ── Fork tweak: brighter dark-mode text ──────────────────────────────
    Raises the default dark palette's text one step across the board while
    keeping the primary/secondary hierarchy: foreground goes to white and
