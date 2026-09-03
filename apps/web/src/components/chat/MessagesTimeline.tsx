@@ -25,6 +25,8 @@ const EMPTY_AGENT_PANEL_MODEL = emptyAgentPanelModel();
 const NOOP_OPEN_AGENTS = () => {};
 const NOOP_USE_ARTIFACT_TEMPLATE = () => {};
 const NOOP_OPEN_ATTACHMENT = (_attachment: ChatFileAttachment) => {};
+const NOOP_OPEN_AGENT = () => {};
+const EMPTY_SUBAGENT_REPLIES: ReadonlyMap<MessageId, SubagentReplySender> = new Map();
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 import { getProjectFaviconCacheKey } from "@t3tools/shared/projectFavicon";
@@ -204,6 +206,19 @@ interface TimelineRowSharedState {
   workGroupViewState: WorkGroupViewState;
   agentPanelModel: AgentPanelModel;
   onOpenAgents: () => void;
+  /**
+   * Messages a subagent sent back to this conversation, by message id. Their
+   * assistant row grows a "From <agent>" header that opens the sender's
+   * transcript; every other assistant message renders unchanged.
+   */
+  subagentReplyByMessageId: ReadonlyMap<MessageId, SubagentReplySender>;
+  onOpenAgent: (agentId: string) => void;
+}
+
+/** Sender of one subagent reply rendered in this conversation. */
+export interface SubagentReplySender {
+  readonly agentId: string;
+  readonly label: string;
 }
 
 interface TimelineRowActivityState {
@@ -291,6 +306,8 @@ interface MessagesTimelineProps {
   ) => boolean;
   agentPanelModel?: AgentPanelModel;
   onOpenAgents?: () => void;
+  subagentReplyByMessageId?: ReadonlyMap<MessageId, SubagentReplySender>;
+  onOpenAgent?: (agentId: string) => void;
   isWorking: boolean;
   isPreparingWorktree?: boolean;
   activeTurnStartedAt: string | null;
@@ -345,6 +362,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   activeTurnStartedAt,
   agentPanelModel = EMPTY_AGENT_PANEL_MODEL,
   onOpenAgents = NOOP_OPEN_AGENTS,
+  subagentReplyByMessageId = EMPTY_SUBAGENT_REPLIES,
+  onOpenAgent = NOOP_OPEN_AGENT,
   listRef,
   timelineEntries,
   latestTurn,
@@ -655,6 +674,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workGroupViewState,
       agentPanelModel,
       onOpenAgents,
+      subagentReplyByMessageId,
+      onOpenAgent,
     }),
     [
       readyCitationRequest,
@@ -679,6 +700,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workGroupViewState,
       agentPanelModel,
       onOpenAgents,
+      subagentReplyByMessageId,
+      onOpenAgent,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -1421,13 +1444,34 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
   );
 }
 
+/**
+ * "From <agent>" header on a message a subagent sent back to this
+ * conversation. Clicking opens that agent's transcript, so the parent view and
+ * the agent view stay one navigable exchange rather than two disconnected logs.
+ */
+function SubagentReplyHeader({ sender }: { sender: SubagentReplySender }) {
+  const { onOpenAgent } = use(TimelineRowCtx);
+  return (
+    <button
+      type="button"
+      onClick={() => onOpenAgent(sender.agentId)}
+      className="mb-1 flex items-center gap-1.5 rounded-sm px-1 py-0.5 text-muted-foreground text-xs hover:bg-accent/40 hover:text-foreground"
+    >
+      <BotIcon aria-hidden className="size-3.5" />
+      <span className="font-medium">From {sender.label}</span>
+    </button>
+  );
+}
+
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const subagentSender = ctx.subagentReplyByMessageId.get(row.message.id);
 
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
+        {subagentSender ? <SubagentReplyHeader sender={subagentSender} /> : null}
         <AssistantCitationSource
           messageId={row.message.id}
           {...(ctx.threadRef ? { threadRef: ctx.threadRef } : {})}

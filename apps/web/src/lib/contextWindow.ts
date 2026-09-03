@@ -25,8 +25,44 @@ export type ContextWindowSnapshot = NullableContextWindowUsage & {
   readonly updatedAt: string;
 };
 
+/** Map a provider driver kind to a user-facing display name. */
+export function formatProviderDisplayName(provider: string | null | undefined): string {
+  if (!provider) return "This agent";
+  switch (provider) {
+    case "claudeAgent":
+    case "claude":
+      return "Claude";
+    case "codex":
+      return "Codex";
+    case "cursor":
+      return "Cursor";
+    case "opencode":
+      return "OpenCode";
+    default: {
+      // Title-case unknown driver kinds so they read reasonably.
+      const trimmed = provider.replace(/Agent$/i, "").trim();
+      if (trimmed.length === 0) return provider;
+      return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+    }
+  }
+}
+
+/**
+ * Latest context-window usage for ONE conversation.
+ *
+ * `agentId` says whose meter this is: `null` for the parent thread, or a
+ * subagent's id for that agent's own meter. Rows a subagent produced are
+ * stamped with its id and the parent skips them — otherwise the parent's meter
+ * shows whichever conversation reported last, which on a thread with busy
+ * subagents is almost never the parent.
+ *
+ * Passing a transcript already scoped to one agent (attribution stripped) with
+ * `agentId` left at `null` is equivalent, and is how the Agents panel drives
+ * the identical meter component per subagent.
+ */
 export function deriveLatestContextWindowSnapshot(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  agentId: string | null = null,
 ): ContextWindowSnapshot | null {
   for (let index = activities.length - 1; index >= 0; index -= 1) {
     const activity = activities[index];
@@ -35,6 +71,10 @@ export function deriveLatestContextWindowSnapshot(
     }
 
     const payload = asRecord(activity.payload);
+    const rowAgentId = typeof payload?.agentId === "string" ? payload.agentId : null;
+    if (rowAgentId !== agentId) {
+      continue;
+    }
     const usedTokens = asFiniteNumber(payload?.usedTokens);
     if (usedTokens === null || usedTokens < 0) {
       continue;

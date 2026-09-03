@@ -1,7 +1,11 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
-import { isBackgroundTaskActivity } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  isBackgroundTaskActivity,
+  selectSubagentRepliesFor,
+  type SubagentReplyEntry,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   commandDetailRepeatsCommand,
   extractCommandOutputText,
@@ -11,6 +15,7 @@ import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-lo
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
+  MessageId,
   type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
@@ -1764,6 +1769,43 @@ function compareActivityLifecycleRank(kind: string): number {
     return 2;
   }
   return 1;
+}
+
+/** A subagent's reply, rendered as an ordinary message plus its "From" label. */
+export interface SubagentReplyMessage {
+  readonly message: ChatMessage;
+  readonly agentId: string;
+  readonly label: string;
+}
+
+/**
+ * Turns the replies one conversation received into ordinary chat messages.
+ *
+ * The parent used to see only a collapsed tool row where its subagent
+ * answered. These render through the same assistant row as everything else —
+ * markdown, copy button, timestamps — with a "From <agent>" header that opens
+ * that agent's transcript. Identity is the persisted activity id, so the rows
+ * survive reload and resume exactly as the activity they are derived from.
+ */
+export function deriveSubagentReplyMessages(
+  replies: ReadonlyArray<SubagentReplyEntry>,
+  ownerAgentId: string | null,
+  labelFor: (reply: SubagentReplyEntry) => string,
+): SubagentReplyMessage[] {
+  return selectSubagentRepliesFor(replies, ownerAgentId).map((reply) => ({
+    agentId: reply.agentId,
+    label: labelFor(reply),
+    message: {
+      id: MessageId.make(reply.id),
+      role: "assistant",
+      text: reply.text,
+      agentId: reply.agentId,
+      turnId: reply.turnId,
+      streaming: false,
+      createdAt: reply.createdAt,
+      updatedAt: reply.createdAt,
+    },
+  }));
 }
 
 export function deriveTimelineEntries(
