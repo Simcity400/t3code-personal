@@ -40,12 +40,13 @@ export function shouldUseRestingComposerLayout(input: {
   // desktop width, and where the strip is missing or too narrow the controls
   // simply return when the composer is focused.
   //
-  // A scroll collapse rests the composer regardless of the blur preference:
-  // the user asked for it with the gesture, and it lifts on the next
-  // composer interaction. With blur collapse off, losing focus alone never
-  // rests the composer.
-  const collapsed = input.isScrollCollapsed || (input.collapseOnBlur && !input.isFocused);
-  return input.isExistingThread && !input.isMobileViewport && collapsed && !input.hasExpandedChrome;
+  //
+  // The resting bar is the composer's only desktop shape on an existing
+  // thread. Focus never lifts it: the prompt row grows with its lines instead
+  // of swapping in the tall expanded surface. Only composer-owned chrome
+  // (drawers, menus, banners) still expands it. Focus, scroll collapse, and
+  // the blur preference are therefore moot here.
+  return input.isExistingThread && !input.isMobileViewport && !input.hasExpandedChrome;
 }
 
 export function shouldAnimateComposerRestingTransition(input: {
