@@ -64,6 +64,24 @@ export function resolveThreadStatus(
     };
   }
 
+  // Compaction reports itself as a running session, so it is read before that
+  // check or it would show up as the agent working. Only compaction jumps the
+  // queue; ordinary background work stays below the plan prompt.
+  if (thread.compactingSince != null) {
+    const compacting = resolveThreadWorkState(thread);
+    if (compacting.state === "waiting" && compacting.label !== null) {
+      return {
+        kind: "waiting",
+        label: compacting.label,
+        pillClassName: "bg-adaptive-sky-500-a12-a16",
+        textClassName: "text-adaptive-sky-700-300",
+        iconColor: "#0a84ff",
+        iconBackground: "rgba(10,132,255,0.22)",
+        pulse: false,
+      };
+    }
+  }
+
   if (thread.session?.status === "running") {
     return {
       kind: "working",

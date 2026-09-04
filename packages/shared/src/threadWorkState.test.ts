@@ -75,6 +75,41 @@ describe("resolveThreadWorkState", () => {
     ).toBe("waiting");
   });
 
+  it("names compaction as a machine wait, ahead of the running session it reports through", () => {
+    // Compaction reports itself as `running` so the composer refuses a fresh
+    // turn; the agent is nonetheless generating nothing, and saying "Working"
+    // there is the lying spinner this model exists to remove.
+    expect(
+      resolveThreadWorkState({
+        session: session("running"),
+        compactingSince: "2026-09-04T09:58:00.000Z",
+      }),
+    ).toEqual({
+      state: "waiting",
+      label: "Waiting on context compaction",
+      since: "2026-09-04T09:58:00.000Z",
+      monitorOnly: false,
+    });
+  });
+
+  it("prefers compaction over background work, and never calls it monitor-only", () => {
+    // Compaction always ends, so it must never be treated as settled by the
+    // completion alert the way a watch loop is.
+    const status = resolveThreadWorkState({
+      session: session("running"),
+      compactingSince: "2026-09-04T09:58:00.000Z",
+      backgroundWait: wait({ monitorOnly: true, label: "a watch loop" }),
+    });
+    expect(status.label).toBe("Waiting on context compaction");
+    expect(status.monitorOnly).toBe(false);
+  });
+
+  it("goes back to working when compaction ends", () => {
+    expect(
+      resolveThreadWorkState({ session: session("running"), compactingSince: null }).state,
+    ).toBe("working");
+  });
+
   it("renders the provider's own words after a fixed prefix", () => {
     expect(formatThreadWaitLabel(wait({ label: "pnpm test --watch" }))).toBe(
       "Waiting on pnpm test --watch",

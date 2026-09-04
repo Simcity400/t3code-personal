@@ -481,6 +481,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasActionableProposedPlan: false,
           backgroundLiveness: null,
           backgroundWait: null,
+          compactingSince: null,
           planProgress: null,
         },
       ]);

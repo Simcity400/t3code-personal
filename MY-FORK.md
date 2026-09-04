@@ -410,18 +410,25 @@ machine.
 
   - **working** — the thread's own turn is in flight. The agent is generating or
     running a foreground tool call; a message sent now steers that turn.
-  - **waiting** — no turn of its own, but work it started is still alive:
-    background shells, watch loops, workflows, subagents, anything the provider
-    reports as a task. The row reads **"Waiting on _what_ · _elapsed_"**, where
-    _what_ is whatever the provider called the work — an agent's title, a shell's
+  - **waiting** — the agent is producing nothing of its own. Either work it
+    started is still alive (background shells, watch loops, workflows, subagents,
+    anything the provider reports as a task) or the provider is compacting its
+    own context. The row reads **"Waiting on _what_ · _elapsed_"**, where _what_
+    is whatever the provider called the work — an agent's title, a shell's
     command line, a monitor's or workflow's name — degrading to a neutral count
     ("3 tasks", "Reviewer + 2 more agents") when there are several or the provider
-    named none. No dot pulses: nothing of the agent's own is moving.
+    named none, and reading "context compaction" for the compaction case. No dot
+    pulses: nothing of the agent's own is moving.
   - **idle** — nothing live, and the row says nothing at all.
 
-  **You can talk to it while it waits.** In `waiting` the composer is fully live
-  and a message starts a real turn immediately — it is never queued behind
-  background work. When a background result wakes the agent and it starts
+  **You can talk to it while it waits.** With background work alive the composer
+  is fully live and a message starts a real turn immediately — it is never queued
+  behind background work. (Compaction is the one wait that still refuses a fresh
+  turn: it reports itself as a running session precisely so the composer keeps
+  steering into the turn in flight, and the message is answered when compaction
+  ends. It reads as waiting because the agent is generating nothing, which is the
+  question the label answers — the panel's `Main ← Compacting context` line is the
+  same fact, from the same edges.) When a background result wakes the agent and it starts
   answering, that opens a turn and the thread reads `working` again; a task
   notification the agent merely _receives_ never does, so a lane reporting in
   cannot make the thread look busy. If the user sends a message while the agent is
@@ -449,7 +456,11 @@ machine.
   richer question alongside it — `getThreadBackgroundWait`, surfaced as the
   fork-only `backgroundWait` field on the thread shell. One live set, two views, so
   a surface that names the wait and one that only asks "is anything alive?" cannot
-  disagree.
+  disagree. Compaction rides the same registry (`getCompactingSince` →
+  `compactingSince` on the shell), fed by the same ingestion edges that persist the
+  durable `session.compacting` row the panel reads, and deliberately kept out of
+  the two-value field so auto-settlement and the reaper keep meaning "background
+  TASKS are alive".
 
 - **Nightly version pin**: `version` in `apps/server`, `apps/desktop`, `apps/web`, and
   `packages/contracts` package.json is pinned to the published npm nightly so the app

@@ -278,6 +278,21 @@ describe("projectThreadAwareness completion vs live background work", () => {
     expect(state?.headline).toBe("Agent is working");
   });
 
+  it("names compaction on the card instead of claiming the agent is working", () => {
+    const state = projectThreadAwareness({
+      environmentId: "env-1" as EnvironmentId,
+      project,
+      thread: thread({
+        session: { ...readySession, status: "running", activeTurnId: "turn-1" as TurnId },
+        compactingSince: "2026-05-22T11:58:00.000Z",
+      }),
+    });
+    // Phase unchanged, so no completion push fires and the relay still gets a
+    // value its schema accepts; only the copy tells the truth.
+    expect(state?.phase).toBe("running");
+    expect(state?.headline).toBe("Waiting on context compaction");
+  });
+
   it("keeps attention states ahead of the wait", () => {
     const wait = { count: 1, label: "one agent", since: NOW, monitorOnly: false };
     expect(awareness({ hasPendingApprovals: true, backgroundWait: wait })?.phase).toBe(

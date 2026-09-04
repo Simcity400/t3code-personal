@@ -18,6 +18,14 @@
  * state — never a second source — so a surface that says "Waiting on …" and
  * one that only asks "is anything alive?" can never disagree.
  *
+ * Provider-side context compaction is tracked here too (getCompactingSince),
+ * for the same reason and from the same ingestion switch that persists the
+ * durable `session.compacting` row: the sidebar has no thread activities to
+ * read, so without this a compacting thread would be the one surface still
+ * claiming the agent is working. Deliberately kept OUT of the two-value
+ * liveness, whose readers (auto-settlement, the session reaper) are upstream's
+ * and must keep meaning "background TASKS are alive".
+ *
  * @module ThreadBackgroundLivenessService
  */
 import {
@@ -114,6 +122,16 @@ export class ThreadBackgroundLivenessService extends Context.Service<
       readonly at?: string | undefined;
     }) => void;
 
+    /**
+     * Record a compaction edge. `compacting: false` ends the wait; only the
+     * two edges are ever fed, so the stored instant is when it began.
+     */
+    readonly recordSessionCompacting: (input: {
+      readonly threadId: string;
+      readonly compacting: boolean;
+      readonly at: string;
+    }) => void;
+
     /** Session death orphans all of a thread's background work. */
     readonly clearThreadLiveness: (threadId: string) => void;
 
@@ -128,6 +146,9 @@ export class ThreadBackgroundLivenessService extends Context.Service<
      * getThreadBackgroundLiveness is non-null.
      */
     readonly getThreadBackgroundWait: (threadId: string) => ThreadBackgroundWait | null;
+
+    /** When the provider started compacting, or null when it is not. */
+    readonly getCompactingSince: (threadId: string) => string | null;
   }
 >()("t3/orchestration/ThreadBackgroundLiveness/ThreadBackgroundLivenessService") {}
 
@@ -135,6 +156,7 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
   // One entry per live task id. Insertion order is arrival order, which is
   // the tiebreak when several tasks share a start instant.
   const stateByThreadId = new Map<string, Map<string, LiveTask>>();
+  const compactingSinceByThreadId = new Map<string, string>();
 
   const stateFor = (threadId: string): Map<string, LiveTask> => {
     const existing = stateByThreadId.get(threadId);
@@ -217,8 +239,19 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
       });
     },
 
+    recordSessionCompacting: ({ threadId, compacting, at }) => {
+      // Re-entering the same edge keeps the original instant, so a repeated
+      // start does not restart the timer.
+      if (!compacting) compactingSinceByThreadId.delete(threadId);
+      else if (!compactingSinceByThreadId.has(threadId)) {
+        compactingSinceByThreadId.set(threadId, at);
+      }
+    },
+
     clearThreadLiveness: (threadId) => {
       stateByThreadId.delete(threadId);
+      // A dead session cannot still be compacting.
+      compactingSinceByThreadId.delete(threadId);
     },
 
     getThreadBackgroundLiveness: (threadId) => {
@@ -250,6 +283,8 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
         monitorOnly: ordered.every((task) => task.bucket === "monitor"),
       };
     },
+
+    getCompactingSince: (threadId) => compactingSinceByThreadId.get(threadId) ?? null,
   };
 }
 

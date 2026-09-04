@@ -746,6 +746,16 @@ describe("resolveSidebarThreadStatus", () => {
     ).toBe("waiting");
   });
 
+  it("reads compaction as a wait, not as the running session it reports through", () => {
+    expect(
+      resolveSidebarThreadStatus({
+        ...idle,
+        session,
+        compactingSince: "2026-03-09T09:58:00.000Z",
+      }),
+    ).toBe("waiting");
+  });
+
   it("keeps the agent's own turn ahead of the work it launched", () => {
     // The old model called both of these "working"; the whole point of the
     // split is that only the first one is.
@@ -1286,6 +1296,14 @@ describe("resolveThreadStatusPill", () => {
       }),
       // Static: the agent itself is idle, so nothing is ticking forward.
     ).toMatchObject({ kind: "waiting", label: "Waiting on Reviewer + 1 more agent", pulse: false });
+  });
+
+  it("names compaction on the pill even though the session reports running", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...baseThread, compactingSince: "2026-03-09T09:58:00.000Z" },
+      }),
+    ).toMatchObject({ kind: "waiting", label: "Waiting on context compaction", pulse: false });
   });
 
   it("keeps an actionable plan prompt ahead of the wait", () => {

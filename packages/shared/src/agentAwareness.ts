@@ -5,7 +5,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 
-import { formatThreadWaitLabel } from "./threadWorkState.ts";
+import { resolveThreadWorkState } from "./threadWorkState.ts";
 
 export type AgentAwarenessPhase =
   | "starting"
@@ -43,6 +43,7 @@ export interface ProjectThreadAwarenessInput {
     | "hasPendingApprovals"
     | "hasPendingUserInput"
     | "backgroundWait"
+    | "compactingSince"
   >;
 }
 
@@ -63,24 +64,23 @@ export function projectThreadAwareness(
   }
 
   const detail = detailForPhase(phase, thread);
-  // The only way "running" survives with neither running signal set is the
-  // background-work branch below, so this names the work instead of claiming
-  // the agent is generating. The PHASE stays "running" on purpose: it is what
-  // the hosted relay's schema accepts, and it is what keeps the completion
-  // alert from firing early.
-  const backgroundWait =
-    phase === "running" &&
-    thread.session?.status !== "running" &&
-    thread.latestTurn?.state !== "running"
-      ? (thread.backgroundWait ?? null)
-      : null;
+  // A thread can be "running" without the agent generating anything: the turn
+  // ended while work it launched runs on, or the provider is compacting. The
+  // same derivation every surface uses says which, so the card names it
+  // instead of claiming the agent is working. The PHASE stays "running" on
+  // purpose — it is what the hosted relay's schema accepts, and it is what
+  // keeps the completion alert from firing early.
+  const workState = phase === "running" ? resolveThreadWorkState(thread) : null;
   return {
     environmentId,
     threadId: thread.id,
     projectTitle: project.title,
     threadTitle: thread.title,
     phase,
-    headline: backgroundWait ? formatThreadWaitLabel(backgroundWait) : headlineForPhase(phase),
+    headline:
+      workState?.state === "waiting" && workState.label !== null
+        ? workState.label
+        : headlineForPhase(phase),
     ...(detail === undefined ? {} : { detail }),
     modelTitle: thread.modelSelection.model,
     updatedAt: thread.updatedAt,

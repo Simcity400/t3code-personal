@@ -415,3 +415,52 @@ describe("getThreadBackgroundWait", () => {
     expect(liveness.getThreadBackgroundLiveness("t")).toBeNull();
   });
 });
+
+describe("getCompactingSince", () => {
+  it("opens on the start edge, holds its instant, and closes on the end edge", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    expect(liveness.getCompactingSince("t")).toBeNull();
+    liveness.recordSessionCompacting({
+      threadId: "t",
+      compacting: true,
+      at: "2026-09-04T10:00:00.000Z",
+    });
+    // A repeated start edge must not restart the timer.
+    liveness.recordSessionCompacting({
+      threadId: "t",
+      compacting: true,
+      at: "2026-09-04T10:03:00.000Z",
+    });
+    expect(liveness.getCompactingSince("t")).toBe("2026-09-04T10:00:00.000Z");
+    liveness.recordSessionCompacting({
+      threadId: "t",
+      compacting: false,
+      at: "2026-09-04T10:05:00.000Z",
+    });
+    expect(liveness.getCompactingSince("t")).toBeNull();
+  });
+
+  it("stays out of the two-value liveness its upstream readers depend on", () => {
+    // Auto-settlement and the session reaper read that field as "background
+    // TASKS are alive"; a compaction must not change what it means.
+    const liveness = ThreadBackgroundLiveness.make();
+    liveness.recordSessionCompacting({
+      threadId: "t",
+      compacting: true,
+      at: "2026-09-04T10:00:00.000Z",
+    });
+    expect(liveness.getThreadBackgroundLiveness("t")).toBeNull();
+    expect(liveness.getThreadBackgroundWait("t")).toBeNull();
+  });
+
+  it("dies with the session, exactly as running tasks do", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    liveness.recordSessionCompacting({
+      threadId: "t",
+      compacting: true,
+      at: "2026-09-04T10:00:00.000Z",
+    });
+    liveness.clearThreadLiveness("t");
+    expect(liveness.getCompactingSince("t")).toBeNull();
+  });
+});

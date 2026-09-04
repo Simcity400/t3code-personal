@@ -3561,6 +3561,57 @@ describe("ProviderRuntimeIngestion", () => {
     expect(shell?.backgroundLiveness).toBeNull();
   });
 
+  it("puts the compaction edges on the shell, where the sidebar can read them", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-compacting-start"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: { state: "compacting", reason: "status:compacting", compacting: true },
+    });
+    await harness.drain();
+
+    let shell = await harness.readThreadShell();
+    expect(shell?.compactingSince).toBe("2026-01-01T00:00:00.000Z");
+    // A compacting session is busy, not resting — the composer reads this and
+    // must keep refusing a fresh turn — while the thread still reads as a
+    // wait, because the agent is generating nothing.
+    expect(shell?.session?.status).toBe("running");
+    // And it stays out of the two-value field auto-settlement and the reaper
+    // read, whose meaning is "background TASKS are alive".
+    expect(shell?.backgroundLiveness).toBeNull();
+    expect(shell?.backgroundWait).toBeNull();
+
+    // Heartbeats republish `running` with no edge marker; they must not
+    // silently end the compaction.
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-compacting-heartbeat"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: "2026-01-01T00:01:00.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: { state: "running", reason: "api_retry:1/3" },
+    });
+    await harness.drain();
+    shell = await harness.readThreadShell();
+    expect(shell?.compactingSince).toBe("2026-01-01T00:00:00.000Z");
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-compacting-end"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: "2026-01-01T00:02:00.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: { state: "running", reason: "compact_boundary", compacting: false },
+    });
+    await harness.drain();
+    shell = await harness.readThreadShell();
+    expect(shell?.compactingSince).toBeNull();
+  });
+
   it("projects Codex task lifecycle chunks into thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

@@ -92,7 +92,7 @@ import { blurComposerAfterDraftCommit } from "./composerSendHandoff";
 import { ThreadFeed } from "./ThreadFeed";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
-import { formatThreadWaitLabel } from "@t3tools/shared/threadWorkState";
+import { resolveThreadWorkState } from "@t3tools/shared/threadWorkState";
 
 export interface ThreadDetailScreenProps {
   readonly selectedThread: OrchestrationThreadShell;
@@ -330,19 +330,19 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     if (threadSyncLabel !== null) {
       return { kind: "syncing", label: threadSyncLabel };
     }
+    // The shared derivation owns the precedence: compaction outranks the
+    // running session it reports itself through, and a running turn outranks
+    // work it launched. Asking it first is what keeps the timer honest.
+    const workState = resolveThreadWorkState(props.selectedThread);
+    if (
+      workState.state === "waiting" &&
+      workState.label !== null &&
+      contentPresentationKind === "ready"
+    ) {
+      return { kind: "waiting", label: workState.label, since: workState.since };
+    }
     if (props.activeWorkStartedAt !== null && contentPresentationKind === "ready") {
       return { kind: "working", startedAt: props.activeWorkStartedAt };
-    }
-    // Nothing of the thread's own is running, but work it started is still
-    // alive. Same slot, different claim: it names what is outstanding instead
-    // of counting time the agent is not spending.
-    const backgroundWait = props.selectedThread.backgroundWait;
-    if (backgroundWait != null && contentPresentationKind === "ready") {
-      return {
-        kind: "waiting",
-        label: formatThreadWaitLabel(backgroundWait),
-        since: backgroundWait.since,
-      };
     }
     return null;
   })();
