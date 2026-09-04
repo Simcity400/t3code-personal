@@ -109,8 +109,8 @@ describe("shouldUseRestingComposerLayout", () => {
     ).toBe(true);
   });
 
-  it("keeps new-thread composers expanded", () => {
-    expect(shouldUseRestingComposerLayout({ ...resting, isExistingThread: false })).toBe(false);
+  it("rests new-thread composers like open threads", () => {
+    expect(shouldUseRestingComposerLayout({ ...resting, isExistingThread: false })).toBe(true);
   });
 
   it("leaves responsive mobile on its existing collapse path", () => {
