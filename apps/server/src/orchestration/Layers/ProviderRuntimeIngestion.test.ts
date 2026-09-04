@@ -29,6 +29,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -257,7 +258,8 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );
-    runtime = ManagedRuntime.make(layer);
+    const managedRuntime = ManagedRuntime.make(layer);
+    runtime = managedRuntime;
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
@@ -323,6 +325,14 @@ describe("ProviderRuntimeIngestion", () => {
       engine,
       dispatch,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      // The shell carries the fields the sidebar reads (session status plus
+      // background liveness); the read model does not.
+      readThreadShell: () =>
+        managedRuntime.runPromise(
+          snapshotQuery
+            .getThreadShellById(ThreadId.make("thread-1"))
+            .pipe(Effect.map(Option.getOrNull)),
+        ),
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
@@ -3497,6 +3507,58 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(activity?.summary).toBe("Context compacted");
     expect(activity?.tone).toBe("info");
+  });
+
+  it("tells the shell what the thread is waiting on, from the task rows themselves", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-wait-lane"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: {
+        taskId: RuntimeTaskId.make("task-lane"),
+        taskType: "local_agent",
+        description: "merge-upstream",
+        title: "merge-upstream",
+      },
+    });
+    await harness.drain();
+
+    // The label is the provider's own words, carried end to end: nothing on
+    // this path knows what any particular task does.
+    let shell = await harness.readThreadShell();
+    expect(shell?.backgroundWait).toEqual({
+      count: 1,
+      label: "merge-upstream",
+      since: "2026-01-01T00:00:00.000Z",
+      monitorOnly: false,
+    });
+    // ... and the two-value field upstream's settlement and reaper read is
+    // still exactly in step with it.
+    expect(shell?.backgroundLiveness).toBe("working");
+    // Task rows are not the agent working: the session is untouched.
+    expect(shell?.session?.status).toBe("ready");
+    expect(shell?.session?.activeTurnId).toBeNull();
+
+    harness.emit({
+      type: "task.completed",
+      eventId: asEventId("evt-wait-lane-done"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:05:00.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: {
+        taskId: RuntimeTaskId.make("task-lane"),
+        status: "completed",
+      },
+    });
+    await harness.drain();
+
+    shell = await harness.readThreadShell();
+    expect(shell?.backgroundWait).toBeNull();
+    expect(shell?.backgroundLiveness).toBeNull();
   });
 
   it("projects Codex task lifecycle chunks into thread activities", async () => {

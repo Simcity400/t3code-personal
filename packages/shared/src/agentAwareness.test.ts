@@ -29,6 +29,7 @@ function thread(
   | "updatedAt"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "backgroundWait"
 > {
   return {
     id: "thread-1" as ThreadId,
@@ -176,5 +177,120 @@ describe("projectThreadAwareness", () => {
       headline: "Agent failed",
       detail: "Provider process exited.",
     });
+  });
+});
+
+describe("projectThreadAwareness completion vs live background work", () => {
+  const readySession = {
+    threadId: "thread-1" as ThreadId,
+    status: "ready" as const,
+    providerName: "Codex",
+    runtimeMode: "full-access" as const,
+    activeTurnId: null,
+    lastError: null,
+    updatedAt: NOW,
+  };
+  const completedTurn = {
+    turnId: "turn-1" as TurnId,
+    state: "completed" as const,
+    requestedAt: NOW,
+    startedAt: NOW,
+    completedAt: NOW,
+    assistantMessageId: null,
+  };
+
+  const awareness = (overrides: Partial<OrchestrationThreadShell>) =>
+    projectThreadAwareness({
+      environmentId: "env-1" as EnvironmentId,
+      project,
+      thread: thread({ session: readySession, ...overrides }),
+    });
+
+  it("completes normally when the turn ended with nothing left running", () => {
+    expect(awareness({ latestTurn: completedTurn })?.phase).toBe("completed");
+    // Same for the no-turn path: a live session at rest is Done.
+    expect(awareness({})?.phase).toBe("completed");
+  });
+
+  it("withholds Done while work the turn launched is still alive, and names it", () => {
+    const state = awareness({
+      latestTurn: completedTurn,
+      backgroundWait: {
+        count: 2,
+        label: "Reviewer + 1 more agent",
+        since: "2026-05-22T11:00:00.000Z",
+        monitorOnly: false,
+      },
+    });
+    // Phase stays a value the hosted relay already accepts; only the copy
+    // changes. "completed" is what fires the push, so this is the guard.
+    expect(state?.phase).toBe("running");
+    expect(state?.headline).toBe("Waiting on Reviewer + 1 more agent");
+  });
+
+  it("withholds Done on every settled path, not just the completed turn", () => {
+    const wait = {
+      count: 1,
+      label: "one agent",
+      since: NOW,
+      monitorOnly: false,
+    };
+    expect(awareness({ backgroundWait: wait })?.phase).toBe("running");
+    expect(
+      awareness({
+        backgroundWait: wait,
+        latestTurn: { ...completedTurn, state: "interrupted" as const },
+      })?.phase,
+    ).toBe("running");
+  });
+
+  it("still fires Done when only watch loops are alive", () => {
+    // A monitor can outlive every turn a thread will run; holding the ladder
+    // open for one would suppress the completion forever, not delay it.
+    const state = awareness({
+      latestTurn: completedTurn,
+      backgroundWait: {
+        count: 1,
+        label: "a watch loop",
+        since: NOW,
+        monitorOnly: true,
+      },
+    });
+    expect(state?.phase).toBe("completed");
+    expect(state?.headline).toBe("Agent finished");
+  });
+
+  it("leaves a genuinely running turn saying it is working", () => {
+    const state = projectThreadAwareness({
+      environmentId: "env-1" as EnvironmentId,
+      project,
+      thread: thread({
+        session: { ...readySession, status: "running", activeTurnId: "turn-1" as TurnId },
+        backgroundWait: {
+          count: 1,
+          label: "one agent",
+          since: NOW,
+          monitorOnly: false,
+        },
+      }),
+    });
+    expect(state?.phase).toBe("running");
+    expect(state?.headline).toBe("Agent is working");
+  });
+
+  it("keeps attention states ahead of the wait", () => {
+    const wait = { count: 1, label: "one agent", since: NOW, monitorOnly: false };
+    expect(awareness({ hasPendingApprovals: true, backgroundWait: wait })?.phase).toBe(
+      "waiting_for_approval",
+    );
+    expect(awareness({ hasPendingUserInput: true, backgroundWait: wait })?.phase).toBe(
+      "waiting_for_input",
+    );
+    expect(
+      awareness({
+        session: { ...readySession, status: "error", lastError: "boom" },
+        backgroundWait: wait,
+      })?.phase,
+    ).toBe("failed");
   });
 });

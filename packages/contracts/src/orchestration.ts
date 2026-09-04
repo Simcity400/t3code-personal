@@ -564,6 +564,32 @@ export const OrchestrationProjectShell = Schema.Struct({
 });
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
+/**
+ * The background work a thread is waiting on while no turn of its own is in
+ * flight, described generically enough for any provider to fill in.
+ *
+ * `label` is composed server-side from whatever the provider called the work
+ * (an agent's title, a shell's command line, a monitor's or workflow's name)
+ * and falls back to a plain count. Clients render it verbatim — no client
+ * ever re-parses provider vocabulary, and no product-specific wording is
+ * baked into either side.
+ */
+export const ThreadBackgroundWait = Schema.Struct({
+  /** How many live background items the thread is waiting on. */
+  count: PositiveInt,
+  /** Ready-to-render description, e.g. "3 tasks" or "Reviewer + 2 more agents". */
+  label: TrimmedNonEmptyString,
+  /** Earliest start among them, for the elapsed timer. Null when unknown. */
+  since: Schema.NullOr(IsoDateTime),
+  /**
+   * Every live item is a watch loop. A monitor can outlive every turn, so
+   * surfaces that must eventually declare the thread finished (the completion
+   * alert) treat this as idle rather than waiting forever.
+   */
+  monitorOnly: Schema.Boolean,
+});
+export type ThreadBackgroundWait = typeof ThreadBackgroundWait.Type;
+
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -604,6 +630,16 @@ export const OrchestrationThreadShell = Schema.Struct({
    * live work. Optional so old servers/clients interop; absent = none.
    */
   backgroundLiveness: Schema.optional(Schema.NullOr(Schema.Literals(["working", "monitoring"]))),
+  /**
+   * What that background work IS, so a thread can say what it is waiting on
+   * instead of only that something is alive. Derived from the same registry
+   * as `backgroundLiveness` (non-null exactly when that is non-null,
+   * `monitorOnly` exactly when that is "monitoring"). A separate field
+   * because `backgroundLiveness` has readers whose two-value contract must
+   * not move — auto-settlement and the provider session reaper.
+   * Optional so old servers/clients interop; absent = none.
+   */
+  backgroundWait: Schema.optional(Schema.NullOr(ThreadBackgroundWait)),
   /**
    * Current plan step while a turn runs, for the Working indicators
    * (sidebar row, in-chat working line). Cleared when the turn settles —

@@ -2188,6 +2188,9 @@ const make = Effect.gen(function* () {
             taskType?: string;
             status?: string;
             agentId?: string;
+            title?: string;
+            description?: string;
+            workflowName?: string;
           };
           threadBackgroundLiveness.recordTaskLiveness({
             threadId: thread.id,
@@ -2195,6 +2198,12 @@ const make = Effect.gen(function* () {
             taskType: payload.taskType,
             status: payload.status,
             agentId: payload.agentId,
+            // Whatever the provider called this work, in the order the panel
+            // uses: an agent's title, else its description (a shell's is its
+            // command line), else the workflow it belongs to. Absent on thin
+            // rows, which the registry treats as "keep the name I have".
+            label: payload.title ?? payload.description ?? payload.workflowName,
+            at: event.createdAt,
             kind:
               event.type === "task.started"
                 ? "started"

@@ -81,7 +81,7 @@ machine.
   in the official controls.
 - **Native subagent & workflow observability** (2026-08-01 onward): the Agents panel in
   the web app (`apps/web/src/components/AgentsPanel.tsx`, opened from `ChatView`), the
-  spawn CTA row, sidebar liveness beyond the turn ("Working"/"Monitoring"), and the
+  spawn CTA row, sidebar liveness beyond the turn (now "Waiting on …", below), and the
   client-runtime fold behind them (`packages/client-runtime/src/state/subagentRuntime.ts`,
   ~720 fork-only lines). Server side: Claude `SendMessage` is classified as a subagent
   instruction, Codex `collabAgent/*` events carry the child's prompt and `promptId`, and
@@ -397,6 +397,59 @@ machine.
   turn-end path and emits `hook_started` / `hook_response` rows into the work log for
   something the user never configured; not worth it for data that arrives only once the
   turn is already over. Cron rows are therefore not shown.
+
+- **Working, waiting, or idle — one thread state, and you can talk to it while it
+  waits** (2026-09-04): a thread used to say "Working" both while the agent was
+  generating and while it was merely sitting on top of background work it had
+  started, and "Monitoring" for the watch-loop case — so the one thing worth
+  knowing at a glance, whether the agent is actually doing something or just
+  waiting, was the thing the app would not tell you. There are now three states,
+  derived in one place (`packages/shared/src/threadWorkState.ts`,
+  `resolveThreadWorkState`) from durable projections, so every surface agrees and
+  the answer survives reload, resume and reconnect:
+
+  - **working** — the thread's own turn is in flight. The agent is generating or
+    running a foreground tool call; a message sent now steers that turn.
+  - **waiting** — no turn of its own, but work it started is still alive:
+    background shells, watch loops, workflows, subagents, anything the provider
+    reports as a task. The row reads **"Waiting on _what_ · _elapsed_"**, where
+    _what_ is whatever the provider called the work — an agent's title, a shell's
+    command line, a monitor's or workflow's name — degrading to a neutral count
+    ("3 tasks", "Reviewer + 2 more agents") when there are several or the provider
+    named none. No dot pulses: nothing of the agent's own is moving.
+  - **idle** — nothing live, and the row says nothing at all.
+
+  **You can talk to it while it waits.** In `waiting` the composer is fully live
+  and a message starts a real turn immediately — it is never queued behind
+  background work. When a background result wakes the agent and it starts
+  answering, that opens a turn and the thread reads `working` again; a task
+  notification the agent merely _receives_ never does, so a lane reporting in
+  cannot make the thread look busy. If the user sends a message while the agent is
+  mid-answer to a background result, that synthetic turn is closed out and a real
+  one opens rather than the message being swallowed.
+
+  **No false "Done".** The completion alert (iPhone push and the relay card) no
+  longer fires when a turn ends with work still running: the awareness ladder
+  reports the run as still in flight, with the same "Waiting on …" wording, and
+  fires exactly one completion when everything finally settles. The one exception
+  is watch loops: a monitor can outlive every turn a thread will ever run, so
+  monitor-only liveness counts as settled _for the alert_ while the UI still shows
+  the thread as waiting — otherwise "Done" would be suppressed forever rather than
+  delayed. Dedupe is unchanged (the relay's per-thread publish identity).
+
+  Surfaces: the sidebar row and the in-thread banner on web/desktop, and on the
+  phone both the thread list row and the floating pill above the composer. Per
+  provider: Claude drives the full task lifecycle; Codex child agents
+  (`collabAgent/*`) and OpenCode child sessions register as tasks and so read as
+  `waiting` when only async children are alive; Grok and Antigravity report no
+  tasks, so they simply never reach `waiting` — the correct reading of "nothing is
+  known to be alive" rather than a special case. Server side the existing
+  `ThreadBackgroundLiveness` registry (upstream's, two-valued, read by
+  auto-settlement and the session reaper) keeps its shape and answers a second,
+  richer question alongside it — `getThreadBackgroundWait`, surfaced as the
+  fork-only `backgroundWait` field on the thread shell. One live set, two views, so
+  a surface that names the wait and one that only asks "is anything alive?" cannot
+  disagree.
 
 - **Nightly version pin**: `version` in `apps/server`, `apps/desktop`, `apps/web`, and
   `packages/contracts` package.json is pinned to the published npm nightly so the app

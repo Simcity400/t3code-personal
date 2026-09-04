@@ -6576,6 +6576,173 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+  it.effect("background task traffic never opens a turn of its own", () => {
+    // The thread is WAITING, not working: a notification the main agent
+    // merely receives is not the main agent generating. If any of these rows
+    // opened a turn, every surface would claim the agent was working and the
+    // desktop composer would swap Send for Stop.
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "task.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      // A whole background lifecycle with no turn of the thread's own in
+      // flight — a lane an earlier turn started, reporting in.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-lane",
+        description: "merge-upstream",
+        task_type: "local_agent",
+        is_backgrounded: true,
+        uuid: "task-lane-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-lane",
+        description: "merge-upstream",
+        summary: "resolving conflicts",
+        uuid: "task-progress-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-lane",
+        patch: { status: "running" },
+        uuid: "task-updated-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-lane",
+        status: "completed",
+        summary: "merged",
+        uuid: "task-notification-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepStrictEqual(
+        runtimeEvents.filter((event) => event.type.startsWith("turn.")),
+        [],
+      );
+      // Every row still arrived, so the thread can say what it is waiting on
+      // while none of it counts as the agent working. The description rides
+      // along as the label those surfaces render.
+      assert.deepStrictEqual(
+        runtimeEvents.filter((event) => event.type.startsWith("task.")).map((event) => event.type),
+        ["task.started", "task.progress", "task.updated", "task.completed"],
+      );
+      const started = runtimeEvents.find((event) => event.type === "task.started");
+      assert.equal(started?.type, "task.started");
+      if (started?.type === "task.started") {
+        assert.equal(started.payload.title, "merge-upstream");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("a message sent while a background result is being answered starts a real turn", () => {
+    // A background agent's reply auto-opens a synthetic turn: the main agent
+    // IS working once it starts generating an answer. But that turn must
+    // never swallow or queue what the user types at that instant — it is
+    // closed out and a real turn opens in its place.
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      // Draining through the background reply is the receipt that the
+      // synthetic turn exists before the send — no sleeps.
+      const backgroundReplyFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "item.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const firstTurn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "start a background lane",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session",
+        uuid: "result-1",
+      } as unknown as SDKMessage);
+      // The lane lands and the main agent narrates the outcome with no user
+      // turn in flight.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session",
+        uuid: "assistant-background-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-background-1",
+          content: [{ type: "text", text: "The lane finished." }],
+        },
+      } as unknown as SDKMessage);
+
+      const backgroundReply = Array.from(yield* Fiber.join(backgroundReplyFiber));
+      const boundaries = backgroundReply.filter(
+        (event) => event.type === "turn.started" || event.type === "turn.completed",
+      );
+      assert.deepStrictEqual(
+        boundaries.map((event) => event.type),
+        ["turn.started", "turn.completed", "turn.started"],
+      );
+      assert.equal(String(boundaries[0]?.turnId), String(firstTurn.turnId));
+      const syntheticTurnId = String(boundaries[2]?.turnId);
+
+      const sendFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.started" || event.type === "turn.completed"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "what changed?",
+        attachments: [],
+      });
+
+      // Closed, then reopened. A steer would have produced no boundary at
+      // all, and a queue would have left the message waiting for the
+      // synthetic turn to end on its own.
+      const sendEvents = Array.from(yield* Fiber.join(sendFiber));
+      assert.deepStrictEqual(
+        sendEvents.map((event) => event.type),
+        ["turn.completed", "turn.started"],
+      );
+      assert.equal(String(sendEvents[0]?.turnId), syntheticTurnId);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   describe("subagent transcript parity", () => {
     /** task_started plus an open turn, so subagent frames have an agent to attribute to. */
     const startAgent = (

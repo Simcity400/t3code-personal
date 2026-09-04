@@ -92,6 +92,7 @@ import { blurComposerAfterDraftCommit } from "./composerSendHandoff";
 import { ThreadFeed } from "./ThreadFeed";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
+import { formatThreadWaitLabel } from "@t3tools/shared/threadWorkState";
 
 export interface ThreadDetailScreenProps {
   readonly selectedThread: OrchestrationThreadShell;
@@ -331,6 +332,17 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     }
     if (props.activeWorkStartedAt !== null && contentPresentationKind === "ready") {
       return { kind: "working", startedAt: props.activeWorkStartedAt };
+    }
+    // Nothing of the thread's own is running, but work it started is still
+    // alive. Same slot, different claim: it names what is outstanding instead
+    // of counting time the agent is not spending.
+    const backgroundWait = props.selectedThread.backgroundWait;
+    if (backgroundWait != null && contentPresentationKind === "ready") {
+      return {
+        kind: "waiting",
+        label: formatThreadWaitLabel(backgroundWait),
+        since: backgroundWait.since,
+      };
     }
     return null;
   })();

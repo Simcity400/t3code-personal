@@ -5428,16 +5428,16 @@ function ChatViewContent(props: ChatViewProps) {
   // banner is the only visible stop affordance. Stop routes through the
   // stop-everything interrupt: it kills every live background task before
   // interrupting, and works by session, so no active turn is needed.
-  const activeBackgroundLiveness =
-    !isWorking && activeThread ? (activeThreadShell?.backgroundLiveness ?? null) : null;
+  const activeBackgroundWait =
+    !isWorking && activeThread ? (activeThreadShell?.backgroundWait ?? null) : null;
   const [isStoppingBackgroundWork, setIsStoppingBackgroundWork] = useState(false);
   useEffect(() => {
     // "Stopping..." holds until the liveness clears; the interrupt command
     // returning only means the request was accepted.
-    if (activeBackgroundLiveness === null) {
+    if (activeBackgroundWait === null) {
       setIsStoppingBackgroundWork(false);
     }
-  }, [activeBackgroundLiveness]);
+  }, [activeBackgroundWait]);
   useEffect(() => {
     // Per-thread state: switching threads while A's stop is pending must not
     // disable B's Stop button (review finding).
@@ -5464,27 +5464,19 @@ function ChatViewContent(props: ChatViewProps) {
       }
     }
   }, [activeThread, environmentId, interruptThreadTurn, setThreadError]);
-  const backgroundLivenessBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
-    if (activeBackgroundLiveness === null || !activeThread) {
+  const backgroundWaitBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
+    if (activeBackgroundWait === null || !activeThread) {
       return null;
     }
-    const working = activeBackgroundLiveness === "working";
-    const liveCount = agentPanelModel.liveCount;
     return {
       id: `background-liveness:${activeThread.id}`,
       variant: "default",
       priority: "activity",
-      icon: (
-        <span
-          className={cn("size-1.5 rounded-full bg-foreground", working && "animate-status-pulse")}
-          aria-hidden="true"
-        />
-      ),
-      title: working
-        ? liveCount > 0
-          ? `${liveCount} ${liveCount === 1 ? "agent" : "agents"} working`
-          : "Background work"
-        : "Monitoring",
+      // Static dot, no pulse: this thread's own turn is over. Something it
+      // started is still running, but the agent is free — the composer below
+      // is live and a message sent now starts a turn straight away.
+      icon: <span className="size-1.5 rounded-full bg-foreground" aria-hidden="true" />,
+      title: `Waiting on ${activeBackgroundWait.label}`,
       actions: (
         <Button
           size="xs"
@@ -5496,13 +5488,7 @@ function ChatViewContent(props: ChatViewProps) {
         </Button>
       ),
     };
-  }, [
-    activeBackgroundLiveness,
-    activeThread,
-    agentPanelModel.liveCount,
-    handleStopBackgroundWork,
-    isStoppingBackgroundWork,
-  ]);
+  }, [activeBackgroundWait, activeThread, handleStopBackgroundWork, isStoppingBackgroundWork]);
   // A woken thread announces itself in the open view, not just the sidebar
   // pill. Dismissing marks the wake as seen (same acknowledgment as the
   // pill); sending a message clears it as a side effect of the send path.
@@ -5668,8 +5654,7 @@ function ChatViewContent(props: ChatViewProps) {
     void handleSwitchCheckoutToThread();
   }, [gitStatusQuery.data?.hasWorkingTreeChanges, handleSwitchCheckoutToThread]);
   const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
-    const backgroundLivenessItems =
-      backgroundLivenessBannerItem === null ? [] : [backgroundLivenessBannerItem];
+    const backgroundWaitItems = backgroundWaitBannerItem === null ? [] : [backgroundWaitBannerItem];
     const resumeCompactionItems =
       resumeCompactionBannerItem === null ? [] : [resumeCompactionBannerItem];
     const wokeThreadItems = wokeThreadBannerItem === null ? [] : [wokeThreadBannerItem];
@@ -5677,7 +5662,7 @@ function ChatViewContent(props: ChatViewProps) {
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...systemComposerBannerItems,
-        ...backgroundLivenessItems,
+        ...backgroundWaitItems,
         ...resumeCompactionItems,
         ...wokeThreadItems,
         ...parkedThreadItems,
@@ -5685,7 +5670,7 @@ function ChatViewContent(props: ChatViewProps) {
     }
     return [
       ...systemComposerBannerItems,
-      ...backgroundLivenessItems,
+      ...backgroundWaitItems,
       ...resumeCompactionItems,
       ...wokeThreadItems,
       {
@@ -5730,7 +5715,7 @@ function ChatViewContent(props: ChatViewProps) {
     ];
   }, [
     activeBranchMismatchKey,
-    backgroundLivenessBannerItem,
+    backgroundWaitBannerItem,
     handleRestoreThreadBranch,
     isRestoringThreadBranch,
     localCheckoutBranchMismatch,
