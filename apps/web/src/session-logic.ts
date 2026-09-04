@@ -854,9 +854,18 @@ export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const userInputContext = collectUserInputContext(ordered);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
     if (activity.tone !== "error" && isWorktreeSetupActivity(activity.kind)) continue;
+    // Once a question is answered its "asked" row is redundant: the answered
+    // row restates every question next to its answer.
+    if (
+      activity.kind === "user-input.requested" &&
+      userInputContext.answeredRequestIds.has(userInputRequestId(activity) ?? "")
+    ) {
+      continue;
+    }
     if (activity.kind === "tool.started") continue;
     // Agent task.started rows are CTA seeds: they carry the true spawn turn,
     // which is the batch key (completions of background subagents arrive
@@ -876,9 +885,113 @@ export function deriveWorkLogEntries(
     if (isNoContentRuntimeWarning(activity)) continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     if (isAgentInternalActivity(activity)) continue;
-    entries.push(toDerivedWorkLogEntry(activity));
+    entries.push(toDerivedWorkLogEntry(activity, userInputContext));
   }
   return collapseDerivedWorkLogEntries(entries);
+}
+
+interface UserInputContext {
+  /** Questions by request id, so an answer row can restate what was asked. */
+  readonly questionsByRequestId: ReadonlyMap<string, ReadonlyArray<UserInputQuestion>>;
+  readonly answeredRequestIds: ReadonlySet<string>;
+}
+
+const EMPTY_USER_INPUT_CONTEXT: UserInputContext = {
+  questionsByRequestId: new Map(),
+  answeredRequestIds: new Set(),
+};
+
+function userInputRequestId(activity: OrchestrationThreadActivity): string | null {
+  const payload = asRecord(activity.payload);
+  return asTrimmedString(payload?.requestId) ?? null;
+}
+
+function collectUserInputContext(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): UserInputContext {
+  const questionsByRequestId = new Map<string, ReadonlyArray<UserInputQuestion>>();
+  const answeredRequestIds = new Set<string>();
+  for (const activity of activities) {
+    if (activity.kind !== "user-input.requested" && activity.kind !== "user-input.resolved") {
+      continue;
+    }
+    const requestId = userInputRequestId(activity);
+    if (!requestId) continue;
+    if (activity.kind === "user-input.requested") {
+      const questions = parseUserInputQuestions(asRecord(activity.payload));
+      if (questions) questionsByRequestId.set(requestId, questions);
+    } else {
+      answeredRequestIds.add(requestId);
+    }
+  }
+  return { questionsByRequestId, answeredRequestIds };
+}
+
+function formatUserInputAnswer(value: unknown): string {
+  if (typeof value === "string") return value.trim() || "(blank)";
+  if (Array.isArray(value)) {
+    const parts = value.map(formatUserInputAnswer).filter((part) => part !== "(blank)");
+    return parts.length > 0 ? parts.join(", ") : "(blank)";
+  }
+  if (value === null || value === undefined) return "(blank)";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+/**
+ * Transcript text for a question the agent asked. The row label carries the
+ * question itself; the expanded detail lists the offered options.
+ */
+function describeUserInputRequested(payload: Record<string, unknown> | null): {
+  label: string;
+  detail: string | null;
+} {
+  const questions = parseUserInputQuestions(payload) ?? [];
+  if (questions.length === 0) {
+    return { label: "Asked a question", detail: null };
+  }
+  const label =
+    questions.length === 1
+      ? `Asked: ${questions[0]!.question}`
+      : `Asked ${questions.length} questions: ${questions.map((question) => question.header).join("; ")}`;
+  const detail = questions
+    .map((question) => {
+      const options = question.options.map((option) => `  - ${option.label}`).join("\n");
+      return options ? `Q: ${question.question}\n${options}` : `Q: ${question.question}`;
+    })
+    .join("\n\n");
+  return { label, detail };
+}
+
+/**
+ * Transcript text for an answered question: every question restated next to
+ * the answer given, so the exchange stays readable after the fact.
+ */
+function describeUserInputResolved(
+  payload: Record<string, unknown> | null,
+  context: UserInputContext,
+): { label: string; detail: string | null } {
+  const requestId = asTrimmedString(payload?.requestId);
+  const questions = (requestId && context.questionsByRequestId.get(requestId)) || [];
+  const answers = asRecord(payload?.answers) ?? {};
+  const pairs = questions.map((question) => ({
+    header: question.header,
+    question: question.question,
+    answer: formatUserInputAnswer(answers[question.id]),
+  }));
+  for (const [id, value] of Object.entries(answers)) {
+    if (questions.some((question) => question.id === id)) continue;
+    pairs.push({ header: id, question: id, answer: formatUserInputAnswer(value) });
+  }
+  if (pairs.length === 0) {
+    return { label: "Answered a question", detail: null };
+  }
+  const label =
+    pairs.length === 1
+      ? `Answered ${pairs[0]!.header}: ${pairs[0]!.answer}`
+      : `Answered ${pairs.length} questions: ${pairs.map((pair) => `${pair.header}: ${pair.answer}`).join("; ")}`;
+  const detail = pairs.map((pair) => `Q: ${pair.question}\nA: ${pair.answer}`).join("\n\n");
+  return { label, detail };
 }
 
 /** Adapters forward unknown wire-only SDK messages (background_tasks_changed,
@@ -923,7 +1036,10 @@ function extractWorkLogToolLifecycleStatus(
   return undefined;
 }
 
-function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
+function toDerivedWorkLogEntry(
+  activity: OrchestrationThreadActivity,
+  userInputContext: UserInputContext = EMPTY_USER_INPUT_CONTEXT,
+): DerivedWorkLogEntry {
   const cachedEntry = derivedWorkLogEntryByActivity.get(activity);
   if (cachedEntry) {
     return cachedEntry;
@@ -932,6 +1048,23 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
       : null;
+  if (activity.kind === "user-input.requested" || activity.kind === "user-input.resolved") {
+    const described =
+      activity.kind === "user-input.requested"
+        ? describeUserInputRequested(payload)
+        : describeUserInputResolved(payload, userInputContext);
+    // Not cached: the answered row's text depends on the asked row, which
+    // can arrive in a later activity batch.
+    return {
+      id: activity.id,
+      createdAt: activity.createdAt,
+      turnId: activity.turnId,
+      label: described.label,
+      tone: "info",
+      sourceActivityKind: activity.kind,
+      ...(described.detail ? { detail: described.detail } : {}),
+    };
+  }
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
   const title = extractToolTitle(payload);

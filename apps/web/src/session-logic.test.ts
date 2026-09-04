@@ -2682,3 +2682,94 @@ describe("subagent reply labels", () => {
     expect(replyMessages[0]?.message.text).toBe("Three unguarded entrypoints.");
   });
 });
+
+describe("deriveWorkLogEntries question rows", () => {
+  const questions = [
+    {
+      id: "which-run",
+      header: "Which run",
+      question: "Which agent run had the broken transcript?",
+      options: [
+        { label: "Just now", description: "In this thread" },
+        { label: "Earlier", description: "Before the composer change" },
+      ],
+    },
+    {
+      id: "which-provider",
+      header: "Which provider",
+      question: "Which provider was running?",
+      options: [
+        { label: "OpenCode", description: "Muse Spark" },
+        { label: "Codex", description: "GPT" },
+      ],
+    },
+  ];
+
+  it("shows the question text while it is still open", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "asked",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: { requestId: "req-1", questions: [questions[0]] },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.label).toBe("Asked: Which agent run had the broken transcript?");
+    expect(entries[0]?.detail).toBe(
+      "Q: Which agent run had the broken transcript?\n  - Just now\n  - Earlier",
+    );
+  });
+
+  it("restates every question next to its answer once answered", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "asked",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: { requestId: "req-1", questions },
+      }),
+      makeActivity({
+        id: "answered",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "user-input.resolved",
+        summary: "User input submitted",
+        tone: "info",
+        payload: {
+          requestId: "req-1",
+          answers: { "which-run": "Just now", "which-provider": ["OpenCode", "Codex"] },
+        },
+      }),
+    ]);
+
+    // The asked row folds into the answered row.
+    expect(entries.map((entry) => entry.id)).toEqual(["answered"]);
+    expect(entries[0]?.label).toBe(
+      "Answered 2 questions: Which run: Just now; Which provider: OpenCode, Codex",
+    );
+    expect(entries[0]?.detail).toBe(
+      "Q: Which agent run had the broken transcript?\nA: Just now\n\nQ: Which provider was running?\nA: OpenCode, Codex",
+    );
+  });
+
+  it("still shows answers when the asked row is missing", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "answered",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "user-input.resolved",
+        summary: "User input submitted",
+        tone: "info",
+        payload: { requestId: "req-missing", answers: { mode: "fast" } },
+      }),
+    ]);
+
+    expect(entries[0]?.label).toBe("Answered mode: fast");
+    expect(entries[0]?.detail).toBe("Q: mode\nA: fast");
+  });
+});
