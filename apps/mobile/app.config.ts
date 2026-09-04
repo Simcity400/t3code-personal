@@ -2,7 +2,6 @@ import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { resolvePersonalExpoPushAlerts } from "../../scripts/lib/personal-expo-push-alerts.ts";
-import { PERSONAL_MOBILE_RUNTIME_VERSION } from "../../scripts/lib/personal-mobile-runtime.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
 type AppVariant = "development" | "preview" | "production";
@@ -176,19 +175,9 @@ const config: ExpoConfig = {
   platforms: ["ios", "android"],
   scheme: variant.scheme,
   version: "1.0.4",
-  // The personal preview uses a deliberately pinned runtime so ordinary source
-  // updates remain OTA-compatible. Native changes must bump the shared constant
-  // and produce one new build before updates are published against it.
-  runtimeVersion:
-    APP_VARIANT === "preview"
-      ? PERSONAL_MOBILE_RUNTIME_VERSION
-      : {
-          // Development manifests resolve on every launch, so avoid
-          // fingerprint's expensive native-project calculation there.
-          // Production stays fingerprinted so OTAs only reach binaries with
-          // matching native projects.
-          policy: runtimeVersionPolicy,
-        },
+  // Preview and production updates must match the binary's native inputs.
+  // Development avoids fingerprint work on every Metro launch.
+  runtimeVersion: { policy: runtimeVersionPolicy },
   orientation: "portrait",
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",

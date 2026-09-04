@@ -23,34 +23,6 @@ export function shouldUseCompactComposerFooter(
   return width !== null && width < breakpoint;
 }
 
-export function shouldUseRestingComposerLayout(input: {
-  isExistingThread: boolean;
-  isMobileViewport: boolean;
-  isFocused: boolean;
-  isScrollCollapsed: boolean;
-  hasExpandedChrome: boolean;
-  collapseOnBlur: boolean;
-}): boolean {
-  // Passive draft content is deliberately absent here. Resting only clamps
-  // the prompt row and overlays its actions; non-image attachment and context
-  // rows keep their natural height above it while image previews move inline.
-  // Banners and the tasks badge dock above the surface, so they are absent
-  // too. Whether the context strip can host the relocated controls is
-  // deliberately absent here: resting reclaims vertical space at every
-  // desktop width, and where the strip is missing or too narrow the controls
-  // simply return when the composer is focused.
-  //
-  //
-  // The resting bar is the composer's desktop shape on both new and existing
-  // threads, so the new-thread input matches the open-thread one. Focus never
-  // lifts it: the prompt row grows with its lines instead of swapping in the
-  // tall expanded surface. Only composer-owned chrome (drawers, menus,
-  // banners) still expands it. Focus, scroll collapse, and the blur
-  // preference are therefore moot here. `isExistingThread` is retained for
-  // callers but no longer gates the layout.
-  return !input.isMobileViewport && !input.hasExpandedChrome;
-}
-
 export function shouldAnimateComposerRestingTransition(input: {
   hasCompletedInitialLayout: boolean;
   stateChanged: boolean;

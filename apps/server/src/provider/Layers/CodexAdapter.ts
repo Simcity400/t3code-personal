@@ -1213,6 +1213,7 @@ function mapCollabAgentEvent(
 function mapToRuntimeEvents(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
+  providerThreadId?: string,
 ): ReadonlyArray<ProviderRuntimeEvent> {
   if (event.kind === "notification" && event.method.startsWith("collabAgent/")) {
     return mapCollabAgentEvent(event, canonicalThreadId);
@@ -1245,7 +1246,7 @@ function mapToRuntimeEvents(
       if (typeof payload !== "object" || payload === null) return undefined;
       const threadId = (payload as Record<string, unknown>).threadId;
       if (typeof threadId !== "string" || threadId.trim().length === 0) return undefined;
-      return threadId === canonicalThreadId ? undefined : threadId;
+      return providerThreadId === undefined || threadId === providerThreadId ? undefined : threadId;
     })();
 
     if (event.method === "item/tool/requestUserInput") {
@@ -2262,7 +2263,18 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
           Effect.gen(function* () {
             yield* writeNativeEvent(event);
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+            const providerThreadId =
+              event.kind === "request" ? (yield* runtime.getSession).resumeCursor : undefined;
+            const runtimeEvents = mapToRuntimeEvents(
+              event,
+              event.threadId,
+              typeof providerThreadId === "object" &&
+                providerThreadId !== null &&
+                "threadId" in providerThreadId &&
+                typeof providerThreadId.threadId === "string"
+                ? providerThreadId.threadId
+                : undefined,
+            );
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                 method: event.method,

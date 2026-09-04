@@ -2190,6 +2190,7 @@ export function makeOpenCodeAdapter(
 
       switch (event.type) {
         case "session.updated": {
+          if (agentId !== undefined) break;
           const title = openCodeEventSessionTitle(event);
           if (title) {
             yield* emit({
@@ -2469,6 +2470,22 @@ export function makeOpenCodeAdapter(
         }
 
         case "session.status": {
+          if (agentId !== undefined) {
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: context.session.threadId,
+                turnId,
+                raw: event,
+              })),
+              type: "task.updated",
+              payload: {
+                taskId: RuntimeTaskId.make(agentId),
+                status: event.properties.status.type === "idle" ? "idle" : "running",
+                agentKind: "agent",
+              },
+            });
+            break;
+          }
           if (event.properties.status.type === "busy") {
             if (turnId === undefined) {
               break;
@@ -2527,6 +2544,23 @@ export function makeOpenCodeAdapter(
 
         case "session.error": {
           const message = sessionErrorMessage(event.properties.error);
+          if (agentId !== undefined) {
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: context.session.threadId,
+                turnId,
+                raw: event,
+              })),
+              type: "task.updated",
+              payload: {
+                taskId: RuntimeTaskId.make(agentId),
+                status: isOpenCodeAbortError(event.properties.error) ? "interrupted" : "failed",
+                description: message,
+                agentKind: "agent",
+              },
+            });
+            break;
+          }
           const activeTurnId = context.activeTurnId;
           const cancellation = context.cancellation;
           if (isOpenCodeAbortError(event.properties.error)) {

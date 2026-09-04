@@ -42,7 +42,7 @@ const MAX_THREAD_CHECKPOINTS = 500;
 
 // Async questions can stay open while the agent produces more activity.
 // Match the database snapshot's pending-question retention.
-function retainThreadActivities(activities: OrchestrationThread["activities"]) {
+export function retainThreadActivities(activities: OrchestrationThread["activities"]) {
   const recentStart = activities.length - 500;
   if (recentStart <= 0) return activities;
   const pending = new Map<string, OrchestrationThread["activities"][number]>();
@@ -57,6 +57,36 @@ function retainThreadActivities(activities: OrchestrationThread["activities"]) {
     }
   }
   const pendingActivities = new Set(pending.values());
+  // Keep the same bounded agent lifecycle anchors as database snapshots.
+  // Identity and the last explicit state must outlive the work-log window.
+  const agentIds = new Map<string, true>();
+  for (const activity of activities) {
+    if (!activity.kind.startsWith("task.") || !Predicate.isObject(activity.payload)) continue;
+    const { taskId, agentKind } = activity.payload;
+    if (typeof taskId !== "string" || agentKind !== "agent") continue;
+    agentIds.delete(taskId);
+    agentIds.set(taskId, true);
+  }
+  const retainedAgentIds = new Set(Array.from(agentIds.keys()).slice(-100));
+  const firstByAgent = new Map<string, OrchestrationThread["activities"][number]>();
+  const latestByKind = new Map<string, OrchestrationThread["activities"][number]>();
+  const latestByField = new Map<string, OrchestrationThread["activities"][number]>();
+  for (const activity of activities) {
+    if (!activity.kind.startsWith("task.") || !Predicate.isObject(activity.payload)) continue;
+    const taskId = activity.payload.taskId;
+    if (typeof taskId !== "string" || !retainedAgentIds.has(taskId)) continue;
+    if (!firstByAgent.has(taskId)) firstByAgent.set(taskId, activity);
+    latestByKind.set(JSON.stringify([taskId, activity.kind]), activity);
+    // Independent patches must survive each other: progress need not carry
+    // usage, a model update need not carry status, and prompts arrive alone.
+    for (const [field, value] of Object.entries(activity.payload)) {
+      if (field !== "taskId" && field !== "agentKind" && value != null)
+        latestByField.set(JSON.stringify([taskId, field]), activity);
+    }
+  }
+  for (const activity of firstByAgent.values()) pendingActivities.add(activity);
+  for (const activity of latestByKind.values()) pendingActivities.add(activity);
+  for (const activity of latestByField.values()) pendingActivities.add(activity);
   return activities.filter(
     (activity, index) => index >= recentStart || pendingActivities.has(activity),
   );

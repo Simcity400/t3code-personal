@@ -394,7 +394,7 @@ function collabAgentReplyText(data: Record<string, unknown>): string | undefined
 
 function projectCollabAgentToolCallData(data: Record<string, unknown>): Record<string, unknown> {
   const projectedData: Record<string, unknown> = {};
-  const item = asRecord(data.item);
+  const item = asRecord(data.item) ?? (data.type === "collabAgentToolCall" ? data : undefined);
   if (item) {
     const projectedItem: Record<string, unknown> = {};
     for (const key of ["type", "id", "tool", "prompt", "receiverThreadIds"] as const) {

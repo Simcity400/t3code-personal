@@ -74,6 +74,10 @@ describe("readCollabPromptLinks", () => {
       prompt: "  First-class prompt\n",
       promptId: undefined,
       source: "first-class",
+      seenPromptKeys: new Set([
+        JSON.stringify([null, "Native fallback"]),
+        JSON.stringify([null, "  First-class prompt\n"]),
+      ]),
     });
   });
 
@@ -319,15 +323,21 @@ function makeThreadOpenResponse(
     modelProvider: "openai",
     approvalPolicy: "never",
     approvalsReviewer: "user",
-    sandbox: { type: "danger-full-access" },
+    sandbox: { type: "dangerFullAccess" },
     thread: {
       id: threadId,
-      createdAt: "2026-04-18T00:00:00.000Z",
-      source: { session: "cli" },
+      createdAt: 1,
+      updatedAt: 1,
+      cliVersion: "test",
+      cwd: "/tmp/project",
+      ephemeral: false,
+      modelProvider: "openai",
+      preview: "",
+      sessionId: "session-1",
+      source: "cli",
       turns: [],
       status: {
-        state: "idle",
-        activeFlags: [],
+        type: "idle",
       },
     },
   } as unknown as CodexRpc.ClientRequestResponsesByMethod["thread/start"];
@@ -1041,23 +1051,64 @@ describe("isRecoverableThreadResumeError", () => {
   });
 });
 
+it("does not redispatch recovered launch and follow-up prompts on every history refresh", () => {
+  const links = [
+    { receiverThreadId: "child", prompt: "Launch", promptId: "launch" },
+    { receiverThreadId: "child", prompt: "Follow up", promptId: "follow-up" },
+  ];
+  const first = mergeCollabPromptRecords(new Map(), links, "first-class");
+  const replay = mergeCollabPromptRecords(first.records, links, "first-class");
+  NodeAssert.deepEqual(replay.acceptedLinks, []);
+  NodeAssert.equal(replay.records.get("child")?.promptId, "follow-up");
+  const next = mergeCollabPromptRecords(
+    replay.records,
+    [{ ...links[0]!, promptId: "new-dispatch" }],
+    "first-class",
+  );
+  NodeAssert.equal(next.acceptedLinks.length, 1);
+});
+
+it.effect("resumes the same provider thread without requesting unsupported turn history", () =>
+  Effect.gen(function* () {
+    const calls: Array<{ method: string; payload: unknown }> = [];
+    const response = makeThreadOpenResponse("provider-root");
+    const opened = yield* openCodexThread({
+      client: {
+        request: () => Effect.die("resume must use the transport that preserves excludeTurns"),
+        raw: {
+          request: (method, payload) => {
+            calls.push({ method, payload });
+            return Effect.succeed(response);
+          },
+        },
+      },
+      threadId: ThreadId.make("t3-thread"),
+      runtimeMode: "full-access",
+      cwd: "/tmp/project",
+      requestedModel: undefined,
+      serviceTier: undefined,
+      resumeThreadId: "provider-root",
+    });
+    NodeAssert.equal(opened.thread.id, "provider-root");
+    NodeAssert.equal(calls.length, 1);
+    NodeAssert.equal(calls[0]?.method, "thread/resume");
+    NodeAssert.equal((calls[0]!.payload as { excludeTurns: boolean }).excludeTurns, true);
+  }),
+);
 describe("openCodexThread", () => {
   it.effect("creates a durable provider fork for a side chat", () =>
     Effect.gen(function* () {
       const calls: Array<{ method: string; payload: unknown }> = [];
       const forked = makeThreadOpenResponse("forked-thread");
       const client = {
-        request: <M extends "thread/start" | "thread/resume">(
-          method: M,
-          payload: CodexRpc.ClientRequestParamsByMethod[M],
-        ) => {
+        request: (method: string, payload: unknown) => {
           calls.push({ method, payload });
-          return Effect.succeed(forked as CodexRpc.ClientRequestResponsesByMethod[M]);
+          return Effect.succeed(forked);
         },
       };
 
       const opened = yield* openCodexThread({
-        client,
+        client: { ...client, raw: client },
         threadId: ThreadId.make("side-thread"),
         runtimeMode: "full-access",
         cwd: "/tmp/project",
@@ -1077,19 +1128,17 @@ describe("openCodexThread", () => {
         model: "gpt-5.3-codex",
         threadId: "parent-provider-thread",
         ephemeral: false,
+        excludeTurns: true,
       });
     }),
   );
 
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
-      const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
+      const calls: Array<{ method: string; payload: unknown }> = [];
       const started = makeThreadOpenResponse("fresh-thread");
       const client = {
-        request: <M extends "thread/start" | "thread/resume">(
-          method: M,
-          payload: CodexRpc.ClientRequestParamsByMethod[M],
-        ) => {
+        request: (method: string, payload: unknown) => {
           calls.push({ method, payload });
           if (method === "thread/resume") {
             return Effect.fail(
@@ -1099,12 +1148,12 @@ describe("openCodexThread", () => {
               }),
             );
           }
-          return Effect.succeed(started as CodexRpc.ClientRequestResponsesByMethod[M]);
+          return Effect.succeed(started);
         },
       };
 
       const opened = yield* openCodexThread({
-        client,
+        client: { ...client, raw: client },
         threadId: ThreadId.make("thread-1"),
         runtimeMode: "full-access",
         cwd: "/tmp/project",
@@ -1124,10 +1173,7 @@ describe("openCodexThread", () => {
   it.effect("propagates non-recoverable resume failures", () =>
     Effect.gen(function* () {
       const client = {
-        request: <M extends "thread/start" | "thread/resume">(
-          method: M,
-          _payload: CodexRpc.ClientRequestParamsByMethod[M],
-        ) => {
+        request: (method: string, _payload: unknown) => {
           if (method === "thread/resume") {
             return Effect.fail(
               new CodexErrors.CodexAppServerRequestError({
@@ -1136,14 +1182,12 @@ describe("openCodexThread", () => {
               }),
             );
           }
-          return Effect.succeed(
-            makeThreadOpenResponse("fresh-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
-          );
+          return Effect.succeed(makeThreadOpenResponse("fresh-thread"));
         },
       };
 
       const error = yield* openCodexThread({
-        client,
+        client: { ...client, raw: client },
         threadId: ThreadId.make("thread-1"),
         runtimeMode: "full-access",
         cwd: "/tmp/project",

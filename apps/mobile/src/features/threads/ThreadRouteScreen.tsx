@@ -67,7 +67,7 @@ import { useSelectedThreadWorktree } from "../../state/use-selected-thread-workt
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { setPendingConnectionError } from "../../state/use-remote-environment-registry";
 import { threadEnvironment } from "../../state/threads";
-import { useThreadShells } from "../../state/entities";
+import { useAttachedSideChats } from "../../state/entities";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import {
   useAdaptiveWorkspaceLayout,
@@ -216,7 +216,11 @@ function ThreadRouteContent(
   }, [selectedThread, selectedThreadDetailState]);
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
-  const allThreadShells = useThreadShells();
+  const attachedSideChats = useAttachedSideChats(
+    selectedThread
+      ? { environmentId: selectedThread.environmentId, threadId: selectedThread.id }
+      : null,
+  );
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
@@ -671,18 +675,6 @@ function ThreadRouteContent(
   );
   const isUnpromotedSideChat =
     selectedThread?.forkedFromThreadId != null && selectedThread.sideChatPromotedAt == null;
-  const attachedSideChats = useMemo(
-    () =>
-      selectedThread
-        ? allThreadShells.filter(
-            (thread) =>
-              thread.environmentId === selectedThread.environmentId &&
-              thread.forkedFromThreadId === selectedThread.id &&
-              thread.sideChatPromotedAt == null,
-          )
-        : [],
-    [allThreadShells, selectedThread],
-  );
   const handlePromoteSideChat = useCallback(async () => {
     if (!selectedThread || !isUnpromotedSideChat || sideChatAction !== null) return;
     setSideChatAction("promoting");
@@ -1044,7 +1036,7 @@ function ThreadRouteContent(
         </View>
       ) : null}
 
-      {!isUnpromotedSideChat && attachedSideChats.length > 0 ? (
+      {attachedSideChats.length > 0 ? (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}

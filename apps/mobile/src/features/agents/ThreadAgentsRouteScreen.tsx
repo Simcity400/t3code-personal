@@ -44,6 +44,7 @@ type ThreadAgentsRouteScreenProps = StaticScreenProps<{
 
 export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
   const thread = useSelectedThreadDetail();
+  const activities = thread?.activities;
   const { selectedEnvironmentRuntime } = useThreadSelection();
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -64,15 +65,15 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
     sessionStatus !== "error";
   const agents = useMemo(
     () =>
-      thread
-        ? foldSubagentActivities(thread.activities, {
+      activities
+        ? foldSubagentActivities(activities, {
             sessionLive: agentSessionLive,
             // Keep the transcript being read alive even when live activity
             // pushes it past the roster cap.
             protectedAgentIds: selectedAgentId ? [selectedAgentId] : [],
           })
         : [],
-    [agentSessionLive, thread, selectedAgentId],
+    [agentSessionLive, activities, selectedAgentId],
   );
   const model = useMemo(() => deriveAgentPanelModel({ agents, v2Projection: null }), [agents]);
   const allAgents = useMemo(() => flattenAgentPanelRoster(model), [model]);
@@ -89,8 +90,8 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
   // One pass over the thread's activities gives every conversation's meter;
   // each card and the open transcript then read their own by id.
   const contextWindowByAgentId = useMemo(
-    () => (thread ? deriveContextWindowSnapshotsByAgent(thread.activities) : new Map()),
-    [thread],
+    () => (activities ? deriveContextWindowSnapshotsByAgent(activities) : new Map()),
+    [activities],
   );
   const selectedAgentContextWindow = selectedAgent
     ? (contextWindowByAgentId.get(selectedAgent.id) ?? null)
@@ -101,7 +102,8 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
     [selectedAgent, thread],
   );
   const transcriptTurnId = useMemo(() => {
-    for (const entry of transcript) {
+    for (let index = transcript.length - 1; index >= 0; index -= 1) {
+      const entry = transcript[index]!;
       if (entry.type === "message" && entry.message.turnId !== null) {
         return entry.message.turnId;
       }
@@ -116,8 +118,8 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
   // and a subagent's own internal tasks. Same durable activities, so this
   // survives reload exactly as the roster does.
   const backgroundTasks = useMemo(
-    () => (thread ? foldBackgroundTasks(thread.activities, { sessionLive: agentSessionLive }) : []),
-    [agentSessionLive, thread],
+    () => (activities ? foldBackgroundTasks(activities, { sessionLive: agentSessionLive }) : []),
+    [agentSessionLive, activities],
   );
   const backgroundTasksModel = useMemo(
     () =>
@@ -141,16 +143,15 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
           // Members block their coordinator, not main.
           parentAgentId: agent.parentAgentId,
         })),
-        requests: thread ? deriveOpenRequestWaits(thread.activities) : [],
-        agentWaitReasons: thread ? deriveAgentWaitReasons(thread.activities) : new Map(),
-        detachedIds: thread ? deriveDetachedTaskIds(thread.activities) : new Set(),
+        requests: activities ? deriveOpenRequestWaits(activities) : [],
+        agentWaitReasons: activities ? deriveAgentWaitReasons(activities) : new Map(),
+        detachedIds: activities ? deriveDetachedTaskIds(activities) : new Set(),
         // A dead session cannot still be compacting: the wait dies with the
         // provider process exactly as running tasks do.
-        compactingSince:
-          thread && agentSessionLive ? deriveCompactingSince(thread.activities) : null,
+        compactingSince: activities && agentSessionLive ? deriveCompactingSince(activities) : null,
         mainTurnActive: sessionStatus === "running",
       }),
-    [agentSessionLive, allAgents, backgroundTasks, sessionStatus, thread],
+    [agentSessionLive, allAgents, backgroundTasks, sessionStatus, activities],
   );
   const statusClock = useAgentStatusClock(
     activeAgents.length > 0 ||
@@ -179,14 +180,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
       startedAt: selectedAgent.startedAt,
       completedAt: working ? null : (selectedAgent.completedAt ?? selectedAgent.updatedAt),
     };
-  }, [
-    selectedAgent,
-    transcriptTurnId,
-    selectedAgent?.status,
-    selectedAgent?.startedAt,
-    selectedAgent?.completedAt,
-    selectedAgent?.updatedAt,
-  ]);
+  }, [selectedAgent, transcriptTurnId]);
   const selectedProviderSkills = useMemo(
     () =>
       thread

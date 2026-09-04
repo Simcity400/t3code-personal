@@ -127,6 +127,14 @@ function rememberAgentPrompt(
 ): void {
   if (prompt.trim().length > 0) {
     state.promptByAgent.set(agentThreadId, prompt);
+    for (const [path, agents] of state.unpairedAgentsByPath) {
+      const remaining = agents.filter((id) => id !== agentThreadId);
+      if (remaining.length === 0) {
+        state.unpairedAgentsByPath.delete(path);
+      } else if (remaining.length !== agents.length) {
+        state.unpairedAgentsByPath.set(path, remaining);
+      }
+    }
   }
 }
 
@@ -226,7 +234,9 @@ function reduceNativeCollabPromptRolloutLine(
       rememberAgentPrompt(state, agentThreadId, completed.prompt);
       return;
     }
-    pushQueue(state.unpairedAgentsByPath, agentPath, agentThreadId);
+    if (!state.unpairedAgentsByPath.get(agentPath)?.includes(agentThreadId)) {
+      pushQueue(state.unpairedAgentsByPath, agentPath, agentThreadId);
+    }
     return;
   }
 
