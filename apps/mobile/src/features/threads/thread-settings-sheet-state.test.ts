@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   ProviderInstanceId,
+  ProviderDriverKind,
   ServerProvider,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
@@ -10,6 +11,7 @@ import * as Schema from "effect/Schema";
 import type { ModelOption } from "../../lib/modelOptions";
 import {
   canCommitPendingModel,
+  compatibleProviderInstanceIdsForThread,
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
   providerSetupCandidates,
@@ -143,6 +145,99 @@ function setupProvider(overrides: Partial<ServerProvider> = {}): ServerProvider 
   });
 }
 
+describe("compatibleProviderInstanceIdsForThread", () => {
+  it("offers accounts with the same driver and continuation group", () => {
+    const codex = ProviderDriverKind.make("codex");
+    const work = setupProvider({
+      instanceId: ProviderInstanceId.make("codex_work"),
+      driver: codex,
+      continuation: { groupKey: "codex:home:shared" },
+    });
+    const personal = setupProvider({
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      driver: codex,
+      continuation: { groupKey: "codex:home:shared" },
+    });
+    const isolated = setupProvider({
+      instanceId: ProviderInstanceId.make("codex_isolated"),
+      driver: codex,
+      continuation: { groupKey: "codex:home:isolated" },
+    });
+    const claude = setupProvider({
+      instanceId: ProviderInstanceId.make("claude_work"),
+      driver: ProviderDriverKind.make("claudeAgent"),
+      continuation: { groupKey: "claude:home:shared" },
+    });
+
+    expect(
+      compatibleProviderInstanceIdsForThread({
+        providers: [work, personal, isolated, claude],
+        instanceId: work.instanceId,
+      }),
+    ).toEqual(new Set([work.instanceId, personal.instanceId]));
+  });
+
+  it("allows legacy same-driver switching when continuation metadata is absent", () => {
+    const codex = ProviderDriverKind.make("codex");
+    const primary = setupProvider({ driver: codex, instanceId: ProviderInstanceId.make("codex") });
+    const personal = setupProvider({
+      driver: codex,
+      instanceId: ProviderInstanceId.make("codex_personal"),
+    });
+
+    expect(
+      compatibleProviderInstanceIdsForThread({
+        providers: [primary, personal],
+        instanceId: primary.instanceId,
+      }),
+    ).toEqual(new Set([primary.instanceId, personal.instanceId]));
+  });
+
+  it("keeps legacy Antigravity threads on their exact profile", () => {
+    const personal = setupProvider();
+    const work = setupProvider({ instanceId: ProviderInstanceId.make("google_work") });
+
+    expect(
+      compatibleProviderInstanceIdsForThread({
+        providers: [personal, work],
+        instanceId: work.instanceId,
+      }),
+    ).toEqual(new Set([work.instanceId]));
+  });
+
+  it("uses the session driver when the locked Codex instance is missing", () => {
+    const missing = ProviderInstanceId.make("codex_removed");
+    const codex = ProviderDriverKind.make("codex");
+    const primary = setupProvider({ driver: codex, instanceId: ProviderInstanceId.make("codex") });
+    const personal = setupProvider({
+      driver: codex,
+      instanceId: ProviderInstanceId.make("codex_personal"),
+    });
+
+    expect(
+      compatibleProviderInstanceIdsForThread({
+        providers: [primary, personal],
+        instanceId: missing,
+        driver: codex,
+      }),
+    ).toEqual(new Set([missing, primary.instanceId, personal.instanceId]));
+  });
+
+  it("keeps a missing legacy Antigravity instance exact", () => {
+    const missing = ProviderInstanceId.make("google_removed");
+    const primary = setupProvider();
+    const work = setupProvider({ instanceId: ProviderInstanceId.make("google_work") });
+
+    expect(
+      compatibleProviderInstanceIdsForThread({
+        providers: [primary, work],
+        instanceId: missing,
+        driver: ProviderDriverKind.make("antigravity"),
+      }),
+    ).toEqual(new Set([missing]));
+  });
+});
+
 describe("providerSetupCandidates", () => {
   const unfiltered = { providerFilter: null, query: "" };
 
@@ -195,5 +290,32 @@ describe("providerSetupCandidates", () => {
         query: "no-match",
       }),
     ).toEqual([]);
+  });
+
+  it("offers setup for another continuation-compatible account", () => {
+    const codex = ProviderDriverKind.make("codex");
+    const work = setupProvider({
+      driver: codex,
+      instanceId: ProviderInstanceId.make("codex_work"),
+      continuation: { groupKey: "codex:home:shared" },
+    });
+    const personal = setupProvider({
+      driver: codex,
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      continuation: { groupKey: "codex:home:shared" },
+    });
+    const isolated = setupProvider({
+      driver: codex,
+      instanceId: ProviderInstanceId.make("codex_isolated"),
+      continuation: { groupKey: "codex:home:isolated" },
+    });
+
+    expect(
+      providerSetupCandidates({
+        providers: [work, personal, isolated],
+        ...unfiltered,
+        instanceId: work.instanceId,
+      }),
+    ).toEqual([work, personal]);
   });
 });

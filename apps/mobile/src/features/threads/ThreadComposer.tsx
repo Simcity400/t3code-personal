@@ -85,6 +85,7 @@ import {
   type ExistingThreadSettingsRouteSession,
   useExistingThreadSettingsRoutePresentation,
 } from "./ThreadSettingsSheet";
+import { compatibleProviderInstanceIdsForThread } from "./thread-settings-sheet-state";
 import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
@@ -494,11 +495,23 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     [props.serverConfig, currentModelSelection],
   );
   const providerGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);
-  // An existing thread is bound to its harness: sessions can't move between
-  // provider instances, so the picker only offers the thread's own group.
+  const lockedProviderInstanceId =
+    props.selectedThread.session?.providerInstanceId ?? currentModelSelection.instanceId;
+  const lockedProviderDriver = props.selectedThread.session?.providerName;
+  const compatibleProviderInstanceIds = useMemo(
+    () =>
+      compatibleProviderInstanceIdsForThread({
+        providers: props.serverConfig?.providers ?? [],
+        instanceId: lockedProviderInstanceId,
+        driver: lockedProviderDriver,
+      }),
+    [lockedProviderDriver, lockedProviderInstanceId, props.serverConfig?.providers],
+  );
+  // Existing threads can move between account instances only when the server
+  // reports that they share the same provider resume state.
   const threadProviderGroups = useMemo(
-    () => providerGroups.filter((group) => group.providerKey === currentModelSelection.instanceId),
-    [providerGroups, currentModelSelection.instanceId],
+    () => providerGroups.filter((group) => compatibleProviderInstanceIds.has(group.providerKey)),
+    [compatibleProviderInstanceIds, providerGroups],
   );
   const currentModelOption =
     modelOptions.find(
@@ -519,7 +532,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     () => ({
       ownerId: settingsOwnerId,
       environmentId: props.environmentId,
-      providerInstanceId: currentModelSelection.instanceId,
+      providerInstanceId: lockedProviderInstanceId,
+      providerDriver: lockedProviderDriver,
       providerGroups: threadProviderGroups,
       selectedModel: currentModelSelection,
       onSelectModel: (option) => props.onUpdateModelSelection(option.selection),
@@ -532,6 +546,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     [
       currentModelSelection,
       currentRuntimeMode,
+      lockedProviderDriver,
+      lockedProviderInstanceId,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
       providerOptionDescriptors,
