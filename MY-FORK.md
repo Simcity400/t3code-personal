@@ -27,6 +27,12 @@ personal customizations, backed up at
   local publisher any more (retired 2026-09-04 with the launcher scripts, see below).
   For the private feed, the updater reads the existing `gh` login directly; it does not
   put the GitHub token in the app or agent environment.
+  Two Actions-minute savers (owner, 2026-09-04): pushes that only touch `.github/**` or
+  `*.md` files do not start a release, and the Linux "Build WSL node-pty" job is off
+  unless the repository variable `FORK_WSL_PTY` is `true` — the Windows build then ships
+  without the WSL terminal backend. Turn it back on with
+  `gh variable set FORK_WSL_PTY --body true -R Simcity400/t3code-personal` (no commit
+  needed); `gh variable delete FORK_WSL_PTY -R Simcity400/t3code-personal` turns it off.
 - **iPhone agent alerts**: the personal preview registers an Expo Push token with each
   connected T3 Code environment, so approval, input, completion, and failure alerts do
   not depend on the official app's APNs identity. Remote Live Activity updates remain
