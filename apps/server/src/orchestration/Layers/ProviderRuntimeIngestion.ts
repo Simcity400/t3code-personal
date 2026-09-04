@@ -2215,6 +2215,18 @@ const make = Effect.gen(function* () {
           });
           break;
         }
+        // The same edges that persist the durable `session.compacting` row.
+        // The sidebar reads the shell, not thread activities, so this is how a
+        // compacting thread stops claiming its agent is working.
+        case "session.state.changed":
+          if (event.payload.compacting !== undefined) {
+            threadBackgroundLiveness.recordSessionCompacting({
+              threadId: thread.id,
+              compacting: event.payload.compacting,
+              at: event.createdAt,
+            });
+          }
+          break;
         case "session.exited":
           threadBackgroundLiveness.clearThreadLiveness(thread.id);
           break;

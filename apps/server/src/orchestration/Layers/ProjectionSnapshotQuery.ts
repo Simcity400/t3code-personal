@@ -2319,6 +2319,7 @@ pending_approval_requests AS (
                       backgroundWait: threadBackgroundLiveness.getThreadBackgroundWait(
                         row.threadId,
                       ),
+                      compactingSince: threadBackgroundLiveness.getCompactingSince(row.threadId),
                       planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
                     } satisfies OrchestrationThreadShell)
                   : Result.failVoid,
@@ -2474,6 +2475,7 @@ pending_approval_requests AS (
                   row.threadId,
                 ),
                 backgroundWait: threadBackgroundLiveness.getThreadBackgroundWait(row.threadId),
+                compactingSince: threadBackgroundLiveness.getCompactingSince(row.threadId),
                 planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
               })),
               updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -2775,6 +2777,7 @@ pending_approval_requests AS (
           threadRow.value.threadId,
         ),
         backgroundWait: threadBackgroundLiveness.getThreadBackgroundWait(threadRow.value.threadId),
+        compactingSince: threadBackgroundLiveness.getCompactingSince(threadRow.value.threadId),
         planProgress: threadPlanProgress.getThreadPlanProgress(threadRow.value.threadId),
       } satisfies OrchestrationThreadShell);
     });

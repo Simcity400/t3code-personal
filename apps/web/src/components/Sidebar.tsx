@@ -141,6 +141,7 @@ import {
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
   resolveSidebarThreadStatus,
+  resolveSidebarThreadWaitLabel,
   searchSidebarThreadsByTitle,
   shouldCreateNewThreadInCurrentProject,
   resolveWorkingStartedAt,
@@ -853,6 +854,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // switching sidebars must not light up every historical thread as unread.
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarThreadStatus(thread);
+  const threadWait = resolveSidebarThreadWaitLabel(thread);
   // A woken thread reappears at its original position (the sort is
   // deliberately static), so the pill has to carry the weight. Snoozing is
   // an explicit act, so the pill clears only when the user re-engages:
@@ -896,10 +898,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         ? {
             // Calm background presence, not active progress (monitoring-pill
             // D6), so it keeps the label at full strength and takes no dot:
-            // the agent itself is idle and will answer immediately. The label
-            // is the provider's own name for the work, so nothing here knows
-            // what any particular task is.
-            label: `Waiting on ${thread.backgroundWait?.label ?? "background work"}`,
+            // the agent itself is producing nothing. The label is the
+            // provider's own name for the work, so nothing here knows what any
+            // particular task is.
+            label: threadWait?.label ?? "Waiting",
             icon: null,
             className: "text-sky-600 dark:text-sky-400",
           }
@@ -1544,10 +1546,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                           <span aria-hidden>
                             <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
                           </span>
-                        ) : status === "waiting" && thread.backgroundWait?.since ? (
+                        ) : status === "waiting" && threadWait?.since ? (
                           <span aria-hidden className="shrink-0">
                             {"· "}
-                            <WorkingDuration startedAt={thread.backgroundWait.since} />
+                            <WorkingDuration startedAt={threadWait.since} />
                           </span>
                         ) : null}
                       </span>

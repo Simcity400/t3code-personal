@@ -66,6 +66,22 @@ describe("resolveThreadStatus", () => {
     ).toBe("awaiting-input");
   });
 
+  it("names compaction rather than the running session it reports through", () => {
+    const status = resolveThreadStatus(
+      thread({
+        compactingSince: "2026-09-04T09:58:00.000Z",
+        session: {
+          status: "running",
+          activeTurnId: "turn-1",
+          lastError: null,
+          updatedAt: "2026-09-04T10:00:00.000Z",
+        } as unknown as EnvironmentThreadShell["session"],
+      }),
+    );
+    expect(status?.kind).toBe("waiting");
+    expect(status?.label).toBe("Waiting on context compaction");
+  });
+
   it("renders the phone label identically to the web sidebar", () => {
     // One shared derivation, so a thread cannot read as Working on one
     // surface and Waiting on the other.

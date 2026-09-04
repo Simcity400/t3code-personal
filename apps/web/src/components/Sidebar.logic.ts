@@ -15,6 +15,7 @@ import type { SidebarThreadSummary, Thread } from "../types";
 import type { ThreadRouteTarget } from "../threadRoutes";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
+import { resolveThreadWorkState } from "@t3tools/shared/threadWorkState";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 200;
@@ -221,6 +222,7 @@ type ThreadStatusInput = Pick<
   | "latestTurn"
   | "session"
   | "backgroundWait"
+  | "compactingSince"
 > & {
   lastVisitedAt?: string | undefined;
 };
@@ -524,7 +526,7 @@ export type SidebarThreadStatus = "approval" | "input" | "working" | "waiting" |
 
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
-  "hasPendingApprovals" | "hasPendingUserInput" | "session" | "backgroundWait"
+  "hasPendingApprovals" | "hasPendingUserInput" | "session" | "backgroundWait" | "compactingSince"
 >;
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
@@ -534,6 +536,13 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   if (thread.hasPendingUserInput) {
     return "input";
   }
+  // Compaction reports itself as a running session, so it has to be read
+  // before that check or it would show up as the agent working. Only
+  // compaction jumps the queue: a failed session still outranks work the
+  // thread merely left running.
+  if (thread.compactingSince != null) {
+    return "waiting";
+  }
   if (thread.session?.status === "running" || thread.session?.status === "starting") {
     return "working";
   }
@@ -542,12 +551,21 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   if (thread.session?.status === "error") {
     return "failed";
   }
-  // The agent's own turn is over but work it started is still alive. That is
-  // not the agent working — it is the agent waiting, and the row says so.
-  if (thread.backgroundWait != null) {
+  // The agent is producing nothing of its own while work it started runs on.
+  if (resolveThreadWorkState(thread).state === "waiting") {
     return "waiting";
   }
   return "ready";
+}
+
+/** The waiting row's text and timer anchor, from the one shared derivation. */
+export function resolveSidebarThreadWaitLabel(
+  thread: SidebarThreadStatusInput,
+): { readonly label: string; readonly since: string | null } | null {
+  const workState = resolveThreadWorkState(thread);
+  return workState.state === "waiting" && workState.label !== null
+    ? { label: workState.label, since: workState.since }
+    : null;
 }
 
 /** NaN-safe Date.parse for sort comparators: a malformed timestamp must not
@@ -726,6 +744,22 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  // Compaction reports itself as a running session, so it is read first or it
+  // would show up as the agent working. Only compaction jumps the queue here:
+  // ordinary background work stays below the plan prompt, which needs a human.
+  if (thread.compactingSince != null) {
+    const compacting = resolveSidebarThreadWaitLabel(thread);
+    if (compacting) {
+      return {
+        kind: "waiting",
+        label: compacting.label,
+        colorClass: "text-sky-600 dark:text-sky-300/80",
+        dotClass: "bg-sky-500 dark:bg-sky-300/80",
+        pulse: false,
+      };
+    }
+  }
+
   if (thread.session?.status === "running") {
     return {
       kind: "working",
@@ -763,14 +797,14 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  // The turn settled while work it started runs on. The agent itself is idle
-  // and will answer a message immediately, so this is a wait, not work — and
-  // the label names what is being waited on rather than asserting progress.
-  // Static dot for the same reason: nothing here is ticking forward.
-  if (thread.backgroundWait != null) {
+  // The agent is producing nothing of its own — work it started runs on, or
+  // the provider is compacting. A wait, not work, so the label names what is
+  // being waited on rather than asserting progress, and the dot is static.
+  const waiting = resolveSidebarThreadWaitLabel(thread);
+  if (waiting) {
     return {
       kind: "waiting",
-      label: `Waiting on ${thread.backgroundWait.label}`,
+      label: waiting.label,
       colorClass: "text-sky-600 dark:text-sky-300/80",
       dotClass: "bg-sky-500 dark:bg-sky-300/80",
       pulse: false,

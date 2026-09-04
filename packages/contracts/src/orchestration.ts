@@ -641,6 +641,16 @@ export const OrchestrationThreadShell = Schema.Struct({
    */
   backgroundWait: Schema.optional(Schema.NullOr(ThreadBackgroundWait)),
   /**
+   * When the provider began compacting its own context, or null when it is
+   * not. A machine wait — no user action shortens it — and the one long pause
+   * nothing else on the shell explains: the session reports `running` through
+   * it (a compacting thread cannot take a fresh turn) while the agent is not
+   * generating anything at all. Sidebar rows read the shell rather than thread
+   * activities, so without this field they would be the one surface still
+   * claiming the agent is working. Optional so old servers/clients interop.
+   */
+  compactingSince: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /**
    * Current plan step while a turn runs, for the Working indicators
    * (sidebar row, in-chat working line). Cleared when the turn settles —
    * never persists as stale UI. Optional so old servers/clients interop.

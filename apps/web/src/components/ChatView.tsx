@@ -49,6 +49,7 @@ import {
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { truncate } from "@t3tools/shared/String";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/shared/threadReference";
+import { resolveThreadWorkState } from "@t3tools/shared/threadWorkState";
 import {
   getTerminalLabel,
   nextTerminalId,
@@ -5430,6 +5431,15 @@ function ChatViewContent(props: ChatViewProps) {
   // interrupting, and works by session, so no active turn is needed.
   const activeBackgroundWait =
     !isWorking && activeThread ? (activeThreadShell?.backgroundWait ?? null) : null;
+  // Compaction reports itself as a running session, so it never reaches the
+  // guard above — but it is exactly the pause a reader needs explained, and
+  // the Stop affordance does not apply to it.
+  const activeCompactingSince = activeThread ? (activeThreadShell?.compactingSince ?? null) : null;
+  const activeWaitLabel = resolveThreadWorkState({
+    session: activeThreadShell?.session ?? null,
+    backgroundWait: activeBackgroundWait,
+    compactingSince: activeCompactingSince,
+  }).label;
   const [isStoppingBackgroundWork, setIsStoppingBackgroundWork] = useState(false);
   useEffect(() => {
     // "Stopping..." holds until the liveness clears; the interrupt command
@@ -5465,30 +5475,42 @@ function ChatViewContent(props: ChatViewProps) {
     }
   }, [activeThread, environmentId, interruptThreadTurn, setThreadError]);
   const backgroundWaitBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
-    if (activeBackgroundWait === null || !activeThread) {
+    if (activeWaitLabel === null || !activeThread) {
       return null;
     }
     return {
       id: `background-liveness:${activeThread.id}`,
       variant: "default",
       priority: "activity",
-      // Static dot, no pulse: this thread's own turn is over. Something it
-      // started is still running, but the agent is free — the composer below
-      // is live and a message sent now starts a turn straight away.
+      // Static dot, no pulse: the agent is producing nothing of its own. When
+      // it is background work holding the thread, the composer below is live
+      // and a message sent now starts a turn straight away.
       icon: <span className="size-1.5 rounded-full bg-foreground" aria-hidden="true" />,
-      title: `Waiting on ${activeBackgroundWait.label}`,
-      actions: (
-        <Button
-          size="xs"
-          variant="ghost"
-          disabled={isStoppingBackgroundWork}
-          onClick={() => void handleStopBackgroundWork()}
-        >
-          {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
-        </Button>
-      ),
+      title: activeWaitLabel,
+      // Stop belongs to background work only. Compaction is the provider
+      // rewriting its own history; there is nothing here to stop.
+      ...(activeBackgroundWait === null
+        ? {}
+        : {
+            actions: (
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={isStoppingBackgroundWork}
+                onClick={() => void handleStopBackgroundWork()}
+              >
+                {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
+              </Button>
+            ),
+          }),
     };
-  }, [activeBackgroundWait, activeThread, handleStopBackgroundWork, isStoppingBackgroundWork]);
+  }, [
+    activeBackgroundWait,
+    activeThread,
+    activeWaitLabel,
+    handleStopBackgroundWork,
+    isStoppingBackgroundWork,
+  ]);
   // A woken thread announces itself in the open view, not just the sidebar
   // pill. Dismissing marks the wake as seen (same acknowledgment as the
   // pill); sending a message clears it as a side effect of the send path.
