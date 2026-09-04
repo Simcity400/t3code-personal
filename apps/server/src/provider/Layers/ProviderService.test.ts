@@ -746,6 +746,105 @@ sharedCodexContinuation.layer("ProviderServiceLive shared continuation replaceme
   );
 });
 
+for (const driverKind of [CODEX_DRIVER, CLAUDE_AGENT_DRIVER]) {
+  const originalId = ProviderInstanceId.make(driverKind);
+  const replacementId = ProviderInstanceId.make(`${driverKind}-replacement`);
+  const original = makeFakeCodexAdapter(driverKind);
+  const replacement = makeFakeCodexAdapter(driverKind);
+  const baseRegistry = makeAdapterRegistryMock({ [driverKind]: original.adapter });
+  const accountRecovery = makeProviderServiceLayer({
+    registry: {
+      ...baseRegistry,
+      getByInstance: (instanceId) =>
+        instanceId === replacementId
+          ? Effect.succeed(replacement.adapter)
+          : baseRegistry.getByInstance(instanceId),
+      getInstanceInfo: (instanceId) =>
+        instanceId === originalId || instanceId === replacementId
+          ? Effect.succeed({
+              instanceId,
+              driverKind,
+              displayName: undefined,
+              enabled: true,
+              continuationIdentity: {
+                driverKind,
+                continuationKey: `${driverKind}:shared-home`,
+              },
+            })
+          : baseRegistry.getInstanceInfo(instanceId),
+      listInstances: () => Effect.succeed([originalId, replacementId]),
+    },
+  });
+
+  accountRecovery.layer(`ProviderServiceLive ${driverKind} account recovery`, (it) => {
+    for (const failureDetail of ["Usage limit reached", "Login expired", "Service unavailable"]) {
+      for (const stopped of [false, true]) {
+        it.effect(`continues the same thread after ${failureDetail} (stopped: ${stopped})`, () =>
+          Effect.gen(function* () {
+            const provider = yield* ProviderService.ProviderService;
+            const threadId = asThreadId(`${driverKind}-${failureDetail}-${stopped}`);
+            const startInput = {
+              threadId,
+              cwd: "/tmp/project",
+              runtimeMode: "full-access",
+            } as const;
+            const initial = yield* provider.startSession(threadId, {
+              ...startInput,
+              providerInstanceId: originalId,
+            });
+            const turnInput = { threadId, input: "Continue the existing work" };
+            original.sendTurn.mockClear();
+            replacement.sendTurn.mockClear();
+            replacement.startSession.mockClear();
+            original.sendTurn.mockImplementationOnce(() =>
+              Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: driverKind,
+                  method: "sendTurn",
+                  detail: failureDetail,
+                }),
+              ),
+            );
+            assert.instanceOf(
+              yield* Effect.flip(provider.sendTurn(turnInput)),
+              ProviderAdapterRequestError,
+            );
+            if (stopped) yield* provider.stopSession({ threadId });
+
+            const resumed = yield* provider.startSession(threadId, {
+              ...startInput,
+              providerInstanceId: replacementId,
+            });
+            assert.equal(resumed.providerInstanceId, replacementId);
+            assert.equal(yield* original.hasSession(threadId), false);
+            assert.deepEqual(resumed.resumeCursor, initial.resumeCursor);
+            assert.deepEqual(
+              replacement.startSession.mock.calls[0]?.[0].resumeCursor,
+              initial.resumeCursor,
+            );
+            const continued = yield* provider.sendTurn(turnInput);
+            assert.equal(continued.threadId, threadId);
+            assert.equal(original.sendTurn.mock.calls.length, 1);
+            assert.equal(replacement.sendTurn.mock.calls.length, 1);
+
+            // The original account can be selected again after its login or quota recovers.
+            const returned = yield* provider.startSession(threadId, {
+              ...startInput,
+              providerInstanceId: originalId,
+            });
+            assert.deepEqual(returned.resumeCursor, initial.resumeCursor);
+            assert.equal(yield* replacement.hasSession(threadId), false);
+            yield* provider.sendTurn(turnInput);
+            assert.equal(original.sendTurn.mock.calls.length, 2);
+            assert.equal(replacement.sendTurn.mock.calls.length, 1);
+            yield* provider.stopSession({ threadId });
+          }),
+        );
+      }
+    }
+  });
+}
+
 const antigravityDriver = ProviderDriverKind.make("antigravity");
 const replacementAntigravity = makeFakeCodexAdapter(antigravityDriver);
 const originalAntigravityInstanceId = ProviderInstanceId.make("antigravity-personal");

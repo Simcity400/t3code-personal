@@ -83,6 +83,28 @@ The idea is:
 - each account keeps its own login
 - existing threads can continue with either account
 
+### Share The Runtime Database
+
+Set `sqlite_home` at the top level of your shared `config.toml` to one absolute directory
+used by every account. For example, on Windows:
+
+```toml
+sqlite_home = "C:/Users/your-name/.codex/shared-sqlite"
+```
+
+Use your own absolute home path on macOS or Linux. Keep this setting the same across accounts;
+account-specific launch arguments must not override it with different directories. Each account
+still keeps its own `auth.json` in its Codex home or shadow home.
+
+Share the database directory this way instead of linking individual `.sqlite`, `-wal`, or `-shm`
+files. Individual file links can cause accounts to use different journals for the same database.
+
+If you already have threads, session logs may allow them to resume after choosing a new database
+directory. Complete history reconstruction is not guaranteed, and database-only information such
+as stored goals does not transfer automatically.
+Keep the old database files for recovery. Existing Codex processes retain their current database
+location until they restart; finish their work before switching accounts under the new setting.
+
 ### Set Up The First Account
 
 Log in normally:
@@ -163,13 +185,9 @@ If two Codex providers show the same account or the same unexpected model list:
 2. Refresh provider status.
 3. Confirm the second provider has `Shadow home path` set.
 4. Confirm the shadow directory has its own `auth.json`.
-5. If you copied `~/.codex` into the shadow directory, remove everything except `auth.json`.
-
-Example cleanup:
-
-```bash
-find ~/.codex_p -mindepth 1 ! -name auth.json -exec rm -rf {} +
-```
+5. If you copied `~/.codex` into the shadow directory, check for conflicting copies of shared
+   files. Finish active Codex work and back up the directory before changing it. Preserve database
+   files and their journals together for recovery.
 
 ## When To Use A Separate CODEX_HOME
 
