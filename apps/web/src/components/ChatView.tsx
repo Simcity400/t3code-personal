@@ -311,7 +311,7 @@ import { createPageScrollController, type PageScrollKey } from "./chat/pageScrol
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
-import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { MessagesTimeline, type SubagentReplySender } from "./chat/MessagesTimeline";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
 import { ChatHeader } from "./chat/ChatHeader";
@@ -459,6 +459,7 @@ const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached files.]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_MESSAGES: ChatMessage[] = [];
+const EMPTY_SUBAGENT_REPLY_SENDERS: ReadonlyMap<MessageId, SubagentReplySender> = new Map();
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
@@ -2536,12 +2537,31 @@ function ChatViewContent(props: ChatViewProps) {
     () => foldBackgroundTasks(threadActivities, { sessionLive: agentSessionLive }),
     [agentSessionLive, threadActivities],
   );
+  // Only agent-attributed messages feed the reply derivation, and the parent's
+  // own streaming deltas replace `messages` on every token. Keying the fold on
+  // a reference-stable slice of agent messages keeps it (and everything the
+  // timeline reads from it below) from re-running per parent token.
+  const agentMessagesRef = useRef<ReadonlyArray<ChatMessage>>(EMPTY_MESSAGES);
+  const agentMessages = useMemo(() => {
+    const next = (activeThread?.messages ?? EMPTY_MESSAGES).filter(
+      (message) => message.agentId !== undefined,
+    );
+    const previous = agentMessagesRef.current;
+    if (
+      previous.length === next.length &&
+      previous.every((message, index) => message === next[index])
+    ) {
+      return previous;
+    }
+    agentMessagesRef.current = next.length === 0 ? EMPTY_MESSAGES : next;
+    return agentMessagesRef.current;
+  }, [activeThread?.messages]);
   // Messages the thread's subagents sent BACK. Derived from the same persisted
   // rows the panel folds, so they survive reload and resume; the parent used
   // to see only a collapsed tool row where its agent actually answered.
   const subagentReplies = useMemo(
-    () => deriveSubagentReplies(threadActivities, activeThread?.messages ?? EMPTY_MESSAGES),
-    [activeThread?.messages, threadActivities],
+    () => deriveSubagentReplies(threadActivities, agentMessages),
+    [agentMessages, threadActivities],
   );
   // Titles for the whole roster, not just direct spawns: a workflow member
   // replies to the thread too, and reading its title off `directAgents` alone
@@ -2562,16 +2582,46 @@ function ChatViewContent(props: ChatViewProps) {
       ),
     [subagentReplies, subagentTitleById],
   );
-  const subagentReplyByMessageId = useMemo(
-    () =>
-      new Map(
-        subagentReplyMessages.map((reply) => [
-          reply.message.id,
-          { agentId: reply.agentId, label: reply.label },
-        ]),
-      ),
-    [subagentReplyMessages],
+  // Feeds MessagesTimeline's shared row context, which must stay referentially
+  // stable while activities stream (a fresh value there remounts every rendered
+  // markdown node). Reuse the previous map whenever its entries are unchanged.
+  const subagentReplyByMessageIdRef = useRef<ReadonlyMap<MessageId, SubagentReplySender>>(
+    EMPTY_SUBAGENT_REPLY_SENDERS,
   );
+  const subagentReplyByMessageId = useMemo(() => {
+    const previous = subagentReplyByMessageIdRef.current;
+    const next: ReadonlyMap<MessageId, SubagentReplySender> =
+      subagentReplyMessages.length === 0
+        ? EMPTY_SUBAGENT_REPLY_SENDERS
+        : new Map(
+            subagentReplyMessages.map((reply) => [
+              reply.message.id,
+              { agentId: reply.agentId, label: reply.label },
+            ]),
+          );
+    if (next === previous) {
+      return previous;
+    }
+    if (next.size === previous.size) {
+      let unchanged = true;
+      for (const [messageId, sender] of next) {
+        const previousSender = previous.get(messageId);
+        if (
+          previousSender === undefined ||
+          previousSender.agentId !== sender.agentId ||
+          previousSender.label !== sender.label
+        ) {
+          unchanged = false;
+          break;
+        }
+      }
+      if (unchanged) {
+        return previous;
+      }
+    }
+    subagentReplyByMessageIdRef.current = next;
+    return next;
+  }, [subagentReplyMessages]);
   const backgroundTasksModel = useMemo(
     () =>
       deriveBackgroundTasksPanelModel({

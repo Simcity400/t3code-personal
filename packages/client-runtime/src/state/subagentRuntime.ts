@@ -1738,6 +1738,8 @@ const REPLY_BOUNDARY_STATUSES: ReadonlySet<string> = new Set([
   "interrupted",
 ]);
 
+const EMPTY_SUBAGENT_REPLIES: ReadonlyArray<SubagentReplyEntry> = Object.freeze([]);
+
 export function deriveSubagentReplies(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   messages: ReadonlyArray<OrchestrationMessage> = [],
@@ -1945,6 +1947,12 @@ export function deriveSubagentReplies(
     }
   }
 
+  // A thread with nothing to report returns one shared frozen value: callers
+  // memoize on this result, and a fresh empty array per fold would invalidate
+  // every downstream memo on each activity delta.
+  if (replies.length === 0) {
+    return EMPTY_SUBAGENT_REPLIES;
+  }
   // Mobile Hermes does not provide the ES2023 change-by-copy array methods.
   return replies.sort(
     (left, right) =>
