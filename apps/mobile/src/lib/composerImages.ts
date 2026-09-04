@@ -3,7 +3,6 @@ import {
   fileAttachmentTooLargeMessage,
 } from "@t3tools/client-runtime/state/attachments";
 import {
-  isProviderSendTurnSupportedImageMimeType,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
@@ -279,6 +278,81 @@ async function loadClipboard() {
   }
 }
 
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function decodeBase64Header(base64: string): ReadonlyArray<number> {
+  const bytes: number[] = [];
+  let buffer = 0;
+  let bufferedBits = 0;
+
+  for (const character of base64.slice(0, 24)) {
+    if (/\s/.test(character)) continue;
+    if (character === "=") break;
+    const value = BASE64_ALPHABET.indexOf(character);
+    if (value === -1) return [];
+    buffer = (buffer << 6) | value;
+    bufferedBits += 6;
+    if (bufferedBits >= 8) {
+      bufferedBits -= 8;
+      bytes.push((buffer >> bufferedBits) & 0xff);
+      buffer &= (1 << bufferedBits) - 1;
+      if (bytes.length === 12) break;
+    }
+  }
+
+  return bytes;
+}
+
+function imageMimeTypeForHeader(bytes: ArrayLike<number>): string | null {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  if (
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x38 &&
+    (bytes[4] === 0x37 || bytes[4] === 0x39) &&
+    bytes[5] === 0x61
+  ) {
+    return "image/gif";
+  }
+  if (
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
+
+function encodedImageMimeType(base64: string): string | null {
+  return imageMimeTypeForHeader(decodeBase64Header(base64));
+}
+
+function nameForImageMimeType(name: string, mimeType: string): string {
+  const extension = mimeType === "image/jpeg" ? "jpg" : mimeType.slice("image/".length);
+  if (name.toLowerCase().endsWith(`.${extension}`)) return name;
+  if (mimeType === "image/jpeg" && /\.jpeg$/i.test(name)) return name;
+  return `${name.replace(/\.[^.]+$/, "")}.${extension}`;
+}
+
 export async function pickComposerImages(input: { readonly existingCount: number }): Promise<{
   readonly images: ReadonlyArray<DraftComposerImageAttachment>;
   readonly error: string | null;
@@ -377,45 +451,58 @@ export async function pickComposerMedia(input: {
       }
       continue;
     }
-    if (asset.type !== "image" && !mimeType?.startsWith("image/")) {
-      error = `Unsupported file type for '${asset.fileName ?? "image"}'.`;
-      continue;
-    }
-
     let base64 = asset.base64;
     if (!base64) {
       error = `Failed to read '${asset.fileName ?? "image"}'.`;
       continue;
     }
 
+    const pickerEncodedMimeType = encodedImageMimeType(base64);
+    if (
+      asset.type !== "image" &&
+      !mimeType?.startsWith("image/") &&
+      pickerEncodedMimeType === null
+    ) {
+      error = `Unsupported file type for '${asset.fileName ?? "image"}'.`;
+      continue;
+    }
+
     let name = asset.fileName?.trim() || "image";
     // The iOS picker returns JPEG base64 even when its metadata describes HEIC,
     // PNG, or GIF. Keep supported originals so transparency and animation survive;
-    // use the native JPEG conversion for formats providers cannot accept.
-    if (base64.startsWith("/9j/")) {
-      if (
-        mimeType &&
-        mimeType !== "image/jpeg" &&
-        isProviderSendTurnSupportedImageMimeType(mimeType)
-      ) {
-        try {
-          const { File } = await import("expo-file-system");
-          base64 = await new File(asset.uri).base64();
-        } catch {
-          error = `Failed to read '${name}'.`;
-          continue;
+    // use the native JPEG conversion when the original cannot be read. Some
+    // adjusted Photos assets have an unreadable cache URI despite valid picker
+    // base64, so failure to recover the original must not discard the image.
+    if (pickerEncodedMimeType === "image/jpeg" && mimeType !== "image/jpeg") {
+      try {
+        const { File, FileMode } = await import("expo-file-system");
+        const originalFile = new File(asset.uri);
+        if (originalFile.size === null || originalFile.size <= PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+          const handle = originalFile.open(FileMode.ReadOnly);
+          let originalEncodedMimeType: string | null;
+          try {
+            originalEncodedMimeType = imageMimeTypeForHeader(handle.readBytes(12));
+          } finally {
+            handle.close();
+          }
+          if (originalEncodedMimeType !== null) {
+            const originalBase64 = await originalFile.base64();
+            const originalSizeBytes = estimateBase64ByteSize(originalBase64);
+            if (originalSizeBytes > 0 && originalSizeBytes <= PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+              base64 = originalBase64;
+            }
+          }
         }
-      } else {
-        mimeType = "image/jpeg";
-        if (!/\.jpe?g$/i.test(name)) {
-          name = `${name.replace(/\.[^.]+$/, "")}.jpg`;
-        }
+      } catch {
+        // The picker JPEG is already a complete, provider-supported fallback.
       }
     }
-    if (!mimeType || !isProviderSendTurnSupportedImageMimeType(mimeType)) {
+    mimeType = encodedImageMimeType(base64) ?? undefined;
+    if (!mimeType) {
       error = `'${name}' is not a supported image type. Attach GIF, JPEG, PNG, or WebP images.`;
       continue;
     }
+    name = nameForImageMimeType(name, mimeType);
 
     const sizeBytes = estimateBase64ByteSize(base64);
     if (sizeBytes <= 0 || sizeBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {

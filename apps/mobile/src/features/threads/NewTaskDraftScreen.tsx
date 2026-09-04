@@ -1422,13 +1422,18 @@ export function NewTaskDraftScreen(props: {
           title: "",
         }}
       />
-      <NativeHeaderToolbar placement="left">
-        <NativeHeaderToolbar.Button
-          accessibilityLabel="Cancel new task"
-          label="Cancel"
-          onPress={closeNewTask}
-        />
-      </NativeHeaderToolbar>
+      {/* Clear the rectangular Cancel item before the next-frame root-stack
+          replacement. Otherwise iOS 26 can reuse its background for the
+          thread's system back item and leave that button square. */}
+      {submitNavigationAction === null ? (
+        <NativeHeaderToolbar placement="left">
+          <NativeHeaderToolbar.Button
+            accessibilityLabel="Cancel new task"
+            label="Cancel"
+            onPress={closeNewTask}
+          />
+        </NativeHeaderToolbar>
+      ) : null}
 
       {heroViewport}
       <KeyboardStickyView
