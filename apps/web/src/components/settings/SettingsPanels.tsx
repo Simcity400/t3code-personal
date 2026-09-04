@@ -173,12 +173,6 @@ const TIMESTAMP_FORMAT_LABELS = {
   "24-hour": "24-hour",
 } as const;
 
-const COMPOSER_COLLAPSE_TRIGGER_LABELS = {
-  blur: "On unfocus",
-  scroll: "On scroll",
-} as const;
-type ComposerCollapseTrigger = keyof typeof COMPOSER_COLLAPSE_TRIGGER_LABELS;
-
 const DIFF_LAYOUT_LABELS: Record<DiffLayout, string> = {
   stacked: "Stacked",
   split: "Split",
@@ -547,10 +541,6 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.showSkillsInSlashMenu !== DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu
         ? ["Show skills in slash menu"]
         : []),
-      ...(settings.composerCollapseOnBlur !== DEFAULT_UNIFIED_SETTINGS.composerCollapseOnBlur ||
-      settings.composerCollapseOnScroll !== DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll
-        ? ["Collapse composer"]
-        : []),
       ...(settings.contextWindowMeterEnabled !== DEFAULT_UNIFIED_SETTINGS.contextWindowMeterEnabled
         ? ["Context window indicator"]
         : []),
@@ -608,8 +598,6 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.confirmThreadUnpin,
-      settings.composerCollapseOnBlur,
-      settings.composerCollapseOnScroll,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
@@ -2027,13 +2015,6 @@ export function GeneralSettingsPanel() {
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
   const supportsAutoSettlement =
     useAtomValue(primaryServerConfigAtom)?.environment.capabilities.threadAutoSettlement === true;
-  const composerCollapseTriggers = useMemo<ComposerCollapseTrigger[]>(
-    () => [
-      ...(settings.composerCollapseOnBlur ? (["blur"] as const) : []),
-      ...(settings.composerCollapseOnScroll ? (["scroll"] as const) : []),
-    ],
-    [settings.composerCollapseOnBlur, settings.composerCollapseOnScroll],
-  );
   const diagnosticsDescription = formatDiagnosticsDescription({
     localTracingEnabled: observability?.localTracingEnabled ?? false,
     otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
@@ -2360,52 +2341,8 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           {...searchableSetting("composer-collapse")}
-          description="Rest the composer of an existing thread into a single line when it loses focus, when you scroll the conversation, or both. Pick neither to keep it expanded."
-          resetAction={
-            settings.composerCollapseOnBlur !== DEFAULT_UNIFIED_SETTINGS.composerCollapseOnBlur ||
-            settings.composerCollapseOnScroll !==
-              DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll ? (
-              <SettingResetButton
-                label="collapse composer"
-                onClick={() =>
-                  updateSettings({
-                    composerCollapseOnBlur: DEFAULT_UNIFIED_SETTINGS.composerCollapseOnBlur,
-                    composerCollapseOnScroll: DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              multiple
-              value={composerCollapseTriggers}
-              onValueChange={(next) =>
-                updateSettings({
-                  composerCollapseOnBlur: next.includes("blur"),
-                  composerCollapseOnScroll: next.includes("scroll"),
-                })
-              }
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Collapse composer">
-                <SelectValue>
-                  {composerCollapseTriggers.length === 0
-                    ? "Never"
-                    : composerCollapseTriggers
-                        .map((trigger) => COMPOSER_COLLAPSE_TRIGGER_LABELS[trigger])
-                        .join(", ")}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem showCheck value="blur">
-                  {COMPOSER_COLLAPSE_TRIGGER_LABELS.blur}
-                </SelectItem>
-                <SelectItem showCheck value="scroll">
-                  {COMPOSER_COLLAPSE_TRIGGER_LABELS.scroll}
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
+          description="The input stays compact while typing, answering questions, and switching threads. Longer text grows within the editor."
+          control={<span className="text-sm text-muted-foreground">Always compact</span>}
         />
 
         <SettingsRow

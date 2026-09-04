@@ -10,7 +10,6 @@ import {
   shouldAnimateComposerRestingTransition,
   shouldUseCompactComposerPrimaryActions,
   shouldUseCompactComposerFooter,
-  shouldUseRestingComposerLayout,
 } from "./composerFooterLayout";
 
 describe("getRestingComposerImagePreviewCounts", () => {
@@ -71,58 +70,6 @@ describe("shouldUseCompactComposerPrimaryActions", () => {
         hasWideActions: true,
       }),
     ).toBe(false);
-  });
-});
-
-describe("shouldUseRestingComposerLayout", () => {
-  const resting = {
-    isExistingThread: true,
-    isMobileViewport: false,
-    isFocused: false,
-    isScrollCollapsed: false,
-    hasExpandedChrome: false,
-    collapseOnBlur: true,
-  };
-
-  it("uses the resting layout for an unfocused desktop composer", () => {
-    expect(shouldUseRestingComposerLayout(resting)).toBe(true);
-  });
-
-  it("rests an unfocused composer even when blur collapse is off", () => {
-    expect(shouldUseRestingComposerLayout({ ...resting, collapseOnBlur: false })).toBe(true);
-  });
-
-  it("rests a scroll-collapsed composer even while focused", () => {
-    expect(
-      shouldUseRestingComposerLayout({ ...resting, isFocused: true, isScrollCollapsed: true }),
-    ).toBe(true);
-  });
-
-  it("rests a scroll-collapsed composer regardless of the blur preference", () => {
-    expect(
-      shouldUseRestingComposerLayout({
-        ...resting,
-        isFocused: true,
-        isScrollCollapsed: true,
-        collapseOnBlur: false,
-      }),
-    ).toBe(true);
-  });
-
-  it("rests new-thread composers like open threads", () => {
-    expect(shouldUseRestingComposerLayout({ ...resting, isExistingThread: false })).toBe(true);
-  });
-
-  it("leaves responsive mobile on its existing collapse path", () => {
-    expect(shouldUseRestingComposerLayout({ ...resting, isMobileViewport: true })).toBe(false);
-  });
-
-  it("stays resting when focus is anywhere in the composer", () => {
-    expect(shouldUseRestingComposerLayout({ ...resting, isFocused: true })).toBe(true);
-  });
-
-  it("keeps drawers and composer-owned menus expanded", () => {
-    expect(shouldUseRestingComposerLayout({ ...resting, hasExpandedChrome: true })).toBe(false);
   });
 });
 

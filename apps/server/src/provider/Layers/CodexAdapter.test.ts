@@ -69,6 +69,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       status: "ready" as const,
       runtimeMode: this.options.runtimeMode,
       threadId: this.options.threadId,
+      resumeCursor: { threadId: "provider-thread-1" },
       cwd: this.options.cwd,
       ...(this.options.model ? { model: this.options.model } : {}),
       createdAt: this.now,
@@ -2021,7 +2022,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         requestId: ApprovalRequestId.make("req-main-1"),
         payload: {
           itemId: "item-2",
-          threadId: "thread-1",
+          threadId: "provider-thread-1",
           turnId: "turn-1",
           command: "git push",
           startedAtMs: 1_778_000_000_000,

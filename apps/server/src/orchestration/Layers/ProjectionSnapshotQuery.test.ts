@@ -2739,4 +2739,114 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
       }
     }),
   );
+
+  it.effect("keeps agent identity and settled status beyond the work-log window", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const threadId = ThreadId.make("thread-agent-retention");
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('project-agent-retention', 'Agents', '/tmp/agent-retention', '[]',
+          '2026-03-02T00:00:00.000Z', '2026-03-02T00:00:00.000Z')
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          created_at, updated_at
+        ) VALUES (${threadId}, 'project-agent-retention', 'Agents',
+          '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+          '2026-03-02T00:00:00.000Z', '2026-03-02T00:00:00.000Z')
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        ) VALUES
+          ('agent-retention-start', ${threadId}, NULL, 'info', 'task.started', 'Reviewer',
+            '{"taskId":"reviewer","agentKind":"agent","title":"Reviewer","taskType":"local_agent"}',
+            1, '2026-03-02T00:00:01.000Z'),
+          ('agent-retention-idle', ${threadId}, NULL, 'info', 'task.updated', 'Idle',
+            '{"taskId":"reviewer","agentKind":"agent","status":"idle"}',
+            2, '2026-03-02T00:00:02.000Z'),
+          ('agent-retention-metadata', ${threadId}, NULL, 'info', 'task.updated', 'Metadata',
+            '{"taskId":"reviewer","agentKind":"agent","model":"gpt-5-codex"}',
+            3, '2026-03-02T00:00:03.000Z')
+      `;
+      const independentPatches = [
+        {
+          id: "usage",
+          kind: "task.progress",
+          taskId: "reviewer",
+          usageSnapshot: true,
+          typedUsage: { totalTokens: 1234 },
+        },
+        {
+          id: "progress",
+          kind: "task.progress",
+          taskId: "reviewer",
+          summary: "Checking the latest change",
+        },
+        {
+          id: "prompt",
+          kind: "task.updated",
+          taskId: "reviewer",
+          prompt: "Review implementation",
+          promptId: "prompt-1",
+        },
+        { id: "title", kind: "task.updated", taskId: "reviewer", title: "Updated reviewer" },
+        { id: "second-start", kind: "task.started", taskId: "second", title: "Second reviewer" },
+        {
+          id: "second-progress",
+          kind: "task.progress",
+          taskId: "second",
+          summary: "Checking another change",
+        },
+        {
+          id: "second-usage",
+          kind: "task.progress",
+          taskId: "second",
+          usageSnapshot: true,
+          typedUsage: { totalTokens: 4321 },
+        },
+      ];
+      for (const [index, { id, kind, ...payload }] of independentPatches.entries()) {
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        const payloadJson = JSON.stringify({ ...payload, agentKind: "agent" });
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES (
+            ${id}, ${threadId}, NULL, 'info', ${kind}, ${id},
+            ${payloadJson}, ${index + 4}, '2026-03-02T00:00:04.000Z'
+          )
+        `;
+      }
+      yield* sql`
+        WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 510)
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        ) SELECT 'agent-retention-log-' || n, ${threadId}, NULL, 'info', 'tool.completed',
+          'Work log', '{}', n + 10, '2026-03-02T00:00:04.000Z' FROM counter
+      `;
+
+      const raw = yield* snapshotQuery.getThreadDetailById(threadId);
+      const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(threadId, { turnLimit: 2 });
+      assert.equal(raw._tag, "Some");
+      assert.equal(snapshot._tag, "Some");
+      if (raw._tag !== "Some" || snapshot._tag !== "Some") return;
+      for (const activities of [raw.value.activities, snapshot.value.thread.activities]) {
+        assert.equal(activities.filter((row) => row.kind === "tool.completed").length, 500);
+        assert.deepEqual(
+          activities.filter((row) => row.kind.startsWith("task.")).map((row) => row.id),
+          [
+            "agent-retention-start",
+            "agent-retention-idle",
+            "agent-retention-metadata",
+            ...independentPatches.map((row) => row.id),
+          ],
+        );
+      }
+    }),
+  );
 });
