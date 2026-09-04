@@ -81,7 +81,8 @@ machine.
   in the official controls.
 - **Native subagent & workflow observability** (2026-08-01 onward): the Agents panel in
   the web app (`apps/web/src/components/AgentsPanel.tsx`, opened from `ChatView`), the
-  spawn CTA row, sidebar liveness beyond the turn (now "Waiting on …", below), and the
+  spawn CTA row, the "Waiting on …" thread state (below; the liveness registry itself,
+  `ThreadBackgroundLiveness.ts`, is upstream's — the fork adds the wait view on top), and the
   client-runtime fold behind them (`packages/client-runtime/src/state/subagentRuntime.ts`,
   ~720 fork-only lines). Server side: Claude `SendMessage` is classified as a subagent
   instruction, Codex `collabAgent/*` events carry the child's prompt and `promptId`, and
