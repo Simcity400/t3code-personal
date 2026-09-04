@@ -2188,3 +2188,12 @@ describe("deriveSubagentReplies", () => {
     expect(replies[0]).toMatchObject({ agentId: "agent-1", text: "Acknowledged." });
   });
 });
+
+describe("deriveSubagentReplies identity", () => {
+  it("returns one shared empty value when there is nothing to report", () => {
+    const first = deriveSubagentReplies([], []);
+    const second = deriveSubagentReplies([], []);
+    expect(first).toHaveLength(0);
+    expect(second).toBe(first);
+  });
+});

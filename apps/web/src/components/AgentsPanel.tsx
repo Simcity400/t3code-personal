@@ -61,7 +61,11 @@ import {
   type MutableRefObject,
 } from "react";
 
-import { BackgroundTasksSection, WaitingOnStrip } from "~/components/agents/BackgroundTasksSection";
+import {
+  BackgroundTasksSection,
+  WaitingOnStrip,
+  subscribeElapsedTick,
+} from "~/components/agents/BackgroundTasksSection";
 import {
   deriveSubagentReplyMessages,
   deriveTimelineEntries,
@@ -152,8 +156,9 @@ function AgentElapsed({ agent }: { agent: RuntimeSubagent }) {
       }
     };
     update();
-    const id = setInterval(update, 1000);
-    return () => clearInterval(id);
+    // One shared 1s ticker for every live row (see BackgroundTasksSection):
+    // a timer per agent meant up to a hundred wakeups a second.
+    return subscribeElapsedTick(update);
   }, [live, startedAt]);
 
   if (!startedAt) {

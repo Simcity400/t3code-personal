@@ -81,7 +81,7 @@ const TASK_KIND_LABEL: Record<BackgroundTaskKind, string> = {
 const elapsedTickers = new Set<() => void>();
 let elapsedIntervalId: ReturnType<typeof setInterval> | null = null;
 
-function subscribeElapsedTick(tick: () => void): () => void {
+export function subscribeElapsedTick(tick: () => void): () => void {
   elapsedTickers.add(tick);
   if (elapsedIntervalId === null) {
     elapsedIntervalId = setInterval(() => {
