@@ -88,8 +88,8 @@ describe("shouldUseRestingComposerLayout", () => {
     expect(shouldUseRestingComposerLayout(resting)).toBe(true);
   });
 
-  it("keeps an unfocused composer expanded when blur collapse is off", () => {
-    expect(shouldUseRestingComposerLayout({ ...resting, collapseOnBlur: false })).toBe(false);
+  it("rests an unfocused composer even when blur collapse is off", () => {
+    expect(shouldUseRestingComposerLayout({ ...resting, collapseOnBlur: false })).toBe(true);
   });
 
   it("rests a scroll-collapsed composer even while focused", () => {
@@ -117,8 +117,8 @@ describe("shouldUseRestingComposerLayout", () => {
     expect(shouldUseRestingComposerLayout({ ...resting, isMobileViewport: true })).toBe(false);
   });
 
-  it("expands when focus is anywhere in the composer", () => {
-    expect(shouldUseRestingComposerLayout({ ...resting, isFocused: true })).toBe(false);
+  it("stays resting when focus is anywhere in the composer", () => {
+    expect(shouldUseRestingComposerLayout({ ...resting, isFocused: true })).toBe(true);
   });
 
   it("keeps drawers and composer-owned menus expanded", () => {
