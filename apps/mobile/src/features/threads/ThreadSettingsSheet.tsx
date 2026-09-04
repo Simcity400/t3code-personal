@@ -323,6 +323,7 @@ type ThreadSettingsSubmenuPage =
 type ThreadSettingsSessionProps = {
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
+  readonly providerDriver?: string | null;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly selectedModel: ModelSelection | null;
   readonly onSelectModel: (option: ModelOption) => void;
@@ -376,6 +377,7 @@ export function useExistingThreadSettingsRoutePresentation() {
 type ThreadSettingsSessionValue = {
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
+  readonly providerDriver?: string | null;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
@@ -501,6 +503,7 @@ function ThreadSettingsSessionProvider(
     () => ({
       environmentId: props.environmentId,
       providerInstanceId: props.providerInstanceId,
+      providerDriver: props.providerDriver,
       providerGroups: props.providerGroups,
       runtimeMode: props.runtimeMode,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
@@ -530,6 +533,7 @@ function ThreadSettingsSessionProvider(
       isApplied,
       isDisplayed,
       props.environmentId,
+      props.providerDriver,
       props.providerInstanceId,
       pendingModel,
       pressModel,
@@ -810,10 +814,17 @@ function ThreadSettingsMainContent(props: {
       providerSetupCandidates({
         providers: config?.providers ?? [],
         instanceId: session.providerInstanceId,
+        providerDriver: session.providerDriver,
         providerFilter: session.providerFilter,
         query: session.searchQuery,
       }),
-    [config?.providers, session.providerInstanceId, session.providerFilter, session.searchQuery],
+    [
+      config?.providers,
+      session.providerDriver,
+      session.providerInstanceId,
+      session.providerFilter,
+      session.searchQuery,
+    ],
   );
   const listItems = useMemo<ReadonlyArray<ThreadSettingsCatalogItem>>(
     () => [

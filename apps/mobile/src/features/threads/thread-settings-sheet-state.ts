@@ -2,18 +2,59 @@ import type { ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import { providerNeedsSetup } from "../settings/provider-setup-state";
 
+/** Match the server's continuation guard when switching an existing thread's account. */
+export function compatibleProviderInstanceIdsForThread(input: {
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly instanceId: ProviderInstanceId;
+  readonly driver?: string | null;
+}): ReadonlySet<string> {
+  const compatible = new Set<string>([input.instanceId]);
+  const lockedProvider = input.providers.find(
+    (provider) => provider.instanceId === input.instanceId,
+  );
+  const lockedDriver = lockedProvider?.driver ?? input.driver;
+  if (!lockedDriver) {
+    return compatible;
+  }
+
+  const continuationGroupKey = lockedProvider?.continuation?.groupKey;
+  if (lockedDriver === "antigravity" && continuationGroupKey === undefined) {
+    return compatible;
+  }
+
+  for (const provider of input.providers) {
+    if (
+      provider.driver === lockedDriver &&
+      (continuationGroupKey === undefined ||
+        provider.continuation?.groupKey === continuationGroupKey)
+    ) {
+      compatible.add(provider.instanceId);
+    }
+  }
+  return compatible;
+}
+
 /** Read setup choices from this environment, not the selectable model list. */
 export function providerSetupCandidates(input: {
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly instanceId?: ProviderInstanceId;
+  readonly providerDriver?: string | null;
   readonly providerFilter: string | null;
   readonly query: string;
 }): ReadonlyArray<ServerProvider> {
   const query = input.query.trim().toLocaleLowerCase();
+  const compatibleInstanceIds =
+    input.instanceId !== undefined
+      ? compatibleProviderInstanceIdsForThread({
+          providers: input.providers,
+          instanceId: input.instanceId,
+          driver: input.providerDriver,
+        })
+      : null;
   return input.providers.filter(
     (provider) =>
       providerNeedsSetup(provider) &&
-      (input.instanceId === undefined || provider.instanceId === input.instanceId) &&
+      (compatibleInstanceIds === null || compatibleInstanceIds.has(provider.instanceId)) &&
       (input.providerFilter === null || provider.instanceId === input.providerFilter) &&
       (query.length === 0 ||
         [provider.displayName ?? "", provider.driver, provider.instanceId].some((label) =>
