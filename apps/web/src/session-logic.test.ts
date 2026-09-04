@@ -900,6 +900,28 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("shows the provider reason from legacy runtime error activities", () => {
+    const reason = "You've hit your Codex usage limit. Try again later.";
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "runtime-error",
+        kind: "runtime.error",
+        summary: "Runtime error",
+        tone: "error",
+        payload: { message: reason },
+      }),
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        id: "runtime-error",
+        label: "Runtime error",
+        detail: reason,
+        tone: "error",
+      },
+    ]);
+  });
+
   it("keeps the latest task progress without emitting plan-update log entries", () => {
     const activities = [
       makeActivity({ id: "before", kind: "tool.completed", summary: "Read files", sequence: 0 }),

@@ -353,6 +353,33 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
+  it("shows the provider reason from legacy runtime error activities", () => {
+    const reason = "You've hit your Codex usage limit. Try again later.";
+    const thread = makeThread({
+      id: ThreadId.make("thread-runtime-error"),
+      projectId: ProjectId.make("project-1"),
+      title: "Runtime error",
+      activities: [
+        makeActivity({
+          id: EventId.make("runtime-error"),
+          kind: "runtime.error",
+          tone: "error",
+          summary: "Runtime error",
+          createdAt: "2026-09-01T00:00:00.000Z",
+          payload: { message: reason },
+        }),
+      ],
+    });
+
+    const [group] = buildThreadFeed(thread);
+    expect(group?.type).toBe("activity-group");
+    if (group?.type !== "activity-group") return;
+    expect(group.activities[0]).toMatchObject({
+      detail: reason,
+      status: "failure",
+    });
+  });
+
   it("keeps long Claude commands expandable without repeating them in full detail", () => {
     const command = `printf 'first line\nsecond line'\n&& printf done`;
     const thread = makeThread({

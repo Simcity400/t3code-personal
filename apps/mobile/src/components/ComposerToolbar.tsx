@@ -29,13 +29,16 @@ export function ComposerInlineControl(props: {
   readonly accessibilityLabel?: string;
   readonly disabled?: boolean;
   readonly emphasized?: boolean;
+  readonly height?: number;
   readonly icon?: ComponentProps<typeof SymbolView>["name"];
   readonly iconNode?: ReactNode;
   readonly label: string;
   readonly maxWidth?: number;
   readonly onPress?: () => void;
+  readonly secondaryLabel?: string;
   readonly selected?: boolean;
   readonly static?: boolean;
+  readonly trailingLabel?: string;
   readonly chevronDirection?: "down" | "right";
   readonly showChevron?: boolean;
 }) {
@@ -47,10 +50,14 @@ export function ComposerInlineControl(props: {
       accessibilityState={
         props.static ? undefined : { disabled: props.disabled, selected: props.selected }
       }
-      className="h-11 flex-row items-center gap-2 rounded-xl px-2 active:bg-subtle"
+      className="flex-row items-center gap-2 rounded-xl px-2 active:bg-subtle"
       disabled={props.disabled || props.static}
       onPress={props.onPress}
-      style={{ maxWidth: props.maxWidth ?? 190, opacity: props.disabled ? 0.45 : 1 }}
+      style={{
+        height: props.height ?? 44,
+        maxWidth: props.maxWidth ?? 190,
+        opacity: props.disabled ? 0.45 : 1,
+      }}
     >
       {props.iconNode ? (
         <View className="size-4 shrink-0 items-center justify-center">{props.iconNode}</View>
@@ -64,15 +71,27 @@ export function ComposerInlineControl(props: {
           type="monochrome"
         />
       ) : null}
-      <Text
-        className={cn(
-          "shrink text-sm font-t3-medium",
-          props.emphasized || props.selected ? "text-foreground" : "text-foreground-muted",
-        )}
-        numberOfLines={1}
-      >
-        {props.label}
-      </Text>
+      <View className="min-w-0 shrink">
+        <Text
+          className={cn(
+            "shrink text-sm font-t3-medium",
+            props.emphasized || props.selected ? "text-foreground" : "text-foreground-muted",
+          )}
+          numberOfLines={1}
+        >
+          {props.label}
+        </Text>
+        {props.secondaryLabel ? (
+          <Text className="text-2xs text-foreground-muted" numberOfLines={2}>
+            {props.secondaryLabel}
+          </Text>
+        ) : null}
+        {props.trailingLabel ? (
+          <Text className="text-2xs font-t3-medium text-foreground-muted" numberOfLines={1}>
+            {props.trailingLabel}
+          </Text>
+        ) : null}
+      </View>
       {props.showChevron === false ? null : (
         <SymbolView
           name={props.chevronDirection === "right" ? "chevron.right" : "chevron.down"}

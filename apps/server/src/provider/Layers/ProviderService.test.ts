@@ -127,27 +127,28 @@ function makeFakeCodexAdapter(
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
-  const startSession = vi.fn((input: ProviderSessionStartInput) =>
-    Effect.sync(() => {
-      const now = "2026-01-01T00:00:00.000Z";
-      const session: ProviderSession = {
-        provider,
-        ...(input.providerInstanceId !== undefined
-          ? { providerInstanceId: input.providerInstanceId }
-          : {}),
-        status: "ready",
-        runtimeMode: input.runtimeMode,
-        threadId: input.threadId,
-        resumeCursor: input.resumeCursor ?? {
-          opaque: `resume-${String(input.threadId)}`,
-        },
-        cwd: input.cwd ?? process.cwd(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      sessions.set(session.threadId, session);
-      return session;
-    }),
+  const startSession = vi.fn(
+    (input: ProviderSessionStartInput): Effect.Effect<ProviderSession, ProviderAdapterError> =>
+      Effect.sync(() => {
+        const now = "2026-01-01T00:00:00.000Z";
+        const session: ProviderSession = {
+          provider,
+          ...(input.providerInstanceId !== undefined
+            ? { providerInstanceId: input.providerInstanceId }
+            : {}),
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          threadId: input.threadId,
+          resumeCursor: input.resumeCursor ?? {
+            opaque: `resume-${String(input.threadId)}`,
+          },
+          cwd: input.cwd ?? process.cwd(),
+          createdAt: now,
+          updatedAt: now,
+        };
+        sessions.set(session.threadId, session);
+        return session;
+      }),
   );
 
   const sendTurn = vi.fn(
@@ -643,6 +644,107 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
 );
 
 const routing = makeProviderServiceLayer();
+
+const previousCodex = makeFakeCodexAdapter();
+const replacementCodex = makeFakeCodexAdapter();
+const replacementCodexInstanceId = ProviderInstanceId.make("codex-work");
+const sharedCodexRegistryBase = makeAdapterRegistryMock({
+  [CODEX_DRIVER]: previousCodex.adapter,
+});
+const startReplacementCodexSession = replacementCodex.startSession.getMockImplementation()!;
+let rejectNextReplacementCodexStart = false;
+replacementCodex.startSession.mockImplementation((input) =>
+  Effect.gen(function* () {
+    assert.equal(
+      yield* previousCodex.hasSession(input.threadId),
+      false,
+      `Thread '${input.threadId}' already has an active writer`,
+    );
+    if (rejectNextReplacementCodexStart) {
+      rejectNextReplacementCodexStart = false;
+      return yield* new ProviderAdapterRequestError({
+        provider: CODEX_DRIVER,
+        method: "startSession",
+        detail: "Replacement failed after acquiring the continuation",
+      });
+    }
+    return yield* startReplacementCodexSession(input);
+  }),
+);
+const sharedCodexRegistry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = {
+  ...sharedCodexRegistryBase,
+  getByInstance: (instanceId) =>
+    instanceId === replacementCodexInstanceId
+      ? Effect.succeed(replacementCodex.adapter)
+      : sharedCodexRegistryBase.getByInstance(instanceId),
+  getInstanceInfo: (instanceId) =>
+    instanceId === codexInstanceId || instanceId === replacementCodexInstanceId
+      ? Effect.succeed({
+          instanceId,
+          driverKind: CODEX_DRIVER,
+          displayName: undefined,
+          enabled: true,
+          continuationIdentity: {
+            driverKind: CODEX_DRIVER,
+            continuationKey: "codex:/Users/example/.codex",
+          },
+        })
+      : sharedCodexRegistryBase.getInstanceInfo(instanceId),
+  listInstances: () => Effect.succeed([codexInstanceId, replacementCodexInstanceId]),
+};
+const sharedCodexContinuation = makeProviderServiceLayer({ registry: sharedCodexRegistry });
+
+sharedCodexContinuation.layer("ProviderServiceLive shared continuation replacement", (it) => {
+  it.effect("stops the prior writer and preserves its cursor across a replacement retry", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-shared-codex-continuation");
+      const initial = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+
+      previousCodex.stopSession.mockClear();
+      replacementCodex.startSession.mockClear();
+
+      rejectNextReplacementCodexStart = true;
+      const failure = yield* Effect.flip(
+        provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: replacementCodexInstanceId,
+          threadId,
+          cwd: "/tmp/project",
+          resumeCursor: initial.resumeCursor,
+          runtimeMode: "full-access",
+        }),
+      );
+      assert.instanceOf(failure, ProviderAdapterRequestError);
+
+      const resumed = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: replacementCodexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(resumed.providerInstanceId, replacementCodexInstanceId);
+      assert.deepEqual(previousCodex.stopSession.mock.calls, [[threadId]]);
+      assert.equal(replacementCodex.startSession.mock.calls.length, 2);
+      assert.deepEqual(
+        replacementCodex.startSession.mock.calls[0]?.[0].resumeCursor,
+        initial.resumeCursor,
+      );
+      assert.deepEqual(
+        replacementCodex.startSession.mock.calls[1]?.[0].resumeCursor,
+        initial.resumeCursor,
+      );
+    }),
+  );
+});
 
 const antigravityDriver = ProviderDriverKind.make("antigravity");
 const replacementAntigravity = makeFakeCodexAdapter(antigravityDriver);

@@ -1092,7 +1092,9 @@ function toDerivedWorkLogEntry(
       payload.detail.length > 0
       ? stripTrailingExitCode(payload.detail).output
       : null
-    : extractToolDetail(payload, title ?? activity.summary);
+    : activity.kind === "runtime.error"
+      ? asTrimmedString(payload?.message)
+      : extractToolDetail(payload, title ?? activity.summary);
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,

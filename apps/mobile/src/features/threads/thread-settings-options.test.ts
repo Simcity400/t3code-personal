@@ -1,7 +1,11 @@
 import type { ProviderOptionDescriptor } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { selectableChoices } from "./thread-settings-options";
+import {
+  runtimeModeCompactLabel,
+  runtimeModeLabel,
+  selectableChoices,
+} from "./thread-settings-options";
 
 const effortDescriptor: Extract<ProviderOptionDescriptor, { type: "select" }> = {
   id: "effort",
@@ -25,5 +29,16 @@ describe("selectableChoices", () => {
       "medium",
       "high",
     ]);
+  });
+});
+
+describe("runtimeModeLabel", () => {
+  it("uses the same compact labels as the settings picker", () => {
+    expect(runtimeModeLabel("approval-required")).toBe("Supervised");
+    expect(runtimeModeLabel("full-access")).toBe("Full access");
+  });
+
+  it("shortens the longest runtime label for the composer", () => {
+    expect(runtimeModeCompactLabel("auto-accept-edits")).toBe("Auto edits");
   });
 });

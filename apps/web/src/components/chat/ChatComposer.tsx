@@ -5282,7 +5282,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   className={cn(
                     showMobilePendingAnswerActions && "max-sm:pb-11",
                     isComposerResting &&
-                      "max-h-50 min-h-8 overflow-y-auto whitespace-pre-wrap leading-8",
+                      "max-h-[min(20rem,40dvh)] min-h-8 overflow-y-auto whitespace-pre-wrap leading-8",
                   )}
                   placeholderClassName={cn(
                     isComposerResting &&

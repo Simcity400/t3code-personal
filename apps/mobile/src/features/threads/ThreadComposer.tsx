@@ -20,7 +20,14 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { ActivityIndicator, Platform, Pressable, View, type ViewStyle } from "react-native";
+import {
+  ActivityIndicator,
+  Platform,
+  Pressable,
+  useWindowDimensions,
+  View,
+  type ViewStyle,
+} from "react-native";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
 import {
   composerAttachmentUploadBlockReason,
@@ -67,7 +74,10 @@ import {
 } from "../../lib/modelOptions";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
-import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
+import {
+  composerProviderOptionLabels,
+  resolveProviderOptionDescriptors,
+} from "../../lib/providerOptions";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
 import {
@@ -80,7 +90,12 @@ import {
 } from "../voice-input/ComposerDictationControl";
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
-import { resolveComposerEditorHeight } from "./composerEditorHeight";
+import {
+  resolveComposerEditorHeight,
+  resolveComposerSettingsControlHeight,
+  resolveMobileComposerEditorMaxHeight,
+} from "./composerEditorHeight";
+import { runtimeModeCompactLabel, runtimeModeLabel } from "./thread-settings-options";
 import {
   type ExistingThreadSettingsRouteSession,
   useExistingThreadSettingsRoutePresentation,
@@ -102,8 +117,6 @@ export const COMPOSER_COLLAPSED_CHROME = 60;
  * Used by the parent to compute the larger feed bottom inset when the composer is focused.
  */
 export const COMPOSER_EXPANDED_CHROME = 156;
-
-const COMPOSER_EDITOR_MAX_HEIGHT = 160;
 
 export interface ThreadComposerProps {
   readonly draftMessage: string;
@@ -297,8 +310,11 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
 
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
   const navigation = useNavigation();
+  const { fontScale, height: windowHeight } = useWindowDimensions();
   const foregroundColor = useUniwindTheme()["--color-foreground"];
   const bodyText = useScaledTextRole("body");
+  const modelText = useScaledTextRole("footnote");
+  const settingsDetailText = useScaledTextRole("caption");
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
   const [isFocused, setIsFocused] = useState(false);
@@ -370,13 +386,19 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const isVoiceInputPresented = voicePresentation.statusLabel !== null;
   // An open draft stays visible; only a collapsed composer becomes a voice strip.
   const isExpanded = isFocused || settingsSheetPresentation.isActive;
+  const composerEditorMaxHeight = resolveMobileComposerEditorMaxHeight(windowHeight);
+  const composerSettingsControlHeight = resolveComposerSettingsControlHeight({
+    detailLineHeight: settingsDetailText.lineHeight,
+    fontScale,
+    modelLineHeight: modelText.lineHeight,
+  });
   // Fork: the composer opens at one line and grows with its text instead of
   // the fixed three-line box upstream ships.
   const { desiredHeight: desiredEditorHeight, height: editorHeight } = resolveComposerEditorHeight({
     lineHeight: bodyText.lineHeight,
     explicitLineCount: props.draftMessage.split("\n").length,
     measuredTextHeight: editorTextLayoutHeight,
-    maxHeight: COMPOSER_EDITOR_MAX_HEIGHT,
+    maxHeight: composerEditorMaxHeight,
   });
   const showsCompactDictation = isVoiceInputPresented && !isExpanded;
   const isToolbarVisible = isExpanded || isVoiceInputPresented;
@@ -527,6 +549,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       }),
     [currentModelOption?.capabilities, currentModelSelection.options],
   );
+  const currentModelLabel = currentModelOption?.label ?? currentModelSelection.model;
+  const providerSettingsSummary = useMemo(
+    () => composerProviderOptionLabels(providerOptionDescriptors).join(" · "),
+    [providerOptionDescriptors],
+  );
+  const currentRuntimeModeLabel = runtimeModeLabel(currentRuntimeMode);
+  const currentRuntimeModeCompactLabel = runtimeModeCompactLabel(currentRuntimeMode);
   const settingsOwnerId = composerOwnerKey;
   const settingsRouteSession = useMemo<ExistingThreadSettingsRouteSession>(
     () => ({
@@ -726,7 +755,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 onFocus={handleFocus}
                 onBlur={handleBlur}
                 onSubmit={handleSend}
-                scrollEnabled={isExpanded && desiredEditorHeight > COMPOSER_EDITOR_MAX_HEIGHT}
+                scrollEnabled={isExpanded && desiredEditorHeight > composerEditorMaxHeight}
                 // Android: collapsed single line centers natively (gravity) in
                 // a pill-height box matching the send button; iOS keeps insets.
                 singleLineCentered={!isExpanded}
@@ -735,7 +764,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   isExpanded
                     ? {
                         height: editorHeight,
-                        maxHeight: COMPOSER_EDITOR_MAX_HEIGHT,
+                        maxHeight: composerEditorMaxHeight,
                       }
                     : {
                         height: 36,
@@ -816,6 +845,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             }
           >
             <ComposerDictationToolbar
+              expanded={isExpanded && !isVoiceInputPresented}
+              expandedHeight={composerSettingsControlHeight}
               showsDictation={isVoiceInputPresented}
               visible={isToolbarVisible}
             >
@@ -846,16 +877,19 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       onPickMedia={props.onPickDraftMedia}
                       onPickFiles={props.onPickDraftFiles}
                     />
-                    <View className="min-w-0 shrink" style={{ maxWidth: 152 }}>
+                    <View className="min-w-0 shrink" style={{ maxWidth: 240 }}>
                       <ComposerInlineControl
-                        accessibilityLabel="Model and reasoning settings"
+                        accessibilityLabel={`Model and reasoning settings: ${currentModelLabel}, ${providerSettingsSummary ? `${providerSettingsSummary}, ` : ""}${currentRuntimeModeLabel}`}
                         emphasized
+                        height={composerSettingsControlHeight}
                         iconNode={
                           <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
                         }
-                        label={currentModelOption?.label ?? currentModelSelection.model}
-                        maxWidth={152}
+                        label={currentModelLabel}
+                        maxWidth={240}
                         onPress={openSettings}
+                        secondaryLabel={providerSettingsSummary || undefined}
+                        trailingLabel={`Approval: ${currentRuntimeModeCompactLabel}`}
                       />
                     </View>
                   </View>

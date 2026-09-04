@@ -18,6 +18,11 @@ provider health-check interval and update live while a turn runs. API-key accoun
 subscription windows and say so; that includes a Claude Code that reaches Anthropic through a proxy
 via `ANTHROPIC_AUTH_TOKEN`, since the CLI then treats itself as an API-key client.
 
+When a provider refuses a turn because a limit was reached, the transcript shows the reason the
+provider returned. If you have another compatible account configured for that provider, select it
+in the composer and send again; T3 Code releases the previous account's session before resuming the
+same conversation through the replacement.
+
 If you pool accounts behind a CLIProxyAPI hub, **Add CLIProxyAPI hub** on the Limits view shows
 every account the hub manages, each marked _via CLIProxyAPI_ so it is not mistaken for the provider
 signed in on this machine. Enter the hub's URL and management key; the key is stored on the server

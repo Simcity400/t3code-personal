@@ -39,6 +39,39 @@ export function providerOptionValueLabels(
   });
 }
 
+function providerOptionStatusLabel(descriptor: ProviderOptionDescriptor): string | null {
+  if (descriptor.type === "boolean") {
+    return `${descriptor.label} ${descriptor.currentValue ? "on" : "off"}`;
+  }
+  return getProviderOptionCurrentLabel(descriptor) ?? null;
+}
+
+/**
+ * Compact composer readout for the two settings users need before sending:
+ * reasoning/thinking quality and execution speed. Other provider metadata
+ * stays in the settings sheet so these values remain visible without ellipsis.
+ */
+export function composerProviderOptionLabels(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): ReadonlyArray<string> {
+  const reasoning = descriptors.find((descriptor) =>
+    /reason|effort|thinking/i.test(`${descriptor.id} ${descriptor.label}`),
+  );
+  const speed = descriptors.find((descriptor) =>
+    /fast|speed|tier/i.test(`${descriptor.id} ${descriptor.label}`),
+  );
+  const visibleDescriptors = [reasoning, speed].filter(
+    (descriptor, index, values): descriptor is ProviderOptionDescriptor =>
+      descriptor !== undefined && values.indexOf(descriptor) === index,
+  );
+  const fallbackDescriptors =
+    visibleDescriptors.length > 0 ? visibleDescriptors : descriptors.slice(0, 1);
+  return fallbackDescriptors.flatMap((descriptor) => {
+    const label = providerOptionStatusLabel(descriptor);
+    return label ? [label] : [];
+  });
+}
+
 /**
  * Applies one option change (by descriptor id) and returns the full selection
  * list to store on the model selection, or null when the change doesn't match
