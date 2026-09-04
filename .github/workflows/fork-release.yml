@@ -10,11 +10,15 @@ name: Fork Release
 
 # Every direct push to main publishes the personal Windows build so the one
 # installed app follows the same branch as mobile OTA and source checkouts.
-# workflow_dispatch remains available for a manual rebuild.
+# Pushes that only touch workflows or docs ship nothing new, so they do not
+# spend a build. workflow_dispatch remains available for a manual rebuild.
 on:
   push:
     branches:
       - main
+    paths-ignore:
+      - ".github/**"
+      - "**.md"
   workflow_call:
     inputs:
       ref:
@@ -38,8 +42,17 @@ jobs:
   #
   # Same rationale as upstream release.yml: node-pty has no Linux prebuilt,
   # and the Windows package bundles a Linux pty.node for the WSL backend.
+  #
+  # OFF by default to save Actions minutes (owner, 2026-09-04): this job only
+  # runs when the repository variable FORK_WSL_PTY is exactly "true". Without
+  # it the Windows build still publishes; only the packaged app's WSL terminal
+  # backend is left out. To turn it back on (no commit needed):
+  #   gh variable set FORK_WSL_PTY --body true -R Simcity400/t3code-personal
+  # or GitHub → Settings → Secrets and variables → Actions → Variables.
+  # To turn it off again: gh variable delete FORK_WSL_PTY -R Simcity400/t3code-personal
   build_wsl_node_pty:
     name: Build WSL node-pty (linux-x64)
+    if: ${{ vars.FORK_WSL_PTY == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -82,6 +95,9 @@ jobs:
   release:
     name: Build and release Windows x64
     needs: [build_wsl_node_pty]
+    # Run whether the WSL job ran (success) or was switched off (skipped);
+    # a WSL job that actually failed still blocks the release as before.
+    if: ${{ !cancelled() && (needs.build_wsl_node_pty.result == 'success' || needs.build_wsl_node_pty.result == 'skipped') }}
     runs-on: windows-2025
     timeout-minutes: 60
     env:
@@ -138,6 +154,7 @@ jobs:
         run: node scripts/update-release-package-versions.ts "${{ steps.release_meta.outputs.version }}"
 
       - name: Download WSL node-pty prebuild
+        if: ${{ needs.build_wsl_node_pty.result == 'success' }}
         uses: actions/download-artifact@v8
         with:
           name: wsl-node-pty-x64
@@ -146,12 +163,18 @@ jobs:
       - name: Build desktop artifact
         shell: bash
         run: |
+          # --wsl-prebuild only when the (optional) WSL job produced one; the
+          # build script otherwise warns and packages without the WSL backend.
+          wsl_args=()
+          if [[ -f "$GITHUB_WORKSPACE/wsl-prebuild/pty.node" ]]; then
+            wsl_args=(--wsl-prebuild "$GITHUB_WORKSPACE/wsl-prebuild/pty.node")
+          fi
           vp run dist:desktop:artifact \
             --platform win \
             --target nsis \
             --arch x64 \
             --build-version "${{ steps.release_meta.outputs.version }}" \
-            --wsl-prebuild "$GITHUB_WORKSPACE/wsl-prebuild/pty.node" \
+            "${wsl_args[@]}" \
             --verbose
 
       - name: Collect release assets
