@@ -155,7 +155,6 @@ import {
   shouldAnimateComposerRestingTransition,
   shouldUseCompactComposerPrimaryActions,
   shouldUseCompactComposerFooter,
-  shouldUseRestingComposerLayout,
 } from "../composerFooterLayout";
 import { measureRestingComposerControls } from "./restingComposerControlsMeasurement";
 import { observeResponsiveBreakpointFade, usePanelAnimationSettings } from "../../panelAnimations";
@@ -200,12 +199,6 @@ import {
   submitComposerDraft,
 } from "./composerSubmission";
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
-import {
-  createComposerScrollGestureState,
-  recordComposerScrollGestureEvent,
-  resetComposerScrollGesture,
-  suppressActiveComposerScrollGesture,
-} from "./composerScrollGesture";
 import { selectionHoldsComposerOpen } from "./composerSelectionHold";
 import { prepareVideoFirstFrame } from "../../lib/videoFirstFrame";
 
@@ -238,8 +231,6 @@ type ComposerCommandMenuPosition = {
   width: number;
 };
 
-const COMPOSER_SCROLL_COLLAPSE_THRESHOLD_PX = 24;
-const COMPOSER_SCROLL_GESTURE_RESET_MS = 120;
 const COMPOSER_RESTING_TRANSITION_DURATION_MS = 280;
 const COMPOSER_RESTING_TRANSITION_CLEANUP_BUFFER_MS = 50;
 const COMPOSER_RESTING_TRANSITION_EASING = "cubic-bezier(0.32, 0.72, 0, 1)";
@@ -1081,7 +1072,6 @@ export interface ChatComposerHandle {
   focusAtEnd: () => void;
   focusAt: (cursor: number) => void;
   /** Undo only a scroll-triggered collapse when the timeline returns to its live edge. */
-  restoreAfterTimelineReachedEnd: () => void;
   addDroppedFiles: (files: File[]) => void;
   insertTextAtEnd: (text: string, options?: { ensureLeadingBoundary?: boolean }) => boolean;
   citeAssistantText: (
@@ -1217,7 +1207,6 @@ export interface ChatComposerProps {
   restingControlsHaveLeadingContext: boolean;
   onRestingControlsVisibilityChange: (visible: boolean) => void;
   getTimelineScrollableNode: () => HTMLElement | null;
-  isTimelineAtLogicalEnd: () => boolean;
   onComposerOverlayHeightChange: (height: number) => void;
 
   // Refs the parent needs kept in sync
@@ -1320,7 +1309,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     restingControlsHaveLeadingContext,
     onRestingControlsVisibilityChange,
     getTimelineScrollableNode,
-    isTimelineAtLogicalEnd,
     onComposerOverlayHeightChange,
     promptRef,
     composerRef,
@@ -1755,7 +1743,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
-  const [isComposerScrollCollapsed, setIsComposerScrollCollapsed] = useState(false);
   const [composerSubmissionError, setComposerSubmissionError] = useState<string | null>(null);
   const [providerInputSubmissionError, setProviderInputSubmissionError] = useState<string | null>(
     null,
@@ -1792,10 +1779,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const mobileComposerExpandInFlightRef = useRef(false);
   const desktopOutsidePointerInFlightRef = useRef(false);
   const desktopOutsidePointerReleaseTimeoutRef = useRef<number | null>(null);
-  const composerScrollCollapseTimeoutRef = useRef<number | null>(null);
-  const composerScrollCollapseEligibleRef = useRef(false);
-  const windowRefocusInFlightRef = useRef(false);
-  const composerScrollGestureRef = useRef(createComposerScrollGestureState());
   const stashPulseKeyRef = useRef(0);
   const stashPulseTimeoutRef = useRef<number | null>(null);
   /**
@@ -2314,7 +2297,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setComposerCursor(collapseExpandedComposerCursor(promptRef.current, promptRef.current.length));
     setComposerTrigger(detectComposerTrigger(promptRef.current, promptRef.current.length));
     setIsDragOverComposer(false);
-    setIsComposerScrollCollapsed(false);
   }, [draftId, activeThreadId, promptRef]);
 
   // ------------------------------------------------------------------
@@ -2458,15 +2440,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Callbacks: prompt change
   // ------------------------------------------------------------------
-  const expandComposerForEditorChange = useCallback(() => {
-    // Editor changes win over the momentum tail of the active scroll gesture.
-    suppressActiveComposerScrollGesture(
-      composerScrollGestureRef.current,
-      window.performance.now(),
-      COMPOSER_SCROLL_GESTURE_RESET_MS,
-    );
-    setIsComposerScrollCollapsed(false);
-  }, []);
 
   const onPromptChange = useCallback(
     (
@@ -2476,7 +2449,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       cursorAdjacentToMention: boolean,
       terminalContextIds: string[],
     ) => {
-      expandComposerForEditorChange();
       if (activePendingProgress?.activeQuestion && pendingUserInputs.length > 0) {
         if (activePendingProgress.activeQuestion.allowCustomAnswer === false) return;
         setComposerCursor(nextCursor);
@@ -2507,7 +2479,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     },
     [
       activePendingProgress?.activeQuestion,
-      expandComposerForEditorChange,
       pendingUserInputs.length,
       onChangeActivePendingUserInputCustomAnswer,
       promptRef,
@@ -3521,40 +3492,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       steps={activeTaskSteps}
     />
   ) : null;
-  const hasImageAttachmentAttention = standaloneComposerImages.some((image) => {
-    const upload = uploadsByImageId[image.id];
-    const failedInCurrentEnvironment =
-      supportsAttachmentUploads &&
-      upload?.status === "failed" &&
-      upload.environmentId === environmentId;
-    // A failed upload remains actionable in the expanded attachment tray, but
-    // its collapsed thumbnail is enough to signal that the draft has images.
-    return nonPersistedComposerImageIdSet.has(image.id) && !failedInCurrentEnvironment;
-  });
-  // Banners and the tasks badge dock above the surface rather than inside
-  // it, so they do not hold the composer open; only surface-internal chrome
-  // does.
-  const composerHasExpandedChrome =
-    showComposerTopDrawer ||
-    isTasksDrawerOpen ||
-    composerMenuOpen ||
-    isStashMenuOpen ||
-    isDragOverComposer ||
-    isPreparingWorktree ||
-    noProviderAvailable ||
-    projectSelectionRequired ||
-    environmentUnavailable !== null ||
-    composerSubmissionError !== null ||
-    providerInputSubmissionError !== null ||
-    hasImageAttachmentAttention;
-  const isComposerResting = shouldUseRestingComposerLayout({
-    isExistingThread: routeKind === "server" && activeThreadId !== null,
-    isMobileViewport,
-    isFocused: isComposerFocused,
-    isScrollCollapsed: isComposerScrollCollapsed,
-    hasExpandedChrome: composerHasExpandedChrome,
-    collapseOnBlur: settings.composerCollapseOnBlur,
-  });
+  // Every web viewport uses the compact editor; text grows within its height limit.
+  const isComposerResting = true;
   // The relocated controls live in the context strip whenever the composer is
   // collapsed for any reason, the desktop resting layout or the phone
   // collapse. Both leave the footer unrendered, so the strip is the only place
@@ -3607,7 +3546,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 expandMobileComposer();
                 return;
               }
-              setIsComposerScrollCollapsed(false);
               setIsComposerFocused(true);
               scheduleComposerFocus();
             }}
@@ -3622,113 +3560,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     restingComposerControlsRef,
     onComposerOverlayHeightChange,
   );
-  const canTrackComposerScrollGesture =
-    routeKind === "server" && activeThreadId !== null && !isMobileViewport;
-  const canScrollCollapseComposer =
-    canTrackComposerScrollGesture &&
-    settings.composerCollapseOnScroll &&
-    !composerHasExpandedChrome &&
-    !showInlineTasksBadge;
-  // Scrolling only has something to collapse while the composer is expanded.
-  // With blur collapse off that includes an unfocused composer, so the wheel
-  // handler keys off this rather than editor focus.
-  composerScrollCollapseEligibleRef.current = canScrollCollapseComposer && !isComposerResting;
-
-  useEffect(() => {
-    if (!canScrollCollapseComposer) {
-      setIsComposerScrollCollapsed(false);
-    }
-  }, [canScrollCollapseComposer]);
-
-  // Returning to the window re-fires focus on the element that already held
-  // it. That focus arrives after the window's own event, so a window focus
-  // marks the frame in which it should be ignored by the form's capture.
-  useEffect(() => {
-    if (!isComposerScrollCollapsed) return;
-    let frame: number | null = null;
-    const onWindowFocus = () => {
-      windowRefocusInFlightRef.current = true;
-      if (frame !== null) window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        frame = null;
-        windowRefocusInFlightRef.current = false;
-      });
-    };
-    window.addEventListener("focus", onWindowFocus);
-    return () => {
-      window.removeEventListener("focus", onWindowFocus);
-      if (frame !== null) window.cancelAnimationFrame(frame);
-      windowRefocusInFlightRef.current = false;
-    };
-  }, [isComposerScrollCollapsed]);
-
-  useEffect(() => {
-    if (!canTrackComposerScrollGesture) return;
-
-    const finishScrollGesture = () => {
-      if (composerScrollCollapseTimeoutRef.current !== null) {
-        window.clearTimeout(composerScrollCollapseTimeoutRef.current);
-      }
-      composerScrollCollapseTimeoutRef.current = null;
-      resetComposerScrollGesture(composerScrollGestureRef.current);
-    };
-    const handleTimelineWheel = (event: WheelEvent) => {
-      if (event.ctrlKey || !(event.target instanceof Element)) {
-        return;
-      }
-
-      const scrollNode = getTimelineScrollableNode();
-      if (!scrollNode) return;
-      const targetsTimeline = scrollNode.contains(event.target);
-      if (!targetsTimeline && !composerScrollGestureRef.current.collapseSuppressed) return;
-
-      if (composerScrollCollapseTimeoutRef.current !== null) {
-        window.clearTimeout(composerScrollCollapseTimeoutRef.current);
-      }
-      composerScrollCollapseTimeoutRef.current = window.setTimeout(
-        finishScrollGesture,
-        COMPOSER_SCROLL_GESTURE_RESET_MS,
-      );
-
-      const canScrollInGestureDirection =
-        targetsTimeline &&
-        (event.deltaY < 0
-          ? scrollNode.scrollTop > 0
-          : scrollNode.scrollTop < scrollNode.scrollHeight - scrollNode.clientHeight);
-      const deltaPx =
-        Math.abs(event.deltaY) *
-        (event.deltaMode === WheelEvent.DOM_DELTA_LINE
-          ? 16
-          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-            ? scrollNode.clientHeight
-            : 1);
-      const shouldCollapse = recordComposerScrollGestureEvent(composerScrollGestureRef.current, {
-        now: window.performance.now(),
-        deltaPx,
-        collapseThresholdPx: COMPOSER_SCROLL_COLLAPSE_THRESHOLD_PX,
-        collapseEligible: targetsTimeline && composerScrollCollapseEligibleRef.current,
-        canScrollInGestureDirection,
-        scrollsTowardLogicalEnd: event.deltaY > 0 && isTimelineAtLogicalEnd(),
-      });
-      if (!shouldCollapse) {
-        return;
-      }
-
-      setIsComposerScrollCollapsed(true);
-    };
-
-    document.addEventListener("wheel", handleTimelineWheel, { capture: true, passive: true });
-    return () => {
-      document.removeEventListener("wheel", handleTimelineWheel, true);
-      finishScrollGesture();
-    };
-  }, [
-    activeThreadId,
-    canTrackComposerScrollGesture,
-    getTimelineScrollableNode,
-    isTimelineAtLogicalEnd,
-  ]);
-
   const restingHiddenBlockCount = composerControlsInStrip ? restingControlsHiddenBlockCount : 0;
   const composerControlsCompact = !composerControlsInStrip && isComposerFooterCompact;
   const restingBlockDefs = [
@@ -4430,9 +4261,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       focusAt: (cursor: number) => {
         composerEditorRef.current?.focusAt(cursor);
       },
-      restoreAfterTimelineReachedEnd: () => {
-        setIsComposerScrollCollapsed(false);
-      },
       addDroppedFiles: (files: File[]) => {
         void addComposerAttachments(files);
         focusComposer();
@@ -4592,12 +4420,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         );
         if (isInteractive) return;
 
-        setIsComposerScrollCollapsed(false);
         if (isComposerResting && !target.closest('[data-testid="composer-editor"]')) {
-          // Clicking resting-surface padding would otherwise blur the still
-          // focused editor after pointerdown: expansion starts, the blur check
-          // runs, and it immediately collapses again. Treat that padding like
-          // the editor without stealing native caret placement from text.
+          // Keep clicks on the compact surface padding focused on the editor.
           event.preventDefault();
           setIsComposerFocused(true);
           scheduleComposerFocus();
@@ -4610,12 +4434,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
         if (isInsideCollapsedComposerControls(activeElement)) {
           return;
-        }
-        // Focus returning from another window or tab lands on the element
-        // that already held it, which is not a request to expand a
-        // scroll-collapsed composer.
-        if (!windowRefocusInFlightRef.current) {
-          setIsComposerScrollCollapsed(false);
         }
         if (composerBlurFrameRef.current !== null) {
           window.cancelAnimationFrame(composerBlurFrameRef.current);
@@ -4855,7 +4673,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   onPointerDown={(event) => event.preventDefault()}
                   onClick={isChoiceOnlyPendingQuestion ? undefined : expandMobileComposer}
                   disabled={isChoiceOnlyPendingQuestion}
-                  aria-label="Expand composer"
+                  aria-label="Write a message"
                 >
                   {activePendingProgress
                     ? isChoiceOnlyPendingQuestion
@@ -4994,113 +4812,108 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               {!isComposerCollapsedMobile &&
                 !isComposerApprovalState &&
                 pendingUserInputs.length === 0 &&
-                (composerVideos.length > 0 ||
-                  (!isComposerResting && standaloneComposerImages.length > 0)) && (
+                (composerVideos.length > 0 || standaloneComposerImages.length > 0) && (
                   <div className="mb-3 flex flex-wrap gap-2">
-                    {!isComposerResting &&
-                      standaloneComposerImages.map((image) => {
-                        const upload = supportsAttachmentUploads
-                          ? uploadsByImageId[image.id]
-                          : undefined;
-                        return (
-                          <div
-                            key={image.id}
-                            data-chat-composer-expanded-image="true"
-                            className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
-                          >
-                            {image.previewUrl ? (
-                              <button
-                                type="button"
-                                className="h-full w-full cursor-zoom-in"
-                                aria-label={`Preview ${image.name}`}
-                                onClick={() => {
-                                  const preview = buildExpandedImagePreview(
-                                    composerImages,
-                                    image.id,
-                                  );
-                                  if (!preview) return;
-                                  onExpandImage(preview);
-                                }}
-                              >
-                                <img
-                                  src={image.previewUrl}
-                                  alt={image.name}
-                                  className="h-full w-full object-cover"
-                                />
-                              </button>
-                            ) : (
-                              <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-secondary-label">
-                                {image.name}
-                              </div>
-                            )}
-                            {nonPersistedComposerImageIdSet.has(image.id) && (
-                              <Tooltip>
-                                <TooltipTrigger
-                                  render={
-                                    <span
-                                      role="img"
-                                      aria-label="Draft attachment may not persist"
-                                      className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
-                                    >
-                                      <CircleAlertIcon className="size-3" />
-                                    </span>
-                                  }
-                                />
-                                <TooltipPopup
-                                  side="top"
-                                  className="max-w-64 whitespace-normal leading-tight"
-                                >
-                                  Draft attachment could not be saved locally and may be lost on
-                                  navigation.
-                                </TooltipPopup>
-                              </Tooltip>
-                            )}
-                            {upload?.status === "uploading" && (
-                              <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-background/85 px-1 text-center text-[10px] text-foreground">
-                                {formatAttachmentUploadProgress(upload.progress)}
-                              </span>
-                            )}
-                            {upload?.status === "failed" && (
-                              <Tooltip>
-                                <TooltipTrigger
-                                  render={
-                                    <Button
-                                      variant="ghost"
-                                      size="icon-xs"
-                                      className="absolute bottom-1 left-1 bg-background/85 hover:bg-background/95"
-                                      onClick={() =>
-                                        retryAttachmentUpload({
-                                          environmentId,
-                                          image,
-                                          draftTarget: composerDraftTarget,
-                                        })
-                                      }
-                                      aria-label={`Retry upload for ${image.name}`}
-                                    />
-                                  }
-                                >
-                                  <RotateCcwIcon />
-                                </TooltipTrigger>
-                                <TooltipPopup
-                                  side="top"
-                                  className="max-w-64 whitespace-normal leading-tight"
-                                >
-                                  {upload.reason}
-                                </TooltipPopup>
-                              </Tooltip>
-                            )}
-                            <Button
-                              variant="ghost"
-                              size="icon-xs"
-                              className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
-                              onClick={() => removeComposerImage(image.id)}
-                              aria-label={`Remove ${image.name}`}
+                    {standaloneComposerImages.map((image) => {
+                      const upload = supportsAttachmentUploads
+                        ? uploadsByImageId[image.id]
+                        : undefined;
+                      return (
+                        <div
+                          key={image.id}
+                          data-chat-composer-expanded-image="true"
+                          className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
+                        >
+                          {image.previewUrl ? (
+                            <button
+                              type="button"
+                              className="h-full w-full cursor-zoom-in"
+                              aria-label={`Preview ${image.name}`}
+                              onClick={() => {
+                                const preview = buildExpandedImagePreview(composerImages, image.id);
+                                if (!preview) return;
+                                onExpandImage(preview);
+                              }}
                             >
-                              <XIcon />
-                            </Button>
-                          </div>
-                        );
-                      })}
+                              <img
+                                src={image.previewUrl}
+                                alt={image.name}
+                                className="h-full w-full object-cover"
+                              />
+                            </button>
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-secondary-label">
+                              {image.name}
+                            </div>
+                          )}
+                          {nonPersistedComposerImageIdSet.has(image.id) && (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <span
+                                    role="img"
+                                    aria-label="Draft attachment may not persist"
+                                    className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
+                                  >
+                                    <CircleAlertIcon className="size-3" />
+                                  </span>
+                                }
+                              />
+                              <TooltipPopup
+                                side="top"
+                                className="max-w-64 whitespace-normal leading-tight"
+                              >
+                                Draft attachment could not be saved locally and may be lost on
+                                navigation.
+                              </TooltipPopup>
+                            </Tooltip>
+                          )}
+                          {upload?.status === "uploading" && (
+                            <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-background/85 px-1 text-center text-[10px] text-foreground">
+                              {formatAttachmentUploadProgress(upload.progress)}
+                            </span>
+                          )}
+                          {upload?.status === "failed" && (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-xs"
+                                    className="absolute bottom-1 left-1 bg-background/85 hover:bg-background/95"
+                                    onClick={() =>
+                                      retryAttachmentUpload({
+                                        environmentId,
+                                        image,
+                                        draftTarget: composerDraftTarget,
+                                      })
+                                    }
+                                    aria-label={`Retry upload for ${image.name}`}
+                                  />
+                                }
+                              >
+                                <RotateCcwIcon />
+                              </TooltipTrigger>
+                              <TooltipPopup
+                                side="top"
+                                className="max-w-64 whitespace-normal leading-tight"
+                              >
+                                {upload.reason}
+                              </TooltipPopup>
+                            </Tooltip>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
+                            onClick={() => removeComposerImage(image.id)}
+                            aria-label={`Remove ${image.name}`}
+                          >
+                            <XIcon />
+                          </Button>
+                        </div>
+                      );
+                    })}
                     {composerVideos.map((file) => {
                       const fileCanUpload =
                         supportsAttachmentUploads &&
@@ -5290,7 +5103,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   )}
                   onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                   onChange={onPromptChange}
-                  onVisibleSelectionChange={expandComposerForEditorChange}
                   onCommandKeyDown={onComposerCommandKey}
                   onPageScrollKeyDown={onPageScrollKeyDown}
                   onPageScrollKeyUp={onPageScrollKeyUp}
@@ -5322,7 +5134,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     isChoiceOnlyPendingQuestion
                   }
                 />
-                {isComposerResting ? collapsedComposerImagePreviews : null}
                 {showMobilePendingAnswerActions ? (
                   <div
                     data-chat-composer-mobile-pending-actions="true"

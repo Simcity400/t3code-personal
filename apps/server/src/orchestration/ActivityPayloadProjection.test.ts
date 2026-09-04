@@ -23,6 +23,35 @@ function activity(payload: Record<string, unknown>): OrchestrationThreadActivity
  * If slimming ever moves to an allowlist over the whole payload, these
  * assertions are the tripwire.
  */
+it("retains nested Codex instructions from direct and wrapped tool envelopes", () => {
+  const item = {
+    type: "collabAgentToolCall",
+    id: "nested-spawn",
+    tool: "spawnAgent",
+    prompt: "Review nested work",
+    receiverThreadIds: ["grandchild"],
+    agentsStates: { grandchild: { status: "running" } },
+  };
+  for (const data of [item, { item, turnId: "provider-turn" }]) {
+    const projected = projectActivityPayload(
+      activity({ itemType: "collab_agent_tool_call", agentId: "child", data }),
+    );
+    expect(projected.payload).toEqual({
+      itemType: "collab_agent_tool_call",
+      agentId: "child",
+      data: {
+        item: {
+          type: item.type,
+          id: item.id,
+          tool: item.tool,
+          prompt: item.prompt,
+          receiverThreadIds: item.receiverThreadIds,
+        },
+      },
+    });
+    expect(projectActivityPayload(projected)).toEqual(projected);
+  }
+});
 describe("projectActivityPayload", () => {
   it("preserves tool attribution (agentId/parentToolUseId) through data slimming", () => {
     const projected = projectActivityPayload(

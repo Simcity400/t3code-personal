@@ -1639,7 +1639,6 @@ function ChatViewContent(props: ChatViewProps) {
   const composerOverlayHeightRef = useRef(0);
   const [scrollToEndClearance, setScrollToEndClearance] = useState(0);
   const isAtEndRef = useRef(true);
-  const isTimelineAtLogicalEnd = useCallback(() => isAtEndRef.current, []);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
@@ -4757,7 +4756,6 @@ function ChatViewContent(props: ChatViewProps) {
           if (event.deltaY > 0) {
             timelineScrollIntentRef.current = "toward-end";
             if (isAtEndRef.current) {
-              composerRef.current?.restoreAfterTimelineReachedEnd();
             }
           } else if (event.deltaY < 0) {
             timelineScrollIntentRef.current = "away-from-end";
@@ -4904,7 +4902,6 @@ function ChatViewContent(props: ChatViewProps) {
     isAtEndRef.current = isAtEnd;
     if (isAtEnd) {
       if (timelineScrollIntentRef.current === "toward-end") {
-        composerRef.current?.restoreAfterTimelineReachedEnd();
       }
       timelineScrollModeRef.current = "following-end";
       liveFollowUserScrollGenerationRef.current = anchorUserScrollGenerationRef.current;
@@ -8138,7 +8135,7 @@ function ChatViewContent(props: ChatViewProps) {
             </div>
           </div>
         ) : null}
-        {!isUnpromotedSideChat && attachedSideChats.length > 0 ? (
+        {attachedSideChats.length > 0 ? (
           <div className="flex items-center gap-2 overflow-x-auto border-b border-border/60 bg-muted/25 px-4 py-2 text-sm">
             <span className="shrink-0 text-muted-foreground">Side chats</span>
             {attachedSideChats.map((sideChat) => (
@@ -8255,7 +8252,6 @@ function ChatViewContent(props: ChatViewProps) {
                     aria-label="Scroll to end"
                     onPointerDown={(event) => event.preventDefault()}
                     onClick={() => {
-                      composerRef.current?.restoreAfterTimelineReachedEnd();
                       scrollToEnd(true);
                     }}
                     className="pointer-events-auto gap-1.5 rounded-full px-3 text-muted-foreground hover:text-foreground"
@@ -8381,7 +8377,6 @@ function ChatViewContent(props: ChatViewProps) {
                             }
                             onRestingControlsVisibilityChange={setRestingComposerControlsVisible}
                             getTimelineScrollableNode={getTimelineScrollableNode}
-                            isTimelineAtLogicalEnd={isTimelineAtLogicalEnd}
                             onComposerOverlayHeightChange={publishComposerOverlayHeight}
                             promptRef={promptRef}
                             composerImagesRef={composerImagesRef}

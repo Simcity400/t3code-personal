@@ -48,3 +48,12 @@ After installing or changing the Uniwind patch, restart Metro once with
 `vp run dev:client:reset` from `apps/mobile`. pnpm gives patched packages new
 filesystem paths, and cached transforms can otherwise retain references to the
 previous package. Ordinary development starts should retain the transform cache.
+
+## Personal preview runtime compatibility
+
+Personal preview and production builds use the Expo fingerprint runtime policy. The personal
+iPhone workflow uses Expo?s continuous deployment action to locate a compatible binary or build
+a new one before updating its branch. A native dependency, plugin, entitlement, or native source
+change requires installing the resulting preview binary. JavaScript updates must never retain an
+arbitrary runtime identifier across incompatible native changes. Development uses the app version
+policy to avoid fingerprint work during Metro launches.

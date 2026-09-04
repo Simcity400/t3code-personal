@@ -342,6 +342,25 @@ synchronization.
 3. [`CheckpointReactor`][checkpoint] captures workspace checkpoints on turn start and completion, and
    performs reverts.
 
+### Child ownership and continuation
+
+Codex registration accepts both native child announcements and collaboration-tool receivers.
+Receivers from the root or an already registered child enter the same child registry before
+message routing. The root ID is excluded from child registration and receiver-turn suppression.
+Parent approvals compare against the native root ID, not T3's independently generated thread ID.
+OpenCode child status, errors, and titles update child tasks without settling or renaming the parent.
+
+T3 retains its own transcript during Codex resume and fork. Those requests use the raw transport
+with `excludeTurns: true` and decode their responses with the generated schemas, because the
+current generated request encoder removes that compatibility flag. Historical prompt recovery
+remembers dispatch identities per child, so repeated snapshots do not emit old prompts again.
+
+Thread detail snapshots and the in-memory projector retain bounded agent lifecycle anchors
+outside the 500-row work-log window: up to 100 identities, their initial row, and the latest row
+per lifecycle kind and populated payload field. Independent patches preserve the latest status,
+usage snapshot, progress, prompt and metadata. Only the initial and latest prompt anchors are
+retained outside that window; this is not an unlimited historical transcript store.
+
 ### Buffered assistant delivery
 
 A thread in `buffered` assistant delivery mode accumulates assistant text instead of streaming each
