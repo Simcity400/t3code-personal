@@ -51,17 +51,14 @@ On web and desktop, HEIC and HEIF photos are automatically converted to JPEG whe
 the composer or paste them into a message. On iOS, selecting them from **Photo Library** also
 converts them to JPEG. The 10 MB image limit applies to the converted photo.
 
-On web and desktop, the composer uses the same single-line resting state on new and existing
-threads when the composer loses focus. At wider sizes, scrolling the conversation also rests a focused composer,
-except when scrolling toward the end while already there. When the thread-context strip has room,
-the model and mode controls stay available beside the thread context; otherwise they return when the
-composer is focused. Focus the composer or start typing to expand it again. **Settings → General → Collapse composer** chooses which triggers rest it:
-**On unfocus**, **On scroll**, both, or neither. With neither selected the composer stays expanded.
+On web and desktop, the input stays compact on new and existing threads, including at phone-sized
+window widths. Focusing, typing, scrolling, and answering a question do not switch it to an expanded
+layout. Longer text grows within the editor's height limit. Model and mode controls appear in the
+thread-context strip, with additional controls in its overflow menu.
 
-At phone-sized web or desktop window widths, existing threads animate between their compact and
-expanded layouts. Up to three image attachments remain visible in either resting layout, followed
-by a count when more are attached. At wider sizes, videos, files, and other draft context remain
-visible at their natural height; the phone-sized compact row reveals those details when expanded.
+Questions and task drawers appear above the input. Image, video, and file attachments remain
+accessible without changing the editor layout. The phone-sized collapsed row shows up to three
+image previews and a count for additional images; tap it to edit the draft and manage attachments.
 
 On mobile, the model picker shows each OpenCode model's upstream provider, such as Anthropic,
 GitHub Copilot, or OpenCode Zen, beneath its name. Search by that provider name to narrow the list

@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
@@ -50,6 +51,18 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   const installSteps: string[] = [];
   const resourcesPath = options.resourcesPath ?? "/missing/resources";
   const mockUpdates = options.mockUpdates === false ? "false" : "true";
+  const configLayer = Layer.unwrap(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-desktop-updates-" });
+      return DesktopConfig.layerTest({
+        T3CODE_HOME: home,
+        T3CODE_DESKTOP_MOCK_UPDATES: mockUpdates,
+        T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
+        ...options.env,
+      });
+    }),
+  ).pipe(Layer.provide(NodeServices.layer));
 
   const addListener = (eventName: string, listener: (...args: readonly unknown[]) => void) => {
     const eventListeners = listeners.get(eventName) ?? new Set();
@@ -163,19 +176,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     isPackaged: true,
     resourcesPath,
     runningUnderArm64Translation: false,
-  }).pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        NodeServices.layer,
-        DesktopConfig.layerTest({
-          T3CODE_HOME: `/tmp/t3-desktop-updates-test-${process.pid}`,
-          T3CODE_DESKTOP_MOCK_UPDATES: mockUpdates,
-          T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
-          ...options.env,
-        }),
-      ),
-    ),
-  );
+  }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, configLayer)));
 
   let testSettings: DesktopAppSettings.DesktopSettings = {
     ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
@@ -219,14 +220,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     Layer.provideMerge(backendLayer),
     Layer.provideMerge(DesktopState.layer),
     Layer.provideMerge(settingsLayer),
-    Layer.provideMerge(
-      DesktopConfig.layerTest({
-        T3CODE_HOME: `/tmp/t3-desktop-updates-test-${process.pid}`,
-        T3CODE_DESKTOP_MOCK_UPDATES: mockUpdates,
-        T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
-        ...options.env,
-      }),
-    ),
+    Layer.provideMerge(configLayer),
     Layer.provideMerge(environmentLayer),
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(credentialsLayer),

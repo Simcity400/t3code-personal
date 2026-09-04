@@ -4,6 +4,7 @@ import { it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -5250,6 +5251,90 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       if (completed?.type === "item.completed") {
         NodeAssert.equal(completed.payload.detail, "A BBonus");
       }
+    }),
+  );
+
+  it.effect("keeps child status, errors and titles out of the parent lifecycle", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("child-lifecycle-isolation");
+      const root = "http://127.0.0.1:9999/session";
+      const child = "child-lifecycle";
+      const gate = promiseWithResolvers<unknown>();
+      const observed = yield* Deferred.make<void>();
+      const events: Array<ProviderRuntimeEvent> = [];
+      runtimeMock.state.subscribedEvents = [
+        gate.promise,
+        { type: "session.status", properties: { sessionID: child, status: { type: "busy" } } },
+        { type: "session.status", properties: { sessionID: child, status: { type: "idle" } } },
+        {
+          type: "session.error",
+          properties: {
+            sessionID: child,
+            error: { name: "UnknownError", data: { message: "Child failed" } },
+          },
+        },
+        {
+          type: "session.updated",
+          properties: { info: { id: child, parentID: root, title: "Child title" } },
+        },
+        { type: "session.updated", properties: { info: { id: root, title: "Parent barrier" } } },
+      ];
+      const collector = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.gen(function* () {
+          if (event.threadId !== threadId) return;
+          events.push(event);
+          if (event.type === "thread.metadata.updated" && event.payload.name === "Parent barrier")
+            yield* Deferred.succeed(observed, undefined);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Keep working",
+        modelSelection: { instanceId: ProviderInstanceId.make("opencode"), model: "openai/gpt-5" },
+      });
+      gate.resolve({
+        type: "session.created",
+        properties: { info: { id: child, parentID: root, title: "Child" } },
+      });
+      yield* Deferred.await(observed);
+      const session = (yield* adapter.listSessions()).find(
+        (session) => session.threadId === threadId,
+      );
+      NodeAssert.equal(session?.activeTurnId, turn.turnId);
+      NodeAssert.equal(session?.status, "running");
+      NodeAssert.deepEqual(
+        events.filter((event) => event.type === "turn.completed" || event.type === "runtime.error"),
+        [],
+      );
+      NodeAssert.deepEqual(
+        events
+          .filter((event) => event.type === "thread.metadata.updated")
+          .map((event) => event.payload.name),
+        ["Parent barrier"],
+      );
+      NodeAssert.ok(
+        events.some(
+          (event) =>
+            event.type === "task.updated" &&
+            event.payload.taskId === child &&
+            event.payload.status === "idle",
+        ),
+      );
+      NodeAssert.ok(
+        events.some(
+          (event) =>
+            event.type === "task.updated" &&
+            event.payload.taskId === child &&
+            event.payload.status === "failed",
+        ),
+      );
+      yield* Fiber.interrupt(collector);
     }),
   );
 

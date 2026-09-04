@@ -17,6 +17,51 @@ function line(payload: unknown, type: "response_item" | "event_msg"): string {
   return JSON.stringify({ type, payload });
 }
 
+it("pairs repeated early activity only once when task paths are reused", async () => {
+  const activity = (id: string) =>
+    line(
+      {
+        type: "sub_agent_activity",
+        agent_thread_id: id,
+        agent_path: "/root/reviewer",
+        kind: "started",
+      },
+      "event_msg",
+    );
+  const spawn = (id: string, message: string) =>
+    line(
+      {
+        type: "function_call",
+        name: "spawn_agent",
+        call_id: id,
+        arguments: JSON.stringify({ message }),
+      },
+      "response_item",
+    );
+  const output = (id: string) =>
+    line(
+      {
+        type: "function_call_output",
+        call_id: id,
+        output: JSON.stringify({ task_name: "/root/reviewer" }),
+      },
+      "response_item",
+    );
+  const rows = [
+    activity("child-1"),
+    activity("child-1"),
+    spawn("call-1", "First"),
+    output("call-1"),
+    spawn("call-2", "Second"),
+    output("call-2"),
+    activity("child-2"),
+  ];
+  NodeFS.writeFileSync(fixturePath, rows.join("\n") + "\n", "utf8");
+  expect((await scanNativeCollabPromptRollout(fixturePath))?.links).toEqual([
+    { receiverThreadId: "child-1", prompt: "First" },
+    { receiverThreadId: "child-2", prompt: "Second" },
+  ]);
+});
 describe("native Codex collaboration prompt history", () => {
   it("correlates the exact spawn message with the child activity", async () => {
     const rows = [
