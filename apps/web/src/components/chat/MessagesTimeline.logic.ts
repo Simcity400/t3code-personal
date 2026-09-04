@@ -50,6 +50,13 @@ export function workEntryDisplayLabel(entry: WorkLogEntry, workspaceRoot: string
   const toolPresentation = resolveWorkEntryToolPresentation(entry);
   if (toolPresentation) return toolPresentation.displayName;
   if (entry.command) return entry.command;
+  // Question rows keep their own label; the detail is the full Q/A body.
+  if (
+    entry.sourceActivityKind === "user-input.requested" ||
+    entry.sourceActivityKind === "user-input.resolved"
+  ) {
+    return entry.label;
+  }
   if (entry.detail) return entry.detail;
   const [firstPath] = entry.changedFiles ?? [];
   if (firstPath) {
