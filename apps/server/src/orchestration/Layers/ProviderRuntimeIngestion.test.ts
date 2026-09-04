@@ -752,6 +752,82 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
+  it("settles the session when a provider reports only turn.aborted after an interrupt", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-aborted-only"),
+      provider: ProviderDriverKind.make("opencode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-aborted-only"),
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-aborted-only",
+      10_000,
+    );
+
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-turn-aborted-only"),
+      provider: ProviderDriverKind.make("opencode"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-aborted-only"),
+      payload: { reason: "Interrupted by user." },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.status === "ready" && thread.session?.activeTurnId === null,
+      10_000,
+    );
+  });
+
+  it("ignores turn.aborted for a superseded turn while a newer turn is active", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-aborted-stale"),
+      provider: ProviderDriverKind.make("opencode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-aborted-stale-new"),
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-aborted-stale-new",
+      10_000,
+    );
+
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-turn-aborted-stale"),
+      provider: ProviderDriverKind.make("opencode"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-aborted-stale-old"),
+      payload: { reason: "Interrupted by user." },
+    });
+
+    await harness.drain();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnId).toBe("turn-aborted-stale-new");
+  });
+
   it("accepts claude turn lifecycle when seeded thread id is a synthetic placeholder", async () => {
     const harness = await createHarness();
     const seededAt = "2026-01-01T00:00:00.000Z";
