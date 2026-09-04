@@ -1,10 +1,11 @@
 name: Fork Release
 
-# Fork-only pipeline: builds an unsigned Windows installer and publishes it as
-# a GitHub prerelease on this
-# repository. Packaged apps point their electron-updater feed here
-# (GITHUB_REPOSITORY at build time), so the in-app update button picks these
-# releases up. Kept separate from upstream's release.yml to avoid merge
+# Fork-only pipeline: builds unsigned Windows installers (x64 and arm64) and
+# publishes them as one GitHub prerelease on this repository. Packaged apps
+# point their electron-updater feed here (GITHUB_REPOSITORY at build time), so
+# the in-app update button picks these releases up; the merged update manifest
+# lists both installers and electron-updater picks the one matching the
+# machine's CPU. Kept separate from upstream's release.yml to avoid merge
 # conflicts; that workflow needs T3's own secrets and runners and cannot run
 # on this fork.
 
@@ -92,14 +93,31 @@ jobs:
           path: wsl-prebuild/pty.node
           if-no-files-found: error
 
-  release:
-    name: Build and release Windows x64
+  # One leg per CPU. Both run on the x64 runner: the build script cross-builds
+  # arm64 there (MSVC ARM64 toolset + Spectre libs, Rust aarch64 target, the
+  # node-pty win32-arm64 prebuild). The arm64 leg never blocks the x64 release
+  # while it beds in — if it fails, the release ships x64 only.
+  build:
+    name: Build Windows ${{ matrix.arch }}
     needs: [build_wsl_node_pty]
     # Run whether the WSL job ran (success) or was switched off (skipped);
     # a WSL job that actually failed still blocks the release as before.
     if: ${{ !cancelled() && (needs.build_wsl_node_pty.result == 'success' || needs.build_wsl_node_pty.result == 'skipped') }}
     runs-on: windows-2025
     timeout-minutes: 60
+    continue-on-error: ${{ matrix.arch == 'arm64' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            rust_target: x86_64-pc-windows-msvc
+          - arch: arm64
+            rust_target: aarch64-pc-windows-msvc
+    outputs:
+      version: ${{ steps.release_meta.outputs.version }}
+      tag: ${{ steps.release_meta.outputs.tag }}
+      name: ${{ steps.release_meta.outputs.name }}
     env:
       # T3 Connect public build config (same values as .env). These are the
       # public client-side values shipped inside the official T3 Code build —
@@ -137,7 +155,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.rust_target }}
 
       - id: release_meta
         name: Resolve fork nightly version
@@ -153,8 +171,9 @@ jobs:
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "${{ steps.release_meta.outputs.version }}"
 
+      # The WSL backend binary is Linux x64; only the x64 package bundles it.
       - name: Download WSL node-pty prebuild
-        if: ${{ needs.build_wsl_node_pty.result == 'success' }}
+        if: ${{ matrix.arch == 'x64' && needs.build_wsl_node_pty.result == 'success' }}
         uses: actions/download-artifact@v8
         with:
           name: wsl-node-pty-x64
@@ -172,7 +191,7 @@ jobs:
           vp run dist:desktop:artifact \
             --platform win \
             --target nsis \
-            --arch x64 \
+            --arch ${{ matrix.arch }} \
             --build-version "${{ steps.release_meta.outputs.version }}" \
             "${wsl_args[@]}" \
             --verbose
@@ -186,31 +205,99 @@ jobs:
           shopt -s nullglob
           for pattern in \
             "release/*.exe" \
-            "release/*.blockmap" \
-            "release/*.yml"; do
+            "release/*.blockmap"; do
             for asset in $pattern; do
               cp "$asset" release-publish/
             done
           done
 
-          # electron-updater's private GitHub provider always requests
-          # latest.yml, even when the app's selected channel is nightly.
-          # Publish the same signed metadata under both names so installed
-          # personal builds can discover the newest prerelease.
-          if [[ ! -f release-publish/nightly.yml ]]; then
-            echo "Missing release-publish/nightly.yml" >&2
+          # Each leg writes its own nightly.yml. Park it under an arch suffix
+          # so the publish job can merge both into one manifest.
+          if [[ ! -f release/nightly.yml ]]; then
+            echo "Missing release/nightly.yml" >&2
             exit 1
           fi
-          cp release-publish/nightly.yml release-publish/latest.yml
+          cp release/nightly.yml "release-publish/nightly-${{ matrix.arch }}.yml"
 
           ls -la release-publish
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-win-${{ matrix.arch }}
+          path: release-publish/*
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish release
+    needs: [build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.sha }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-win-*
+          merge-multiple: true
+          path: release-publish
+
+      - name: Merge updater manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-publish
+
+          if [[ ! -f nightly-x64.yml ]]; then
+            echo "Missing nightly-x64.yml: the x64 build is required" >&2
+            exit 1
+          fi
+
+          # x64 stays the primary manifest: its entry also fills the legacy
+          # top-level path/sha512 fields that older updaters read. The arm64
+          # entry is merged in when its leg produced one.
+          if [[ -f nightly-arm64.yml ]]; then
+            node ../scripts/merge-update-manifests.ts --platform win nightly-x64.yml nightly-arm64.yml nightly.yml
+          else
+            echo "No arm64 manifest; publishing x64 only" >&2
+            cp nightly-x64.yml nightly.yml
+          fi
+          rm -f nightly-x64.yml nightly-arm64.yml
+
+          # electron-updater's private GitHub provider always requests
+          # latest.yml, even when the app's selected channel is nightly.
+          # Publish the same metadata under both names so installed
+          # personal builds can discover the newest prerelease.
+          cp nightly.yml latest.yml
+
+          cat nightly.yml
+          ls -la
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_meta.outputs.tag }}
+          tag_name: ${{ needs.build.outputs.tag }}
           target_commitish: ${{ inputs.ref != '' && inputs.ref || github.sha }}
-          name: ${{ steps.release_meta.outputs.name }}
+          name: ${{ needs.build.outputs.name }}
           prerelease: true
           make_latest: false
           files: release-publish/*
