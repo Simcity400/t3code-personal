@@ -134,15 +134,20 @@ export function ComposerDictationDraftContent(props: {
 /** Flips the entire row while keeping the outgoing controls intact until it leaves. */
 export function ComposerDictationToolbar(props: {
   readonly children: ReactNode;
+  readonly expanded?: boolean;
+  readonly expandedHeight?: number;
   readonly showsDictation: boolean;
   readonly visible?: boolean;
 }) {
   return (
-    <View className="relative h-[44px] overflow-hidden">
+    <View
+      className="relative overflow-hidden"
+      style={{ height: props.expanded ? (props.expandedHeight ?? 72) : 44 }}
+    >
       {props.visible !== false ? (
         <Animated.View
           key={props.showsDictation ? "dictation" : "draft"}
-          className="absolute inset-0"
+          className="absolute inset-0 justify-center"
           entering={props.showsDictation ? DICTATION_TOOLBAR_ENTERING : DRAFT_TOOLBAR_ENTERING}
           exiting={props.showsDictation ? DICTATION_TOOLBAR_EXITING : DRAFT_TOOLBAR_EXITING}
           style={{ backfaceVisibility: "hidden" }}

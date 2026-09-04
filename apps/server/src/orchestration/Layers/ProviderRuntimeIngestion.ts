@@ -524,7 +524,10 @@ export function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: "error",
           kind: "runtime.error",
-          summary: "Runtime error",
+          // Runtime failures are usually actionable (quota exhausted,
+          // authentication expired, provider unavailable). Keep the generic
+          // activity kind, but put the provider's reason in the visible row.
+          summary: truncateDetail(event.payload.message, 120),
           payload: {
             message: truncateDetail(event.payload.message),
           },

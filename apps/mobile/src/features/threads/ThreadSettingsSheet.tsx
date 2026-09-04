@@ -68,7 +68,11 @@ import {
   NATIVE_MAIL_SEARCH_TOOLBAR_CONTENT_INSET,
   NATIVE_MAIL_SEARCH_TOOLBAR_SUPPORTED,
 } from "../layout/native-mail-search-toolbar";
-import { RUNTIME_MODE_CHOICES, selectableChoices } from "./thread-settings-options";
+import {
+  RUNTIME_MODE_CHOICES,
+  runtimeModeLabel,
+  selectableChoices,
+} from "./thread-settings-options";
 import {
   canCommitPendingModel,
   modelMatchesCatalogQuery,
@@ -769,9 +773,7 @@ function ThreadSettingsOptionsItem(props: {
           <DisclosureRow
             isLast
             label="Runtime"
-            value={
-              RUNTIME_MODE_CHOICES.find((choice) => choice.mode === session.runtimeMode)?.label
-            }
+            value={runtimeModeLabel(session.runtimeMode)}
             onPress={() => props.onOpenSubmenu({ kind: "runtime" })}
           />
         </Animated.View>

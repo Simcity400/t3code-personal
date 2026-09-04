@@ -466,6 +466,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     isTaskActivity && typeof payload?.taskId === "string" && payload.taskId.length > 0
       ? payload.taskId
       : undefined;
+  const runtimeErrorMessage =
+    activity.kind === "runtime.error" ? asTrimmedString(payload?.message) : null;
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
@@ -493,7 +495,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const viewedImagePath = asTrimmedString(asRecord(payload?.data)?.imagePath);
   const commandOutput = commandPreview.command ? extractCommandOutputText(payload?.data) : null;
   const output = commandOutput ? stripTrailingExitCode(commandOutput).output : null;
-  if (!taskDetailAsLabel && output) {
+  if (runtimeErrorMessage) {
+    // Older servers persisted the useful reason only in payload.message and
+    // labelled every such row "Runtime error". Reading it here keeps mobile
+    // useful when paired to one of those environments and for existing rows.
+    entry.detail = runtimeErrorMessage;
+  } else if (!taskDetailAsLabel && output) {
     entry.detail = output;
   } else if (!taskDetailAsLabel && typeof payload?.detail === "string") {
     const detail = stripTrailingExitCode(payload.detail).output;

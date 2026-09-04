@@ -8,8 +8,8 @@ import {
   usePreventRemove,
   type NavigationAction,
 } from "@react-navigation/native";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Platform, Pressable, ScrollView, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, Platform, Pressable, ScrollView, useWindowDimensions, View } from "react-native";
 import {
   KeyboardController,
   KeyboardStickyView,
@@ -88,7 +88,17 @@ import {
   isModelSelectionUnavailable,
   resolveSelectableModelSelection,
 } from "../../lib/modelOptions";
+import {
+  composerProviderOptionLabels,
+  resolveProviderOptionDescriptors,
+} from "../../lib/providerOptions";
 import { resolveProviderInteractionMode } from "./legacy-plan-mode";
+import {
+  resolveComposerEditorHeight,
+  resolveComposerSettingsControlHeight,
+  resolveMobileComposerEditorMaxHeight,
+} from "./composerEditorHeight";
+import { runtimeModeCompactLabel, runtimeModeLabel } from "./thread-settings-options";
 import { deriveThreadTitleFromPrompt } from "../../lib/projectThreadStartTurn";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
@@ -164,6 +174,7 @@ export function NewTaskDraftScreen(props: {
     reserveShare,
   } = useIncomingShare();
   const insets = useSafeAreaInsets();
+  const { fontScale, height: windowHeight } = useWindowDimensions();
   const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
   const controlsBottomPadding = Math.max(insets.bottom, 10);
   const keyboardOpenedOffset = Math.max(0, controlsBottomPadding - 8);
@@ -440,6 +451,37 @@ export function NewTaskDraftScreen(props: {
   const foregroundColor = theme["--color-foreground"];
   const regularFontFamily = useFontFamily("regular");
   const bodyText = useScaledTextRole("body");
+  const modelText = useScaledTextRole("footnote");
+  const settingsDetailText = useScaledTextRole("caption");
+  const [editorTextLayoutHeight, setEditorTextLayoutHeight] = useState(bodyText.lineHeight);
+  const composerEditorMaxHeight = resolveMobileComposerEditorMaxHeight(windowHeight);
+  const composerSettingsControlHeight = resolveComposerSettingsControlHeight({
+    detailLineHeight: settingsDetailText.lineHeight,
+    fontScale,
+    modelLineHeight: modelText.lineHeight,
+  });
+  const { desiredHeight: desiredEditorHeight, height: editorHeight } = resolveComposerEditorHeight({
+    lineHeight: bodyText.lineHeight,
+    explicitLineCount: flow.prompt.split("\n").length,
+    measuredTextHeight: editorTextLayoutHeight,
+    minHeight: 72,
+    maxHeight: composerEditorMaxHeight,
+  });
+  const providerOptionDescriptors = useMemo(
+    () =>
+      resolveProviderOptionDescriptors({
+        capabilities: flow.selectedModelOption?.capabilities,
+        selections: flow.selectedModel?.options,
+      }),
+    [flow.selectedModel?.options, flow.selectedModelOption?.capabilities],
+  );
+  const currentModelLabel = flow.selectedModelOption?.label ?? "Choose model";
+  const providerSettingsSummary = useMemo(
+    () => composerProviderOptionLabels(providerOptionDescriptors).join(" · "),
+    [providerOptionDescriptors],
+  );
+  const currentRuntimeModeLabel = runtimeModeLabel(flow.runtimeMode);
+  const currentRuntimeModeCompactLabel = runtimeModeCompactLabel(flow.runtimeMode);
 
   // A new navigation to this mounted screen delivers a fresh initialProjectRef
   // reference — treat it as a new request and let it apply again.
@@ -1065,33 +1107,52 @@ export function NewTaskDraftScreen(props: {
     !voiceInput.blocksSubmission &&
     !(flow.workspaceMode === "worktree" && !flow.selectedBranchName);
   const promptEditor = (
-    <ComposerEditor
-      ref={promptInputRef}
-      // The context-first screen intentionally opens with the keyboard closed.
-      // Focusing is a user action, so presenting the form sheet has one motion.
-      autoFocus={false}
-      editable={!isComposerInteractionLocked}
-      readOnly={voiceInput.freezesEditor}
-      multiline
-      scrollEnabled
-      value={flow.prompt}
-      skills={composerMenu.skills}
-      selection={composerMenu.selection}
-      onChangeText={flow.setPrompt}
-      onSelectionChange={composerMenu.onSelectionChange}
-      onFocus={() => setIsComposerFocused(true)}
-      onBlur={() => setIsComposerFocused(false)}
-      onPasteImages={(uris) => void handleNativePasteImages(uris)}
-      placeholder="Ask anything…"
-      singleLineCentered={false}
-      contentInsetVertical={0}
-      style={{
-        minHeight: 72,
-        maxHeight: 160,
-        paddingVertical: 4,
-      }}
-      textStyle={{ ...bodyText, color: foregroundColor, fontFamily: regularFontFamily }}
-    />
+    <>
+      <Text
+        accessible={false}
+        pointerEvents="none"
+        style={[
+          bodyText,
+          {
+            fontFamily: regularFontFamily,
+            left: 0,
+            opacity: 0,
+            position: "absolute",
+            right: 0,
+            top: 0,
+          },
+        ]}
+        onLayout={(event) => setEditorTextLayoutHeight(event.nativeEvent.layout.height)}
+      >
+        {`${flow.prompt}\u200b`}
+      </Text>
+      <ComposerEditor
+        ref={promptInputRef}
+        // The context-first screen intentionally opens with the keyboard closed.
+        // Focusing is a user action, so presenting the form sheet has one motion.
+        autoFocus={false}
+        editable={!isComposerInteractionLocked}
+        readOnly={voiceInput.freezesEditor}
+        multiline
+        scrollEnabled={desiredEditorHeight > composerEditorMaxHeight}
+        value={flow.prompt}
+        skills={composerMenu.skills}
+        selection={composerMenu.selection}
+        onChangeText={flow.setPrompt}
+        onSelectionChange={composerMenu.onSelectionChange}
+        onFocus={() => setIsComposerFocused(true)}
+        onBlur={() => setIsComposerFocused(false)}
+        onPasteImages={(uris) => void handleNativePasteImages(uris)}
+        placeholder="Ask anything…"
+        singleLineCentered={false}
+        contentInsetVertical={0}
+        style={{
+          height: editorHeight,
+          maxHeight: composerEditorMaxHeight,
+        }}
+        textStyle={{ ...bodyText, color: foregroundColor, fontFamily: regularFontFamily }}
+      />
+    </>
   );
 
   const closeNewTask = () => {
@@ -1295,7 +1356,11 @@ export function NewTaskDraftScreen(props: {
         <View className="h-1" />
 
         <Animated.View layout={COMPOSER_LAYOUT_TRANSITION} collapsable={false}>
-          <ComposerDictationToolbar showsDictation={isVoiceInputPresented}>
+          <ComposerDictationToolbar
+            expanded={!isVoiceInputPresented}
+            expandedHeight={composerSettingsControlHeight}
+            showsDictation={isVoiceInputPresented}
+          >
             <ComposerToolbarRow
               paddingBottom={0}
               paddingHorizontal={0}
@@ -1326,18 +1391,21 @@ export function NewTaskDraftScreen(props: {
                   />
                   <ComposerToolbarScroller align="end" contentPaddingRight={0} fadeSurface="sheet">
                     <ComposerInlineControl
-                      accessibilityLabel="Model and reasoning settings"
+                      accessibilityLabel={`Model and reasoning settings: ${currentModelLabel}, ${providerSettingsSummary ? `${providerSettingsSummary}, ` : ""}${currentRuntimeModeLabel}`}
                       disabled={isComposerInteractionLocked}
                       emphasized
+                      height={composerSettingsControlHeight}
                       iconNode={
                         <ProviderIcon
                           provider={flow.selectedModelOption?.providerDriver}
                           size={16}
                         />
                       }
-                      label={flow.selectedModelOption?.label ?? "Choose model"}
-                      maxWidth={152}
+                      label={currentModelLabel}
+                      maxWidth={240}
                       onPress={settingsSheetPresentation.open}
+                      secondaryLabel={providerSettingsSummary || undefined}
+                      trailingLabel={`Approval: ${currentRuntimeModeCompactLabel}`}
                     />
                     {flow.planModeEnabled ? (
                       <ComposerInlineControl

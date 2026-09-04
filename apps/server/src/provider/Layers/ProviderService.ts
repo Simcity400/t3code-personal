@@ -620,6 +620,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           );
         }
         const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        let previousContinuationInstanceId: ProviderInstanceId | undefined;
         // Switching this thread to another instance of the same driver keeps
         // its provider continuation only when both instances share one
         // continuation group.
@@ -642,15 +643,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               `Thread '${threadId}' cannot switch from instance '${previousInstanceId}' to '${resolvedInstanceId}' because their provider resume state is incompatible.`,
             );
           }
+          previousContinuationInstanceId = previousInstanceId;
         }
-        const hasCompatiblePersistedCursor =
-          persistedBinding?.providerInstanceId === resolvedInstanceId &&
+        const compatiblePersistedCursor =
+          persistedBinding !== undefined &&
           persistedBinding.resumeCursor !== null &&
-          persistedBinding.resumeCursor !== undefined;
+          persistedBinding.resumeCursor !== undefined &&
+          (persistedBinding.providerInstanceId === resolvedInstanceId ||
+            previousContinuationInstanceId !== undefined)
+            ? persistedBinding.resumeCursor
+            : undefined;
         const shouldForkFromParent =
           input.forkFromThreadId !== undefined &&
           input.resumeCursor === undefined &&
-          !hasCompatiblePersistedCursor;
+          compatiblePersistedCursor === undefined;
         if (
           shouldForkFromParent &&
           resolvedProvider !== "codex" &&
@@ -687,8 +693,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         const effectiveResumeCursor =
           input.resumeCursor ??
-          (hasCompatiblePersistedCursor
-            ? persistedBinding.resumeCursor
+          (compatiblePersistedCursor !== undefined
+            ? compatiblePersistedCursor
             : shouldForkFromParent
               ? parentBinding?.resumeCursor
               : undefined);
@@ -702,8 +708,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.resume_cursor.source":
             input.resumeCursor !== undefined
               ? "request"
-              : effectiveResumeCursor !== undefined &&
-                  persistedBinding?.providerInstanceId === resolvedInstanceId
+              : effectiveResumeCursor !== undefined && compatiblePersistedCursor !== undefined
                 ? "persisted"
                 : "none",
           "provider.resume_cursor.present": effectiveResumeCursor !== undefined,
@@ -717,6 +722,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.cwd.effective": effectiveCwd ?? "",
         });
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
+        if (previousContinuationInstanceId !== undefined && effectiveResumeCursor !== undefined) {
+          // Two adapters cannot write to the same native continuation at
+          // once. This is most visible with Codex instances, whose app-server
+          // rejects the replacement as "already has an active writer". Stop
+          // only the prior compatible continuation before resuming it; starts
+          // for unrelated providers retain the existing rollback behavior.
+          const previousAdapter = yield* registry.getByInstance(previousContinuationInstanceId);
+          const previousSessionIsActive = yield* previousAdapter.hasSession(threadId);
+          if (previousSessionIsActive) {
+            yield* previousAdapter.stopSession(threadId);
+            yield* analytics.record("provider.session.stopped", {
+              provider: previousAdapter.provider,
+            });
+          }
+        }
         yield* prepareMcpSession(threadId, resolvedInstanceId);
         const { forkFromThreadId: _forkFromThreadId, ...adapterInput } = input;
         const session = yield* adapter
