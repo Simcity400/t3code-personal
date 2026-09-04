@@ -210,6 +210,77 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
       }),
     );
 
+    it.effect("preserves Codex-created shadow-local SQLite runtime files", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+        const shadowHome = path.join(shadowRoot, "shadow");
+        const databaseName = "memories_1.sqlite";
+        const runtimeSuffixes = ["-journal", "-shm", "-wal"];
+
+        yield* writeTextFile(path.join(sharedHome, databaseName), "shared database\n");
+        for (const suffix of runtimeSuffixes) {
+          yield* writeTextFile(path.join(sharedHome, `${databaseName}${suffix}`), "shared\n");
+          yield* writeTextFile(path.join(shadowHome, `${databaseName}${suffix}`), "shadow\n");
+        }
+
+        const layout = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({
+            homePath: sharedHome,
+            shadowHomePath: shadowHome,
+          }),
+        );
+
+        yield* materializeCodexShadowHome(layout);
+
+        const databaseTarget = yield* fileSystem.readLink(path.join(shadowHome, databaseName));
+        expect(databaseTarget).toBe(path.join(sharedHome, databaseName));
+
+        for (const suffix of runtimeSuffixes) {
+          const runtimePath = path.join(shadowHome, `${databaseName}${suffix}`);
+          const runtimeLinkResult = yield* fileSystem.readLink(runtimePath).pipe(Effect.result);
+          const runtimeContents = yield* fileSystem.readFileString(runtimePath);
+          expect(runtimeLinkResult._tag).toBe("Failure");
+          expect(runtimeContents).toBe("shadow\n");
+        }
+      }),
+    );
+
+    it.effect("links missing SQLite runtime files to the shared home", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+        const shadowHome = path.join(shadowRoot, "shadow");
+        const databaseName = "memories_1.sqlite";
+        const runtimeSuffixes = ["-journal", "-shm", "-wal"];
+
+        yield* writeTextFile(path.join(sharedHome, databaseName), "shared database\n");
+        for (const suffix of runtimeSuffixes) {
+          yield* writeTextFile(path.join(sharedHome, `${databaseName}${suffix}`), "shared\n");
+        }
+
+        const layout = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({
+            homePath: sharedHome,
+            shadowHomePath: shadowHome,
+          }),
+        );
+
+        yield* materializeCodexShadowHome(layout);
+
+        for (const suffix of runtimeSuffixes) {
+          const runtimeTarget = yield* fileSystem.readLink(
+            path.join(shadowHome, `${databaseName}${suffix}`),
+          );
+          expect(runtimeTarget).toBe(path.join(sharedHome, `${databaseName}${suffix}`));
+        }
+      }),
+    );
+
     it.effect("rejects shadow homes that point at the shared home", () =>
       Effect.gen(function* () {
         const sharedHome = yield* makeTempDir("t3code-codex-shared-");
