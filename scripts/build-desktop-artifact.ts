@@ -2043,7 +2043,25 @@ export const copyDirectoryPreservingSymlinks = Effect.fn("copyDirectoryPreservin
 );
 
 const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSelfContained")(
-  function* (input: { readonly asarPath: string; readonly verbose: boolean }) {
+  function* (input: {
+    readonly asarPath: string;
+    readonly targetArch: typeof BuildArch.Type;
+    readonly verbose: boolean;
+  }) {
+    // The check executes the bundle with the host's Node, which loads the
+    // host's native addons (ffi-rs, node-pty). A cross-built payload stages
+    // only the target CPU's addons, so on the x64 runner the arm64 bundle can
+    // never resolve them and the probe would fail for the wrong reason. Skip
+    // it there, the same way the primary native probe does; the same-arch
+    // build of the same commit still proves the bundle resolves.
+    const hostPlatform = yield* HostProcessPlatform;
+    const hostArchitecture = yield* HostProcessArchitecture;
+    if (hostPlatform === "win32" && hostArchitecture !== input.targetArch) {
+      yield* Effect.log(
+        `[desktop-artifact] Skipping the bundle self-containment check for a ${input.targetArch} payload on a ${hostArchitecture} host.`,
+      );
+      return;
+    }
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
 
@@ -3336,6 +3354,7 @@ export const validateWindowsPackagedPayload = Effect.fn(
 
   yield* verifyPackagedBundleIsSelfContained({
     asarPath,
+    targetArch: input.targetArch,
     verbose: input.verbose ?? false,
   });
 

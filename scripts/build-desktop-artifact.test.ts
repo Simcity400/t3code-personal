@@ -1335,7 +1335,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.isFalse(
           commands.some((command) => command.options.env?.ELECTRON_RUN_AS_NODE === "1"),
         );
-        assert.isTrue(
+        // The bundle self-containment check also stays off: the host's Node
+        // cannot load the arm64 payload's native addons either.
+        assert.isFalse(
           commands.some(
             (command) =>
               command.command === process.execPath && command.options.env?.NODE_PATH === "",
