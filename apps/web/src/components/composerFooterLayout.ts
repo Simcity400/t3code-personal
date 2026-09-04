@@ -41,12 +41,14 @@ export function shouldUseRestingComposerLayout(input: {
   // simply return when the composer is focused.
   //
   //
-  // The resting bar is the composer's only desktop shape on an existing
-  // thread. Focus never lifts it: the prompt row grows with its lines instead
-  // of swapping in the tall expanded surface. Only composer-owned chrome
-  // (drawers, menus, banners) still expands it. Focus, scroll collapse, and
-  // the blur preference are therefore moot here.
-  return input.isExistingThread && !input.isMobileViewport && !input.hasExpandedChrome;
+  // The resting bar is the composer's desktop shape on both new and existing
+  // threads, so the new-thread input matches the open-thread one. Focus never
+  // lifts it: the prompt row grows with its lines instead of swapping in the
+  // tall expanded surface. Only composer-owned chrome (drawers, menus,
+  // banners) still expands it. Focus, scroll collapse, and the blur
+  // preference are therefore moot here. `isExistingThread` is retained for
+  // callers but no longer gates the layout.
+  return !input.isMobileViewport && !input.hasExpandedChrome;
 }
 
 export function shouldAnimateComposerRestingTransition(input: {
