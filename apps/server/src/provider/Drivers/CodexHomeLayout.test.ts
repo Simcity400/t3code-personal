@@ -210,7 +210,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
       }),
     );
 
-    it.effect("preserves Codex-created shadow-local SQLite runtime files", () =>
+    it.effect("preserves existing shadow-local SQLite databases and journals", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
@@ -221,6 +221,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         const runtimeSuffixes = ["-journal", "-shm", "-wal"];
 
         yield* writeTextFile(path.join(sharedHome, databaseName), "shared database\n");
+        yield* writeTextFile(path.join(shadowHome, databaseName), "shadow database\n");
         for (const suffix of runtimeSuffixes) {
           yield* writeTextFile(path.join(sharedHome, `${databaseName}${suffix}`), "shared\n");
           yield* writeTextFile(path.join(shadowHome, `${databaseName}${suffix}`), "shadow\n");
@@ -235,8 +236,9 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
         yield* materializeCodexShadowHome(layout);
 
-        const databaseTarget = yield* fileSystem.readLink(path.join(shadowHome, databaseName));
-        expect(databaseTarget).toBe(path.join(sharedHome, databaseName));
+        expect(yield* fileSystem.readFileString(path.join(shadowHome, databaseName))).toBe(
+          "shadow database\n",
+        );
 
         for (const suffix of runtimeSuffixes) {
           const runtimePath = path.join(shadowHome, `${databaseName}${suffix}`);
@@ -248,7 +250,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
       }),
     );
 
-    it.effect("links missing SQLite runtime files to the shared home", () =>
+    it.effect("does not link SQLite databases or journals into a new shadow home", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
@@ -272,12 +274,43 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
         yield* materializeCodexShadowHome(layout);
 
-        for (const suffix of runtimeSuffixes) {
-          const runtimeTarget = yield* fileSystem.readLink(
-            path.join(shadowHome, `${databaseName}${suffix}`),
+        for (const suffix of ["", ...runtimeSuffixes]) {
+          expect(yield* fileSystem.exists(path.join(shadowHome, `${databaseName}${suffix}`))).toBe(
+            false,
           );
-          expect(runtimeTarget).toBe(path.join(sharedHome, `${databaseName}${suffix}`));
         }
+      }),
+    );
+
+    it.effect("leaves existing SQLite links and their journals untouched", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shadowHome = yield* makeTempDir("t3code-codex-shadow-");
+        const databaseName = "state_5.sqlite";
+        yield* writeTextFile(path.join(sharedHome, databaseName), "original database\n");
+        yield* fileSystem.symlink(
+          path.join(sharedHome, databaseName),
+          path.join(shadowHome, databaseName),
+        );
+        yield* writeTextFile(path.join(shadowHome, `${databaseName}-wal`), "active journal\n");
+
+        const layout = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+        );
+        yield* materializeCodexShadowHome(layout);
+        yield* materializeCodexShadowHome(layout);
+
+        expect(yield* fileSystem.readLink(path.join(shadowHome, databaseName))).toBe(
+          path.join(sharedHome, databaseName),
+        );
+        expect(yield* fileSystem.readFileString(path.join(sharedHome, databaseName))).toBe(
+          "original database\n",
+        );
+        expect(yield* fileSystem.readFileString(path.join(shadowHome, `${databaseName}-wal`))).toBe(
+          "active journal\n",
+        );
       }),
     );
 

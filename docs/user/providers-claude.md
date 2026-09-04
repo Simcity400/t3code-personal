@@ -62,7 +62,34 @@ Claude starts the others through its Skill tool, which refuses skills marked
 
 ## I Want Work And Personal Claude Accounts
 
-Use a different Claude config directory for each account.
+If you want to switch accounts in the same thread, give each provider its own login token and
+keep **CLAUDE_CONFIG_DIR path** the same for all of them. Leaving it empty on every provider
+uses the normal Claude config directory and shares the saved conversations.
+
+For each account:
+
+1. Run `claude setup-token` and sign in to the intended account in the browser.
+2. Add a Claude provider in T3 Code Settings with a recognizable display name.
+3. In that provider's **Environment variables**, add `CLAUDE_CODE_OAUTH_TOKEN`, paste the token,
+   and mark it **Sensitive**.
+4. Keep **Binary path** as `claude` and **CLAUDE_CONFIG_DIR path** empty.
+
+Each provider uses its own token. T3 Code stores sensitive values as server secrets. Do not
+put these tokens in a shared shell environment or in launch arguments. Remove competing API
+keys or auth tokens from these subscription providers so they use the intended login.
+
+Tokens can expire or be revoked. Generate a replacement with `claude setup-token` and update
+only the affected provider's sensitive variable. See
+[Claude Code authentication](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token).
+
+This setup works with T3 Code's remote connections. Claude Code's own Remote Control feature
+requires an interactive login instead of a `setup-token` credential.
+
+### Keep Accounts And Conversations Isolated
+
+Use a different Claude config directory for each account when you want separate saved
+conversations and settings. This setup does not support switching accounts within an existing
+thread.
 
 Example:
 
@@ -112,14 +139,21 @@ blurred by default; click the blurred email to reveal it.
 
 ## Can I Switch Claude Accounts In An Existing Thread?
 
-Usually, no.
+Yes, when the providers share the same config directory and have separate login tokens as
+described above.
 
-T3 Code only offers Claude providers that use the same config directory for an existing thread. A
-different config directory is treated as a different Claude environment.
+If an account reaches its usage limit or its login expires, select another compatible Claude
+account in the thread's provider picker and send a continuation message. T3 Code resumes the
+same saved Claude conversation with the selected account. You can switch back when the first
+account is available again. Switching accounts does not automatically replay a failed message.
 
-This is different from the recommended Codex setup. Claude Code keeps account and local state across
-multiple files under its config directory, so T3 Code keeps separate config directories isolated
-instead of trying to share part of the state.
+T3 Code only offers Claude providers that use the same config directory for an existing thread.
+Keep that directory and the workspace available on the server hosting the thread, including
+when connecting from another device. A different config directory is treated as a different
+Claude environment.
+
+The selected account still needs a valid login and available usage. An outage affecting all
+Claude accounts requires the provider to recover; changing accounts cannot restore that service.
 
 ## I Want To Use OpenRouter
 
