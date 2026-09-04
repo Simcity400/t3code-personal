@@ -874,7 +874,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // working threads aren't your problem yet) — only the colored status label
   // stands out.
   const isInFlight =
-    status === "working" || status === "monitoring" || status === "approval" || status === "input";
+    status === "working" || status === "waiting" || status === "approval" || status === "input";
   const shouldRecede =
     (status === "ready" || isInFlight) && !isUnread && !isWoke && !props.isActive && !isSelected;
   // Status hues follow the system-wide convention set by sidebar v1 and the
@@ -892,11 +892,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           // the label at full strength.
           className: cn("text-sky-600 dark:text-sky-400", !props.isActive && "opacity-75"),
         }
-      : status === "monitoring"
+      : status === "waiting"
         ? {
-            // Monitoring is calm background presence, not active progress
-            // (monitoring-pill D6), so it keeps the label at full strength.
-            label: "Monitoring",
+            // Calm background presence, not active progress (monitoring-pill
+            // D6), so it keeps the label at full strength and takes no dot:
+            // the agent itself is idle and will answer immediately. The label
+            // is the provider's own name for the work, so nothing here knows
+            // what any particular task is.
+            label: `Waiting on ${thread.backgroundWait?.label ?? "background work"}`,
             icon: null,
             className: "text-sky-600 dark:text-sky-400",
           }
@@ -1519,7 +1522,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                     ) : (
                       <span
                         className={cn(
-                          "inline-flex items-center gap-1 font-medium",
+                          "inline-flex min-w-0 max-w-[11rem] items-center gap-1 font-medium",
                           topStatus.className,
                         )}
                       >
@@ -1531,10 +1534,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                         {/* The label alone is the live region: a role="status"
                             wrapper around the ticking duration would make
                             screen readers announce every second. */}
-                        <span role="status">{topStatus.label}</span>
+                        {/* Truncates rather than wraps: a wait label carries
+                            whatever the provider called the work, which can be
+                            a whole command line, and the row must not grow. */}
+                        <span className="truncate" role="status">
+                          {topStatus.label}
+                        </span>
                         {status === "working" ? (
                           <span aria-hidden>
                             <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                          </span>
+                        ) : status === "waiting" && thread.backgroundWait?.since ? (
+                          <span aria-hidden className="shrink-0">
+                            {"· "}
+                            <WorkingDuration startedAt={thread.backgroundWait.since} />
                           </span>
                         ) : null}
                       </span>

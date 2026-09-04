@@ -5,6 +5,8 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 
+import { formatThreadWaitLabel } from "./threadWorkState.ts";
+
 export type AgentAwarenessPhase =
   | "starting"
   | "running"
@@ -40,6 +42,7 @@ export interface ProjectThreadAwarenessInput {
     | "updatedAt"
     | "hasPendingApprovals"
     | "hasPendingUserInput"
+    | "backgroundWait"
   >;
 }
 
@@ -60,13 +63,24 @@ export function projectThreadAwareness(
   }
 
   const detail = detailForPhase(phase, thread);
+  // The only way "running" survives with neither running signal set is the
+  // background-work branch below, so this names the work instead of claiming
+  // the agent is generating. The PHASE stays "running" on purpose: it is what
+  // the hosted relay's schema accepts, and it is what keeps the completion
+  // alert from firing early.
+  const backgroundWait =
+    phase === "running" &&
+    thread.session?.status !== "running" &&
+    thread.latestTurn?.state !== "running"
+      ? (thread.backgroundWait ?? null)
+      : null;
   return {
     environmentId,
     threadId: thread.id,
     projectTitle: project.title,
     threadTitle: thread.title,
     phase,
-    headline: headlineForPhase(phase),
+    headline: backgroundWait ? formatThreadWaitLabel(backgroundWait) : headlineForPhase(phase),
     ...(detail === undefined ? {} : { detail }),
     modelTitle: thread.modelSelection.model,
     updatedAt: thread.updatedAt,
@@ -92,8 +106,20 @@ function resolveThreadAwarenessPhase(
   if (thread.session?.status === "running" || thread.latestTurn?.state === "running") {
     return "running";
   }
+  // A turn that ended while the work it launched is still alive has not
+  // finished the job, and "Agent finished" here is the false Done this ladder
+  // exists to avoid: the phone buzzes, the user opens the thread, and three
+  // agents are still going. Report the run as still in flight and let the
+  // completion fire once, when everything is actually settled.
+  //
+  // Watch loops are the deliberate exception. A monitor can outlive every
+  // turn a thread will ever run, so letting one hold the ladder open would
+  // suppress Done forever rather than delay it; monitor-only liveness reads
+  // as finished here while the UI still shows the thread as waiting.
+  const settled: AgentAwarenessPhase =
+    thread.backgroundWait != null && !thread.backgroundWait.monitorOnly ? "running" : "completed";
   if (thread.latestTurn?.state === "completed") {
-    return "completed";
+    return settled;
   }
   // A turn that finished can still read as "interrupted" here: session
   // teardown settles still-running turns by session status, and that write
@@ -102,7 +128,7 @@ function resolveThreadAwarenessPhase(
   // Without this, quick finish-then-teardown threads resolve to null
   // persistently and get tombstoned instead of published as completed.
   if (thread.latestTurn?.state === "interrupted" && thread.latestTurn.completedAt !== null) {
-    return "completed";
+    return settled;
   }
   // Threads whose turns never produce a checkpoint (no code changes) have no
   // materialized latestTurn in the shell at all, and the session-set
@@ -111,7 +137,7 @@ function resolveThreadAwarenessPhase(
   // session at "ready"/"idle" with nothing pending and nothing running means
   // the agent finished and is waiting for the next prompt — Done.
   if (thread.session?.status === "ready" || thread.session?.status === "idle") {
-    return "completed";
+    return settled;
   }
   return null;
 }

@@ -227,3 +227,191 @@ describe("ThreadBackgroundLiveness", () => {
     expect(a.getThreadBackgroundLiveness("t")).toBeNull();
   });
 });
+
+describe("getThreadBackgroundWait", () => {
+  it("names one live task with whatever the provider called it", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "sh1",
+      taskType: "local_bash",
+      status: undefined,
+      kind: "started",
+      label: "pnpm test --watch",
+      at: "2026-09-04T10:00:00.000Z",
+    });
+    expect(liveness.getThreadBackgroundWait("t")).toEqual({
+      count: 1,
+      label: "pnpm test --watch",
+      since: "2026-09-04T10:00:00.000Z",
+      monitorOnly: true,
+    });
+  });
+
+  it("leads with the longest-running item and counts the rest, agents-only using the agent noun", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    for (const [taskId, label, at] of [
+      ["a2", "Second", "2026-09-04T10:05:00.000Z"],
+      ["a1", "First", "2026-09-04T10:00:00.000Z"],
+      ["a3", "Third", "2026-09-04T10:09:00.000Z"],
+    ] as const) {
+      liveness.recordTaskLiveness({
+        threadId: "t",
+        taskId,
+        taskType: "subagent",
+        status: undefined,
+        kind: "started",
+        label,
+        at,
+      });
+    }
+    expect(liveness.getThreadBackgroundWait("t")).toEqual({
+      count: 3,
+      label: "First + 2 more agents",
+      since: "2026-09-04T10:00:00.000Z",
+      monitorOnly: false,
+    });
+  });
+
+  it("falls back to a plain count when the provider named nothing, and never prints a task id", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    for (const taskId of ["x1", "x2"]) {
+      liveness.recordTaskLiveness({
+        threadId: "t",
+        taskId,
+        taskType: "subagent",
+        status: undefined,
+        kind: "started",
+        at: "2026-09-04T10:00:00.000Z",
+      });
+    }
+    const wait = liveness.getThreadBackgroundWait("t");
+    expect(wait?.label).toBe("2 agents");
+    expect(wait?.label).not.toContain("x1");
+  });
+
+  it("uses the generic noun once anything but an agent is live", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "a1",
+      taskType: "subagent",
+      status: undefined,
+      kind: "started",
+      label: "Reviewer",
+      at: "2026-09-04T10:00:00.000Z",
+    });
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "m1",
+      taskType: "monitor",
+      status: undefined,
+      kind: "started",
+      label: "watch",
+      at: "2026-09-04T10:01:00.000Z",
+    });
+    expect(liveness.getThreadBackgroundWait("t")?.label).toBe("Reviewer + 1 more task");
+  });
+
+  it("monitorOnly agrees with the two-value liveness on every transition", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    const record = (taskId: string, taskType: string, status?: string) =>
+      liveness.recordTaskLiveness({
+        threadId: "t",
+        taskId,
+        taskType,
+        status,
+        kind: status === undefined ? "started" : "updated",
+        at: "2026-09-04T10:00:00.000Z",
+      });
+    record("m1", "local_bash");
+    expect(liveness.getThreadBackgroundWait("t")?.monitorOnly).toBe(true);
+    expect(liveness.getThreadBackgroundLiveness("t")).toBe("monitoring");
+    record("a1", "subagent");
+    expect(liveness.getThreadBackgroundWait("t")?.monitorOnly).toBe(false);
+    expect(liveness.getThreadBackgroundLiveness("t")).toBe("working");
+    record("a1", "subagent", "completed");
+    record("m1", "local_bash", "completed");
+    expect(liveness.getThreadBackgroundWait("t")).toBeNull();
+    expect(liveness.getThreadBackgroundLiveness("t")).toBeNull();
+  });
+
+  it("keeps a name and a start instant that a later thin row does not repeat", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "a1",
+      taskType: "subagent",
+      status: undefined,
+      kind: "started",
+      label: "Reviewer",
+      at: "2026-09-04T10:00:00.000Z",
+    });
+    // Reconnect: the adapter's remembered linkage is gone, so this row
+    // carries a status and nothing else.
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "a1",
+      taskType: undefined,
+      status: "running",
+      kind: "progress",
+      at: "2026-09-04T10:30:00.000Z",
+    });
+    expect(liveness.getThreadBackgroundWait("t")).toEqual({
+      count: 1,
+      label: "Reviewer",
+      since: "2026-09-04T10:00:00.000Z",
+      monitorOnly: false,
+    });
+  });
+
+  it("times the new run when a settled task restarts", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    const at = (iso: string, status?: string) =>
+      liveness.recordTaskLiveness({
+        threadId: "t",
+        taskId: "a1",
+        taskType: "subagent",
+        status,
+        kind: status === "completed" ? "completed" : "started",
+        label: "Reviewer",
+        at: iso,
+      });
+    at("2026-09-04T10:00:00.000Z");
+    at("2026-09-04T10:10:00.000Z", "completed");
+    at("2026-09-04T11:00:00.000Z");
+    expect(liveness.getThreadBackgroundWait("t")?.since).toBe("2026-09-04T11:00:00.000Z");
+  });
+
+  it("bounds a label long enough to break a sidebar row", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "sh1",
+      taskType: "local_bash",
+      status: undefined,
+      kind: "started",
+      label: "x".repeat(400),
+      at: "2026-09-04T10:00:00.000Z",
+    });
+    const label = liveness.getThreadBackgroundWait("t")?.label ?? "";
+    expect(label.length).toBeLessThanOrEqual(64);
+    expect(label.endsWith("…")).toBe(true);
+  });
+
+  it("is null exactly when the two-value liveness is null", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    expect(liveness.getThreadBackgroundWait("nothing")).toBeNull();
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "p1",
+      taskType: "plan",
+      status: undefined,
+      kind: "started",
+      label: "plan bookkeeping",
+      at: "2026-09-04T10:00:00.000Z",
+    });
+    expect(liveness.getThreadBackgroundWait("t")).toBeNull();
+    expect(liveness.getThreadBackgroundLiveness("t")).toBeNull();
+  });
+});

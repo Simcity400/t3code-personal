@@ -721,6 +721,63 @@ describe("resolveSidebarThreadStatus", () => {
     ).toBe("ready");
   });
 
+  it("reports waiting once the turn is over and background work is still alive", () => {
+    const backgroundWait = {
+      count: 3,
+      label: "3 tasks",
+      since: "2026-03-09T09:00:00.000Z",
+      monitorOnly: false,
+    };
+    expect(
+      resolveSidebarThreadStatus({
+        ...idle,
+        session: { ...session, status: "ready" as const, activeTurnId: null },
+        backgroundWait,
+      }),
+    ).toBe("waiting");
+    // A watch loop is still a wait on the row; only the completion alert
+    // treats monitor-only liveness as settled.
+    expect(
+      resolveSidebarThreadStatus({
+        ...idle,
+        session: { ...session, status: "ready" as const, activeTurnId: null },
+        backgroundWait: { ...backgroundWait, monitorOnly: true },
+      }),
+    ).toBe("waiting");
+  });
+
+  it("keeps the agent's own turn ahead of the work it launched", () => {
+    // The old model called both of these "working"; the whole point of the
+    // split is that only the first one is.
+    expect(
+      resolveSidebarThreadStatus({
+        ...idle,
+        session,
+        backgroundWait: {
+          count: 1,
+          label: "one agent",
+          since: "2026-03-09T09:00:00.000Z",
+          monitorOnly: false,
+        },
+      }),
+    ).toBe("working");
+  });
+
+  it("shows a failed session rather than a stale wait", () => {
+    expect(
+      resolveSidebarThreadStatus({
+        ...idle,
+        session: { ...session, status: "error" as const, lastError: "boom" },
+        backgroundWait: {
+          count: 1,
+          label: "one agent",
+          since: "2026-03-09T09:00:00.000Z",
+          monitorOnly: false,
+        },
+      }),
+    ).toBe("failed");
+  });
+
   it("defaults to ready with no session", () => {
     expect(resolveSidebarThreadStatus({ ...idle, session: null })).toBe("ready");
   });
@@ -1211,6 +1268,45 @@ describe("resolveThreadStatusPill", () => {
     ).toBeNull();
   });
 
+  it("names the work a settled thread is waiting on, with no pulse", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          interactionMode: "default",
+          latestTurn: makeLatestTurn(),
+          session: { ...baseThread.session, status: "ready", activeTurnId: null },
+          backgroundWait: {
+            count: 2,
+            label: "Reviewer + 1 more agent",
+            since: "2026-03-09T09:00:00.000Z",
+            monitorOnly: false,
+          },
+        },
+      }),
+      // Static: the agent itself is idle, so nothing is ticking forward.
+    ).toMatchObject({ kind: "waiting", label: "Waiting on Reviewer + 1 more agent", pulse: false });
+  });
+
+  it("keeps an actionable plan prompt ahead of the wait", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasActionableProposedPlan: true,
+          latestTurn: makeLatestTurn(),
+          session: { ...baseThread.session, status: "ready", activeTurnId: null },
+          backgroundWait: {
+            count: 1,
+            label: "one agent",
+            since: "2026-03-09T09:00:00.000Z",
+            monitorOnly: false,
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Plan Ready" });
+  });
+
   it("shows completed when there is an unseen completion and no active blocker", () => {
     expect(
       resolveThreadStatusPill({
@@ -1261,18 +1357,21 @@ describe("resolveProjectStatusIndicator", () => {
     expect(
       resolveProjectStatusIndicator([
         {
+          kind: "completed",
           label: "Completed",
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,
         },
         {
+          kind: "approval",
           label: "Pending Approval",
           colorClass: "text-amber-600",
           dotClass: "bg-amber-500",
           pulse: false,
         },
         {
+          kind: "working",
           label: "Working",
           colorClass: "text-sky-600",
           dotClass: "bg-sky-500",
@@ -1282,16 +1381,59 @@ describe("resolveProjectStatusIndicator", () => {
     ).toMatchObject({ label: "Pending Approval", dotClass: "bg-amber-500" });
   });
 
-  it("prefers plan-ready over completed when no stronger action is needed", () => {
+  it("ranks a waiting thread below a plan that needs a decision", () => {
+    // A plan prompt is the user's move; a waiting thread is the machine's.
     expect(
       resolveProjectStatusIndicator([
         {
+          kind: "waiting",
+          label: "Waiting on 3 tasks",
+          colorClass: "text-sky-600",
+          dotClass: "bg-sky-500",
+          pulse: false,
+        },
+        {
+          kind: "plan-ready",
+          label: "Plan Ready",
+          colorClass: "text-violet-600",
+          dotClass: "bg-violet-500",
+          pulse: false,
+        },
+      ]),
+    ).toMatchObject({ label: "Plan Ready" });
+    // ... but above a thread that merely finished unseen.
+    expect(
+      resolveProjectStatusIndicator([
+        {
+          kind: "completed",
           label: "Completed",
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,
         },
         {
+          kind: "waiting",
+          label: "Waiting on 3 tasks",
+          colorClass: "text-sky-600",
+          dotClass: "bg-sky-500",
+          pulse: false,
+        },
+      ]),
+    ).toMatchObject({ label: "Waiting on 3 tasks" });
+  });
+
+  it("prefers plan-ready over completed when no stronger action is needed", () => {
+    expect(
+      resolveProjectStatusIndicator([
+        {
+          kind: "completed",
+          label: "Completed",
+          colorClass: "text-emerald-600",
+          dotClass: "bg-emerald-500",
+          pulse: false,
+        },
+        {
+          kind: "plan-ready",
           label: "Plan Ready",
           colorClass: "text-violet-600",
           dotClass: "bg-violet-500",

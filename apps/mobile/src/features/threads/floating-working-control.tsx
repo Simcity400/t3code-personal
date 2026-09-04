@@ -46,6 +46,12 @@ export const FLOATING_WORKING_CONTROL_COVERAGE = CONTROL_HEIGHT + CONTROL_COMPOS
  */
 export type FloatingWorkingStatus =
   | { readonly kind: "working"; readonly startedAt: string }
+  /**
+   * The thread's own turn is over and work it started is still alive. Reads
+   * as a plain label rather than a timer-first pill: the agent is idle and
+   * the composer below is live, so this is information, not progress.
+   */
+  | { readonly kind: "waiting"; readonly label: string; readonly since: string | null }
   | { readonly kind: "syncing"; readonly label: string };
 
 export function FloatingWorkingControl(props: {
@@ -174,7 +180,45 @@ function FloatingStatusLabel(props: { readonly status: FloatingWorkingStatus }) 
       </View>
     );
   }
+  if (props.status.kind === "waiting") {
+    return <WaitingLabel label={props.status.label} since={props.status.since} />;
+  }
   return <WorkingDuration startedAt={props.status.startedAt} />;
+}
+
+function WaitingLabel(props: { readonly label: string; readonly since: string | null }) {
+  return (
+    <View accessible accessibilityLabel={props.label} className="h-11 flex-row items-center px-4">
+      <Text className="font-t3-medium text-xs text-foreground" numberOfLines={1}>
+        {props.label}
+      </Text>
+      {props.since === null ? null : (
+        <>
+          <Text className="font-t3-medium text-xs text-foreground"> · </Text>
+          <WaitingDuration since={props.since} />
+        </>
+      )}
+    </View>
+  );
+}
+
+function WaitingDuration(props: { readonly since: string }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    setNowMs(Date.now());
+    const intervalId = setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => clearInterval(intervalId);
+  }, [props.since]);
+
+  return (
+    <SystemText
+      className="text-xs text-foreground"
+      style={{ fontVariant: ["tabular-nums"], fontWeight: "500" }}
+    >
+      {formatWorkingDuration(props.since, nowMs)}
+    </SystemText>
+  );
 }
 
 function WorkingDuration(props: { readonly startedAt: string }) {
