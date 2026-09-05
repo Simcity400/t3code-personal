@@ -268,3 +268,5 @@ If the preset needs different Claude files, give it a different `CLAUDE_CONFIG_D
 different API keys, base URLs, or router settings, use Environment variables.
 
 Do not put environment variable assignments in `Launch arguments`.
+
+For availability warnings and refresh behavior, see [Provider status](./provider-status.md).

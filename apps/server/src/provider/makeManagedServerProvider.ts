@@ -4,6 +4,7 @@ import {
   ServerSettingsError,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -157,8 +158,31 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         const generation = input.enrichSnapshot
           ? state.enrichmentGeneration + 1
           : state.enrichmentGeneration;
+        // An inconclusive probe does not establish that a verified account
+        // signed out. Preserve its inventory and label the failed check.
+        const previous = state.snapshot;
+        const retainVerifiedSnapshot =
+          !input.haveSettingsChanged(previousSettings, nextSettings) &&
+          previous.instanceId === probedSnapshot.instanceId &&
+          previous.driver === probedSnapshot.driver &&
+          previous.enabled &&
+          previous.installed &&
+          previous.availability !== "unavailable" &&
+          (previous.status === "ready" || previous.status === "warning") &&
+          previous.auth.status === "authenticated" &&
+          probedSnapshot.enabled &&
+          probedSnapshot.installed &&
+          probedSnapshot.availability !== "unavailable" &&
+          (probedSnapshot.status === "error" || probedSnapshot.status === "warning") &&
+          probedSnapshot.auth.status === "unknown";
         const snapshot = withUsageLimits(
-          probedSnapshot,
+          retainVerifiedSnapshot
+            ? {
+                ...previous,
+                status: "warning",
+                message: `Could not verify provider status. Using the last successful check from ${previous.checkedAt}. ${probedSnapshot.message ?? "Please refresh to try again."}`,
+              }
+            : probedSnapshot,
           resolveUsageLimitsAfterProbe({
             published: state.snapshot.usageLimits,
             probed: probedSnapshot.usageLimits,
@@ -204,10 +228,17 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       }
     });
 
-  const refreshSnapshot = Effect.fn("refreshSnapshot")(function* () {
-    const nextSettings = yield* input.getSettings;
-    return yield* applySnapshot(nextSettings, { forceRefresh: true });
-  });
+  // Only pending work is cached. Concurrent reconnect/manual/periodic checks
+  // share a probe; a refresh after completion always performs a new check.
+  const refreshCache = yield* Cache.makeWith(
+    () =>
+      Effect.gen(function* () {
+        const nextSettings = yield* input.getSettings;
+        return yield* applySnapshot(nextSettings, { forceRefresh: true });
+      }),
+    { capacity: 1, timeToLive: () => Duration.zero },
+  );
+  const refreshSnapshot = Cache.get(refreshCache, undefined);
 
   const hasProviderStatusDemand = Effect.gen(function* () {
     const state = yield* Ref.get(snapshotStateRef);
@@ -266,7 +297,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
             Duration.toMillis(Duration.fromInputUnsafe(refreshInterval)) > 0
               ? hasProviderStatusDemand.pipe(
                   Effect.flatMap((shouldRefresh) =>
-                    shouldRefresh ? refreshSnapshot().pipe(Effect.asVoid) : Effect.void,
+                    shouldRefresh ? refreshSnapshot.pipe(Effect.asVoid) : Effect.void,
                   ),
                 )
               : Effect.void,
@@ -277,15 +308,12 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     ),
   ).pipe(Effect.forkScoped);
 
-  yield* applySnapshot(initialSettings, { forceRefresh: true }).pipe(
-    Effect.ignoreCause({ log: true }),
-    Effect.forkScoped,
-  );
+  yield* refreshSnapshot.pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
 
   return {
     maintenanceCapabilities: input.maintenanceCapabilities,
     getSnapshot: Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot)),
-    refresh: refreshSnapshot().pipe(Effect.tapError(Effect.logError), Effect.orDie),
+    refresh: refreshSnapshot.pipe(Effect.tapError(Effect.logError), Effect.orDie),
     applyUsageLimits,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
