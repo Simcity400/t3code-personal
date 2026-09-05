@@ -61,6 +61,15 @@ the warning always works.
 See [Running T3 Code in the Background](./background-service.md) for install, status, and removal
 commands.
 
+## Windows ARM updates
+
+On Windows ARM computers, desktop updates select the ARM64 installer, including when
+an earlier update left the x64 app running under emulation. If a release has no compatible
+installer, the update stops before downloading and keeps your current installation.
+
+Older app versions may still select x64. Install a corrected ARM64 release manually once
+to pick up the fix; later updates will continue selecting ARM64.
+
 ## Nightly desktop release notes
 
 The desktop app shows a compact release-notes preview when a nightly update is available. Changes

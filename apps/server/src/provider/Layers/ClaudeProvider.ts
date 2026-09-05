@@ -236,7 +236,7 @@ type ClaudeCapabilitiesProbe = {
   /**
    * Subscription windows from the SDK's `get_usage` control request, or
    * `undefined` when the request itself failed. Absent windows on an
-   * otherwise successful response mean the account has none (API key).
+   * otherwise successful response can also mean missing OAuth profile access.
    */
   readonly usage?: Pick<SDKControlGetUsageResponse, "rate_limits_available" | "rate_limits">;
 };
@@ -319,9 +319,9 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
  *
  * We pass a never-yielding AsyncIterable as the prompt so that no user
  * message is ever written to the subprocess stdin. This means the Claude
- * Code subprocess completes its local initialization IPC (returning
- * account info and slash commands) but never starts an API request to
- * Anthropic. We read the init data and then abort the subprocess.
+ * Code subprocess returns account info and slash commands without sending
+ * a conversation. We then request subscription usage, which can make a
+ * read-only request to Anthropic, and abort the subprocess afterward.
  *
  * This is used as a fallback when `claude auth status` does not include
  * subscription type information.
@@ -561,14 +561,19 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       subscriptionType: capabilities.subscriptionType,
       authMethod: capabilities.tokenSource,
     }) ?? apiProviderAuthMetadata(capabilities.apiProvider);
+  const usesApiBilling =
+    normalizeClaudeAuthMethod(capabilities.tokenSource) === "apiKey" ||
+    (capabilities.apiProvider !== undefined && capabilities.apiProvider !== "firstParty");
   const usageLimits = !capabilities.usage
     ? makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" })
     : scopedLimitNames
       ? yield* recordClaudeUsageResponse(scopedLimitNames, {
           response: capabilities.usage,
           checkedAt,
+          usesApiBilling,
         })
-      : claudeUsageResponseToLimits({ response: capabilities.usage, checkedAt }).limits;
+      : claudeUsageResponseToLimits({ response: capabilities.usage, checkedAt, usesApiBilling })
+          .limits;
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,

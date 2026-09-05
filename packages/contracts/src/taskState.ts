@@ -61,10 +61,63 @@ export type TaskState = typeof TaskState.Type;
 
 export const isTaskState = Schema.is(TaskState);
 
+export const isUnnamedTask = (title: string, id: string): boolean =>
+  title === id || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(title);
+
+/** Use the assignment's opening line when a provider only supplies an agent id. */
+export function taskAssignmentTitle(prompt: string): string | null {
+  const trimmed = prompt.trim();
+  if (/^gAAAAA[A-Za-z0-9_-]{74,}={0,2}$/.test(trimmed)) return null;
+  const line = trimmed
+    .split(/\r?\n/, 1)[0]
+    ?.replace(/^\s*(?:#+\s+|[-*]\s+)/, "")
+    .trim();
+  if (!line) return null;
+  if (line.length <= 80) return line;
+  const prefix = line.slice(0, 79);
+  const boundary = prefix.lastIndexOf(" ");
+  return `${boundary > 0 ? prefix.slice(0, boundary) : prefix}…`;
+}
+
 export function readTaskStates(
-  activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>,
+  activities: ReadonlyArray<{
+    readonly kind: string;
+    readonly payload: unknown;
+    readonly createdAt?: string;
+  }>,
 ): ReadonlyArray<TaskState> {
-  return activities.flatMap((activity) =>
+  const tasks = activities.flatMap((activity) =>
     activity.kind === "task.state" && isTaskState(activity.payload) ? [activity.payload] : [],
   );
+  const unnamed = new Set(
+    tasks
+      .filter((task) => task.agentKind === "agent" && isUnnamedTask(task.title, task.id))
+      .map((task) => task.id),
+  );
+  if (unnamed.size === 0) return tasks;
+
+  // Older saved rosters can have UUID titles even though their assignments
+  // are already retained. Recover those labels without new provider activity.
+  const assignments = new Map<string, { title: string; createdAt: string }>();
+  for (const activity of activities) {
+    if (!activity.kind.startsWith("task.")) continue;
+    const payload = activity.payload;
+    if (typeof payload !== "object" || payload === null) continue;
+    if (
+      !("taskId" in payload) ||
+      typeof payload.taskId !== "string" ||
+      !unnamed.has(payload.taskId)
+    )
+      continue;
+    if (!("prompt" in payload) || typeof payload.prompt !== "string") continue;
+    const createdAt = activity.createdAt ?? "";
+    const previous = assignments.get(payload.taskId);
+    if (previous && previous.createdAt <= createdAt) continue;
+    const title = taskAssignmentTitle(payload.prompt);
+    if (title) assignments.set(payload.taskId, { title, createdAt });
+  }
+  return tasks.map((task) => {
+    const assignment = assignments.get(task.id);
+    return assignment ? { ...task, title: assignment.title } : task;
+  });
 }

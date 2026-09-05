@@ -187,12 +187,7 @@ import {
   formatSubagentTitle,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
-  deriveAgentWaitReasons,
-  deriveAgentWaitStates,
-  deriveCompactingSince,
-  deriveDetachedTaskIds,
   deriveBackgroundTasksPanelModel,
-  deriveOpenRequestWaits,
   foldBackgroundTasks,
 } from "@t3tools/client-runtime/state/backgroundTasks";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
@@ -206,6 +201,7 @@ import {
   GitBranchIcon,
   Minimize2Icon,
   PaperclipIcon,
+  UsersIcon,
   WifiOffIcon,
 } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
@@ -2639,33 +2635,7 @@ function ChatViewContent(props: ChatViewProps) {
       }),
     [backgroundTasks, rosterAgents],
   );
-  const agentWaits = useMemo(
-    () =>
-      deriveAgentWaitStates({
-        tasks: backgroundTasks,
-        // Every roster agent, workflow members included — mobile derives from
-        // the same full set, and omitting them here made the two surfaces
-        // disagree about which agents are blocked.
-        agents: rosterAgents.map((agent) => ({
-          id: agent.id,
-          title: formatSubagentTitle(agent.title),
-          status: agent.status,
-          startedAt: agent.startedAt,
-          // Members block their coordinator, not main.
-          parentAgentId: agent.parentAgentId,
-        })),
-        requests: deriveOpenRequestWaits(threadActivities),
-        agentWaitReasons: deriveAgentWaitReasons(threadActivities),
-        detachedIds: deriveDetachedTaskIds(threadActivities),
-        // A dead session cannot still be compacting: the wait dies with the
-        // provider process exactly as running tasks do.
-        compactingSince: agentSessionLive ? deriveCompactingSince(threadActivities) : null,
-        // Nothing blocks a turn that is not running: work still alive then
-        // was detached, and Tasks reports it without claiming a dependency.
-        mainTurnActive: phase === "running",
-      }),
-    [agentSessionLive, backgroundTasks, phase, rosterAgents, threadActivities],
-  );
+
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -5499,7 +5469,27 @@ function ChatViewContent(props: ChatViewProps) {
       // it is background work holding the thread, the composer below is live
       // and a message sent now starts a turn straight away.
       icon: <span className="size-1.5 rounded-full bg-foreground" aria-hidden="true" />,
-      title: activeWaitLabel,
+      title: (
+        <span className="inline-flex max-w-full items-center gap-2 align-middle">
+          <span className="min-w-0 truncate">{activeWaitLabel}</span>
+          {agentPanelModel.liveCount > 0 ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="shrink-0 gap-1.5 font-normal text-muted-foreground"
+              aria-label={`Open Agents, ${agentPanelModel.liveCount} active ${agentPanelModel.liveCount === 1 ? "subagent" : "subagents"}`}
+              onClick={addAgentsSurface}
+            >
+              <UsersIcon aria-hidden className="size-3.5" />
+              <span className="tabular-nums">{agentPanelModel.liveCount}</span>
+              <span className="@max-[400px]:sr-only">
+                {agentPanelModel.liveCount === 1 ? "active subagent" : "active subagents"}
+              </span>
+            </Button>
+          ) : null}
+        </span>
+      ),
       // Stop belongs to background work only. Compaction is the provider
       // rewriting its own history; there is nothing here to stop.
       ...(activeBackgroundWait === null
@@ -5521,6 +5511,8 @@ function ChatViewContent(props: ChatViewProps) {
     activeBackgroundWait,
     activeThread,
     activeWaitLabel,
+    addAgentsSurface,
+    agentPanelModel.liveCount,
     handleStopBackgroundWork,
     isStoppingBackgroundWork,
   ]);
@@ -7982,7 +7974,6 @@ function ChatViewContent(props: ChatViewProps) {
         onUseArtifactTemplate={useArtifactTemplate}
         onCiteAssistantText={citeAssistantText}
         tasksModel={backgroundTasksModel}
-        waits={agentWaits}
       />
     ) : (renderedRightPanelSurface?.kind === "files" ||
         renderedRightPanelSurface?.kind === "file") &&

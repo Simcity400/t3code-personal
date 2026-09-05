@@ -29,12 +29,15 @@ The desktop updater selects the matching installer during the
 supported-update check, before electron-updater caches metadata or downloads it.
 This is necessary because NSIS picks the first executable in a multi-file manifest;
 it does not select by architecture. A missing matching installer fails the check.
-The shared private GitHub manifest remains compatible with the existing feed.
+On Windows, Electron's `app.runningUnderARM64Translation` selects ARM64 even when
+an earlier update left the app running as x64 under emulation. Native x64 hosts
+continue to select x64. The shared private GitHub manifest remains compatible with
+the existing feed.
 
 An older installed updater cannot receive this selection fix before downloading
 its first corrected build. An ARM user may therefore need to install that first
 corrected ARM release manually once. Subsequent corrected releases preserve the
-installed architecture. Publishing or installing builds is separate from editing
+native host architecture. Publishing or installing builds is separate from editing
 and validating the pipeline.
 
 The largest remaining maintenance risk is fork behavior embedded in upstream's

@@ -14,7 +14,6 @@ import {
   backgroundTaskSourceLabel,
   formatElapsedBetween,
   isActiveBackgroundTaskStatus,
-  type AgentWaitState,
   type BackgroundTasksPanelModel,
   type BackgroundTaskKind,
   type RuntimeBackgroundTask,
@@ -133,67 +132,6 @@ const TaskRow = memo(
     prev.ownerLabel === next.ownerLabel &&
     (!isActiveBackgroundTaskStatus(next.task.status) || prev.clock.tick === next.clock.tick),
 );
-
-export function WaitingOnSection({
-  waits,
-  clock,
-}: {
-  readonly waits: ReadonlyArray<AgentWaitState>;
-  readonly clock: AgentStatusClockSnapshot;
-}) {
-  if (waits.length === 0) return null;
-  const needsUser = waits.some((wait) => wait.needsUser);
-  return (
-    <View
-      accessibilityLabel="Waiting on"
-      className={
-        needsUser
-          ? "gap-1 rounded-2xl border border-danger-border bg-card/40 p-2"
-          : "gap-1 rounded-2xl border border-border bg-card/20 p-2"
-      }
-    >
-      <View className="flex-row items-center gap-2 px-1 py-1">
-        <Text
-          className={
-            needsUser
-              ? "text-xs font-t3-semibold uppercase tracking-wider text-danger-foreground"
-              : "text-xs font-t3-semibold uppercase tracking-wider text-foreground-muted"
-          }
-        >
-          Waiting on
-        </Text>
-        <Text className="text-xs text-foreground-muted">{waits.length}</Text>
-      </View>
-      {waits.map((wait) => (
-        <View
-          key={`${wait.ownerId ?? "main"}:${wait.kind}`}
-          accessibilityLabel={`${wait.ownerLabel} is waiting on ${wait.label}`}
-          className="flex-row items-center gap-2 px-1"
-        >
-          <Text className="shrink-0 text-xs font-t3-semibold text-foreground" numberOfLines={1}>
-            {wait.ownerLabel}
-          </Text>
-          <Text className="shrink-0 text-xs text-foreground-muted">{"←"}</Text>
-          <Text
-            className={
-              wait.needsUser
-                ? "min-w-0 flex-1 text-xs text-danger-foreground"
-                : "min-w-0 flex-1 text-xs text-foreground-muted"
-            }
-            numberOfLines={1}
-          >
-            {wait.label}
-          </Text>
-          {wait.since ? (
-            <Text className="shrink-0 tabular-nums text-xs text-foreground-muted">
-              {formatElapsedBetween(wait.since, null, clock.nowMs)}
-            </Text>
-          ) : null}
-        </View>
-      ))}
-    </View>
-  );
-}
 
 export function BackgroundTasksSection({
   model,

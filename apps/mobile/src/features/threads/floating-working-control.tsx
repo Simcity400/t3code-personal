@@ -13,6 +13,7 @@ import Animated, {
 import { withUniwind } from "uniwind";
 
 import { AppText as Text } from "../../components/AppText";
+import { SymbolView } from "../../components/AppSymbol";
 import { ControlPill } from "../../components/ControlPill";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 
@@ -57,6 +58,8 @@ export type FloatingWorkingStatus =
 export function FloatingWorkingControl(props: {
   readonly colorScheme: "light" | "dark";
   readonly status: FloatingWorkingStatus | null;
+  readonly liveAgentCount: number;
+  readonly onOpenAgents?: (() => void) | undefined;
   readonly showScrollToEnd: boolean;
   readonly onScrollToEnd: () => void;
   readonly onStopAll?: (() => void) | undefined;
@@ -81,6 +84,24 @@ export function FloatingWorkingControl(props: {
     return null;
   }
 
+  const statusContent = props.status ? (
+    <View className="flex-row items-center">
+      <FloatingStatusLabel status={props.status} />
+      {props.status.kind !== "syncing" && props.liveAgentCount > 0 && props.onOpenAgents ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Open Agents, ${props.liveAgentCount} active ${props.liveAgentCount === 1 ? "subagent" : "subagents"}`}
+          onPress={props.onOpenAgents}
+          className="h-11 min-w-11 flex-row items-center justify-center gap-1.5 px-3 active:opacity-70"
+        >
+          <SymbolView name="person.2" size={14} tintColorClassName="accent-foreground-muted" />
+          <Text className="text-xs tabular-nums text-foreground">{props.liveAgentCount}</Text>
+        </Pressable>
+      ) : null}
+      {props.onStopAll ? <StopAllButton onPress={props.onStopAll} /> : null}
+    </View>
+  ) : null;
+
   return (
     <Animated.View
       pointerEvents="box-none"
@@ -98,13 +119,15 @@ export function FloatingWorkingControl(props: {
           <AnimatedGlassView
             colorScheme={props.colorScheme}
             glassEffectStyle="regular"
-            pointerEvents={props.onStopAll ? "auto" : "none"}
-            isInteractive={Boolean(props.onStopAll)}
-            className="h-11 flex-row items-center justify-center overflow-hidden rounded-full"
+            isInteractive={
+              Boolean(props.onStopAll) ||
+              (props.liveAgentCount > 0 && props.onOpenAgents !== undefined)
+            }
+            pointerEvents="box-none"
+            className="h-11 justify-center overflow-hidden rounded-full"
             style={timerStyle}
           >
-            <FloatingStatusLabel status={props.status} />
-            {props.onStopAll ? <StopAllButton onPress={props.onStopAll} /> : null}
+            {statusContent}
           </AnimatedGlassView>
 
           <AnimatedGlassView
@@ -125,12 +148,11 @@ export function FloatingWorkingControl(props: {
       ) : props.status !== null ? (
         <View pointerEvents="box-none" className="flex-row items-center gap-4">
           <Animated.View
-            pointerEvents={props.onStopAll ? "auto" : "none"}
-            className="h-11 flex-row items-center justify-center rounded-full border border-border bg-card shadow-md shadow-black/10"
+            pointerEvents="box-none"
+            className="h-11 justify-center rounded-full border border-border bg-card shadow-md shadow-black/10"
             style={timerStyle}
           >
-            <FloatingStatusLabel status={props.status} />
-            {props.onStopAll ? <StopAllButton onPress={props.onStopAll} /> : null}
+            {statusContent}
           </Animated.View>
 
           <Animated.View

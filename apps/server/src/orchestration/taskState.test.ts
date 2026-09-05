@@ -7,7 +7,7 @@ import {
   readTaskStates,
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
-import { projectTaskActivity, updateTaskState } from "./taskState.ts";
+import { projectTaskActivity, taskStateActivity, updateTaskState } from "./taskState.ts";
 import { retainThreadActivities } from "./projector.ts";
 
 const threadId = ThreadId.make("task-state-test");
@@ -122,6 +122,127 @@ describe("server task state", () => {
       agentKind: "agent",
     });
   });
+  const unnamedAgentId = "01a0703f-a995-7000-8000-123456789abc";
+
+  it("names an unnamed agent from its assignment and retains that name through updates", () => {
+    const start = updateTaskState(
+      undefined,
+      activity("task.started", {
+        taskId: unnamedAgentId,
+        agentKind: "agent",
+        role: "general-purpose",
+        title: unnamedAgentId,
+        prompt: "## Review subagent controls\n\nCheck keyboard access and stop behavior.",
+      }),
+    );
+    expect(start?.title).toBe("Review subagent controls");
+    const progress = updateTaskState(
+      start,
+      activity("task.progress", {
+        taskId: unnamedAgentId,
+        title: unnamedAgentId,
+        description: unnamedAgentId,
+        prompt: "Now check the mobile client.",
+        summary: "Reading TaskControls.tsx",
+      }),
+    );
+    expect(progress).toMatchObject({
+      id: unnamedAgentId,
+      title: "Review subagent controls",
+      progress: "Reading TaskControls.tsx",
+    });
+  });
+
+  it("names an existing unnamed agent when its assignment is recovered later", () => {
+    const start = updateTaskState(
+      undefined,
+      activity("task.started", { taskId: unnamedAgentId, taskType: "subagent" }),
+    );
+    const recovered = updateTaskState(
+      start,
+      activity("task.updated", {
+        taskId: unnamedAgentId,
+        description: unnamedAgentId,
+        prompt: "\n  Review accessibility\r\nRead-only review.",
+      }),
+    );
+    expect(recovered?.title).toBe("Review accessibility");
+    expect(recovered?.activationCount).toBe(1);
+  });
+
+  it("prefers provider names over an assignment fallback", () => {
+    const start = updateTaskState(
+      undefined,
+      activity("task.started", {
+        taskId: unnamedAgentId,
+        taskType: "subagent",
+        prompt: "Review accessibility",
+      }),
+    );
+    const named = updateTaskState(
+      start,
+      activity("task.updated", { taskId: unnamedAgentId, title: "Accessibility reviewer" }),
+    );
+    expect(named?.title).toBe("Accessibility reviewer");
+    const resumed = updateTaskState(
+      named,
+      activity("task.started", { taskId: unnamedAgentId, prompt: "Check the fixes" }),
+    );
+    expect(resumed?.title).toBe("Accessibility reviewer");
+  });
+
+  it("bounds assignment labels at a word boundary", () => {
+    const state = updateTaskState(
+      undefined,
+      activity("task.started", {
+        taskId: unnamedAgentId,
+        taskType: "subagent",
+        prompt:
+          "Review the subagent controls for keyboard accessibility, mobile support, and consistent hover styling.",
+      }),
+    );
+    expect(state?.title).toBe(
+      "Review the subagent controls for keyboard accessibility, mobile support, and…",
+    );
+  });
+
+  it("does not use agent assignments to rename background tasks", () => {
+    const state = updateTaskState(
+      undefined,
+      activity("task.started", {
+        taskId: "shell",
+        taskType: "local_bash",
+        prompt: "Review accessibility",
+      }),
+    );
+    expect(state?.title).toBe("shell");
+  });
+
+  it("recovers saved UUID labels from the earliest retained assignment without new events", () => {
+    const saved = updateTaskState(
+      undefined,
+      activity("task.started", { taskId: unnamedAgentId, taskType: "subagent" }),
+    )!;
+    const rows = [
+      taskStateActivity(threadId, saved),
+      activity("task.progress", { taskId: unnamedAgentId, prompt: "Check fixes" }, 3),
+      activity("task.progress", { taskId: unnamedAgentId, prompt: "Review subagent controls" }, 2),
+      activity("task.progress", { taskId: unnamedAgentId, prompt: `gAAAAA${"x".repeat(90)}` }, 1),
+    ];
+    expect(readTaskStates(rows)[0]).toMatchObject({
+      title: "Review subagent controls",
+      status: saved.status,
+      activationCount: saved.activationCount,
+    });
+    expect(saved.title).toBe(unnamedAgentId);
+    expect(
+      readTaskStates([
+        ...rows.slice(1),
+        taskStateActivity(threadId, { ...saved, title: "Controls reviewer" }),
+      ])[0]?.title,
+    ).toBe("Controls reviewer");
+  });
+
   it("preserves a shell's identity and owner through thin updates", () => {
     const start = updateTaskState(
       undefined,

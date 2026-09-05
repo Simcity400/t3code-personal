@@ -1,4 +1,4 @@
-/** Shared agent presentation and transcript selection. State is owned by the server. */
+/** Shared agent presentation and transcript selection. Task state is owned by the server. */
 import {
   MessageId,
   readTaskStates,
@@ -8,8 +8,14 @@ import {
   type OrchestrationMessage,
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
+import { Atom } from "effect/unstable/reactivity";
 
 import { isBackgroundTaskActivity } from "./taskSurface.ts";
+
+/** Keep each thread's disclosure choice while its Agents view is unmounted. */
+export const idleAgentsOpenAtom = Atom.family((threadKey: string | null) =>
+  Atom.make(true).pipe(Atom.keepAlive, Atom.withLabel(`idle-agents-open:${threadKey}`)),
+);
 
 export type RuntimeSubagentStatus =
   | "pending"
@@ -162,7 +168,9 @@ export function foldSubagentActivities(
   return readTaskStates(activities)
     .filter((task) => task.agentKind === "agent")
     .map((task) =>
-      options?.sessionLive === false && isActiveSubagentStatus(task.status)
+      options?.sessionLive === false &&
+      task.executionOwner !== "cross-provider" &&
+      isActiveSubagentStatus(task.status)
         ? {
             ...task,
             status: "interrupted" as const,

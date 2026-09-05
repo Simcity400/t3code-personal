@@ -1,17 +1,17 @@
 import {
   deriveBackgroundTasksPanelModel,
-  type AgentWaitState,
   type RuntimeBackgroundTask,
 } from "@t3tools/client-runtime/state/backgroundTasks";
 import { createElement } from "react";
 import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { BackgroundTasksSection, WaitingOnSection } from "./BackgroundTasksSection";
+import { BackgroundTasksSection } from "./BackgroundTasksSection";
 
 vi.mock("react-native", () => ({ Pressable: "Pressable", View: "View" }));
 vi.mock("../../components/AppText", () => ({ AppText: "Text" }));
 vi.mock("../../components/AppSymbol", () => ({ SymbolView: "SymbolView" }));
+vi.mock("./TaskControls", () => ({ TaskStopButton: () => null }));
 
 const clock = { nowMs: Date.parse("2026-09-04T10:00:30.000Z"), tick: 1, reduceMotion: false };
 
@@ -82,24 +82,5 @@ describe("mobile BackgroundTasksSection", () => {
       }),
     );
     expect(markup).toContain("pnpm test --watch");
-  });
-});
-
-describe("mobile WaitingOnSection", () => {
-  it("prints the compacting wait as a machine wait", () => {
-    const wait: AgentWaitState = {
-      ownerId: null,
-      ownerLabel: "Main",
-      kind: "compacting",
-      label: "Compacting context",
-      since: "2026-09-04T10:00:00.000Z",
-      blockingIds: [],
-      needsUser: false,
-    };
-    const markup = renderedText(createElement(WaitingOnSection, { waits: [wait], clock }));
-    expect(markup).toContain("Main");
-    expect(markup).toContain("Compacting context");
-    // No user action shortens a compaction, so the section stays untinted.
-    expect(markup).not.toContain("border-danger-border");
   });
 });
