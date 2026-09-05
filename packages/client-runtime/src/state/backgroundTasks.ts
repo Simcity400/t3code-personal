@@ -611,9 +611,12 @@ export interface BackgroundTaskFinishedEntry {
 }
 
 export interface BackgroundTasksPanelModel {
-  /** Live, failed and interrupted work, grouped by owner — always visible. */
+  /** Live and idle work, grouped by owner — always visible. */
   readonly groups: ReadonlyArray<BackgroundTaskGroup>;
-  /** Deliberate endings, flat and newest-first — behind a disclosure. */
+  /**
+   * Every settled task, failures included, flat and in the fold's order
+   * (newest first sighting first) — behind a disclosure.
+   */
   readonly finished: ReadonlyArray<BackgroundTaskFinishedEntry>;
   readonly activeCount: number;
   readonly failedCount: number;
@@ -661,15 +664,12 @@ export function deriveBackgroundTasksPanelModel(input: {
       : (agentTitles?.get(task.ownerAgentId) ?? task.ownerAgentId);
 
   for (const task of tasks) {
-    // Failures and interruptions stay beside live work. A failure explains a
-    // thread that is quietly wrong; an interruption means the work died with
-    // its session and may need restarting. Only deliberate endings —
-    // completed, and stopped by the user — collapse away.
-    if (
-      !isTerminalBackgroundTaskStatus(task.status) ||
-      task.status === "failed" ||
-      task.status === "interrupted"
-    ) {
+    // Only work that is still running (or idle and resumable) stays in the
+    // owner groups. Every settled task, failures included, is finished and
+    // lists under the Finished disclosure; a failure that stayed beside live
+    // work read as still running. The header's failed count keeps failures
+    // from going unnoticed when that disclosure is closed.
+    if (!isTerminalBackgroundTaskStatus(task.status)) {
       visible.push(task);
     } else {
       // Finished rows are flat, so each carries its owner's name; without it
@@ -687,9 +687,8 @@ export function deriveBackgroundTasksPanelModel(input: {
 
   const groups: BackgroundTaskGroup[] = [];
   const pushGroup = (ownerId: string | null, rows: ReadonlyArray<RuntimeBackgroundTask>) => {
-    // Within a group: live work first, then failures, then the rest —
-    // ambient housekeeping always last, since it is noise by the provider's
-    // own admission.
+    // Within a group: live work first, then idle — ambient housekeeping
+    // always last, since it is noise by the provider's own admission.
     const ordered = [...rows].sort((left, right) => {
       if (left.ambient !== right.ambient) return left.ambient ? 1 : -1;
       const leftRank = isActiveBackgroundTaskStatus(left.status) ? 0 : 1;
