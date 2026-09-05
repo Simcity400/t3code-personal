@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 const commands = vi.hoisted(() => ({ interrupt: vi.fn() }));
 vi.mock("react-native", () => ({ Pressable: "Pressable", View: "View" }));
 vi.mock("../../components/AppText", () => ({ AppText: "Text" }));
+vi.mock("../../components/AppSymbol", () => ({ SymbolView: "SymbolView" }));
 vi.mock("../../state/threads", () => ({ threadEnvironment: { interruptTurn: {} } }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => commands.interrupt }));
 
@@ -153,11 +154,14 @@ describe("mobile task controls", () => {
       taskControlActivity("resume", "requested"),
     ];
     renderTask(task, events);
-    expect(button("Resume Reviewer").props.disabled).toBe(true);
+    expect(button("Resuming Reviewer").props.accessibilityState).toEqual({
+      disabled: true,
+      busy: true,
+    });
     // The projection replaces the request with acceptance under the same ID.
     events[1] = taskControlActivity("resume", "accepted");
     renderTask(task, events);
-    expect(button("Resume Reviewer").props.disabled).toBe(true);
+    expect(button("Resuming Reviewer").props.disabled).toBe(true);
     renderTask(
       { ...task, status: "running", canStop: true, updatedAt: "2026-09-05T00:00:04.000Z" },
       events,
@@ -173,9 +177,12 @@ describe("mobile task controls", () => {
   it("keeps Stop pending when acceptance replaces the request until newer task state arrives", () => {
     const runningTask = { ...task, status: "running" as const, canStop: true };
     renderTask(runningTask, [taskControlActivity("stop", "requested")]);
-    expect(button("Stop Reviewer").props.disabled).toBe(true);
+    expect(button("Stopping Reviewer").props.accessibilityState).toEqual({
+      disabled: true,
+      busy: true,
+    });
     renderTask(runningTask, [taskControlActivity("stop", "accepted")]);
-    expect(button("Stop Reviewer").props.disabled).toBe(true);
+    expect(button("Stopping Reviewer").props.disabled).toBe(true);
     renderTask({ ...runningTask, updatedAt: "2026-09-05T00:00:04.000Z" }, [
       taskControlActivity("stop", "accepted"),
     ]);
@@ -188,10 +195,11 @@ describe("mobile task controls", () => {
       const currentTask =
         action === "stop" ? { ...task, status: "running" as const, canStop: true } : task;
       const label = action === "stop" ? "Stop Reviewer" : "Resume Reviewer";
+      const busyLabel = action === "stop" ? "Stopping Reviewer" : "Resuming Reviewer";
       renderTask(currentTask, [taskControlActivity(action, "requested")]);
-      expect(button(label).props.disabled).toBe(true);
+      expect(button(busyLabel).props.disabled).toBe(true);
       renderTask(currentTask, [taskControlActivity(action, "accepted")]);
-      expect(button(label).props.disabled).toBe(true);
+      expect(button(busyLabel).props.disabled).toBe(true);
       renderTask(currentTask, [taskControlActivity(action, "failed", "Action unavailable")]);
       expect(button(label).props.disabled).toBe(false);
       expect(JSON.stringify(renderer!.toJSON())).toContain("Action unavailable");

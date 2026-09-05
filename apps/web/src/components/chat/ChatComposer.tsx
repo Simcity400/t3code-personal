@@ -12,6 +12,7 @@ import type {
   ScopedThreadRef,
   ServerProvider,
   ThreadId,
+  TimestampFormat,
 } from "@t3tools/contracts";
 import {
   ProviderDriverKind,
@@ -184,7 +185,6 @@ import {
   renderProviderTraitsPicker,
 } from "./composerProviderState";
 import { ContextWindowMeter } from "./ContextWindowMeter";
-import { resolveContextWindowModelDisplayName } from "./ContextWindowMeter.logic";
 import {
   attachVideoThumbnail,
   buildExpandedImagePreview,
@@ -1003,7 +1003,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
 const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(props: {
   compact: boolean;
   activeContextWindow: ContextWindowSnapshot | null;
-  activeThreadModelDisplayName: string | null;
+  timestampFormat: TimestampFormat;
   isPreparingWorktree: boolean;
   pendingAction: {
     questionIndex: number;
@@ -1022,7 +1022,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   hasSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   showSendWhileRunning?: boolean;
-  showSecondaryStatus: boolean;
+  provider: ServerProvider | null;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onStopAll: () => void;
@@ -1033,15 +1033,14 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
 }) {
   return (
     <>
-      {props.showSecondaryStatus && props.activeContextWindow ? (
-        <ContextWindowMeter
-          usage={props.activeContextWindow}
-          modelDisplayName={props.activeThreadModelDisplayName}
-          onCompact={props.onCompactContext}
-          compactDisabled={props.compactDisabled}
-          compactDisabledReason={props.compactDisabledReason}
-        />
-      ) : null}
+      <ContextWindowMeter
+        provider={props.provider}
+        usage={props.activeContextWindow}
+        timestampFormat={props.timestampFormat}
+        onCompact={props.onCompactContext}
+        compactDisabled={props.compactDisabled}
+        compactDisabledReason={props.compactDisabledReason}
+      />
       <ComposerPrimaryActions
         compact={props.compact}
         pendingAction={props.pendingAction}
@@ -1719,14 +1718,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ? selectedModelForPicker
       : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
   }, [modelOptionsByInstance, selectedInstanceId, selectedModelForPicker, selectedProvider]);
-
-  // ------------------------------------------------------------------
-  // Context window
-  // ------------------------------------------------------------------
-  const activeThreadModelDisplayName = useMemo(
-    () => resolveContextWindowModelDisplayName(activeThreadModelSelection, modelOptionsByInstance),
-    [activeThreadModelSelection, modelOptionsByInstance],
-  );
 
   // ------------------------------------------------------------------
   // Composer-local state
@@ -3749,8 +3740,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         content: activityStackContent,
       }
     : null;
+  // Keep the working status and its agent controls ahead of task progress.
+  // Message sync still leads while the conversation is loading.
   const bannerStackItems = activityStackItem
-    ? [activityStackItem, ...props.bannerItems]
+    ? props.threadSyncPhase
+      ? [activityStackItem, ...props.bannerItems]
+      : [...props.bannerItems, activityStackItem]
     : props.bannerItems;
   useEffect(() => {
     if (activeTasksProgress === null || activeTaskSteps === null) {
@@ -5076,7 +5071,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 className={cn(
                   "relative",
                   isComposerResting && "flex min-w-0 items-center gap-1",
-                  isComposerResting && (showComposerAttachAction ? "pr-20" : "pr-12"),
+                  isComposerResting && (showComposerAttachAction ? "pr-30" : "pr-22"),
                 )}
               >
                 <ComposerPromptEditor
@@ -5244,10 +5239,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   ) : null}
                   <ComposerFooterPrimaryActions
                     compact={isComposerResting || isComposerPrimaryActionsCompact}
-                    activeContextWindow={
-                      settings.contextWindowMeterEnabled ? activeContextWindow : null
-                    }
-                    activeThreadModelDisplayName={activeThreadModelDisplayName}
+                    activeContextWindow={activeContextWindow}
+                    timestampFormat={settings.timestampFormat}
                     pendingAction={pendingPrimaryAction}
                     isRunning={phase === "running"}
                     showPlanFollowUpPrompt={
@@ -5266,7 +5259,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     hasSendableContent={composerSendState.hasSendableContent}
                     preserveComposerFocusOnPointerDown={isMobileViewport || isComposerResting}
                     showSendWhileRunning={isMobileViewport}
-                    showSecondaryStatus={!isComposerResting}
+                    provider={selectedProviderStatus}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}
                     onStopAll={onStopAll}

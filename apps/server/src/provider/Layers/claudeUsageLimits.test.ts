@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
+import { it as effectIt } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Ref from "effect/Ref";
 
-import { claudeRateLimitEventToUpdate, claudeUsageResponseToLimits } from "./claudeUsageLimits.ts";
+import {
+  claudeRateLimitEventToUpdate,
+  claudeUsageResponseToLimits,
+  recordClaudeUsageResponse,
+} from "./claudeUsageLimits.ts";
+import { applyUsageLimitsUpdate } from "../providerUsageLimits.ts";
 
 const checkedAt = "2026-07-18T10:00:00.000Z";
 const noNames = { overageIncluded: undefined } as const;
@@ -91,9 +99,63 @@ describe("claudeUsageResponseToLimits", () => {
       claudeUsageResponseToLimits({
         checkedAt,
         response: { rate_limits_available: false, rate_limits: null },
+        usesApiBilling: true,
       }).limits,
     ).toEqual({ checkedAt, windows: [], unavailable: { reason: "unsupported" } });
   });
+
+  it("allows a live limit update after a profile-limited usage response", () => {
+    const previous = claudeUsageResponseToLimits({
+      checkedAt,
+      response: { rate_limits_available: false, rate_limits: null },
+    }).limits;
+    expect(previous.unavailable?.reason).toBe("probeFailed");
+    expect(previous.unavailable?.message).toContain("profile access");
+    const window = {
+      id: "five_hour",
+      kind: "session" as const,
+      label: "Session",
+      usedPercent: 54,
+      windowDurationMins: 300,
+    };
+    const updated = applyUsageLimitsUpdate({ previous, checkedAt, update: { windows: [window] } });
+    expect(updated?.unavailable).toBeUndefined();
+    expect(updated?.windows).toEqual([window]);
+  });
+
+  it("treats an available endpoint without data as a failed read", () => {
+    const limits = claudeUsageResponseToLimits({
+      checkedAt,
+      response: { rate_limits_available: true, rate_limits: null },
+    }).limits;
+    expect(limits.unavailable?.reason).toBe("probeFailed");
+    expect(limits.unavailable?.message).toContain("no usage data");
+  });
+
+  effectIt.effect("keeps the known model bucket usable after a failed read", () =>
+    Effect.gen(function* () {
+      const names = yield* Ref.make({ overageIncluded: "Fable" as string | undefined });
+      yield* recordClaudeUsageResponse(names, {
+        checkedAt,
+        response: { rate_limits_available: false, rate_limits: null },
+      });
+      const update = claudeRateLimitEventToUpdate(
+        {
+          status: "allowed",
+          rateLimitType: "seven_day_overage_included" as never,
+          utilization: 0.4,
+        },
+        yield* Ref.get(names),
+      );
+      expect(update?.windows[0]?.label).toBe("Weekly · Fable");
+      yield* recordClaudeUsageResponse(names, {
+        checkedAt,
+        usesApiBilling: true,
+        response: { rate_limits_available: false, rate_limits: null },
+      });
+      expect((yield* Ref.get(names)).overageIncluded).toBeUndefined();
+    }),
+  );
 
   it("skips a window the endpoint reports without a utilization", () => {
     expect(

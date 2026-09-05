@@ -1,4 +1,6 @@
 import { WorkflowGroup } from "./WorkflowGroup";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   threadHasOlderTurns,
   requestOlderThreadTurns,
@@ -10,17 +12,14 @@ import {
   flattenAgentPanelRoster,
   foldSubagentActivities,
   formatSubagentTitle,
+  idleAgentsOpenAtom,
   isActiveSubagentStatus,
   subagentPanelSection,
   selectSubagentTranscriptActivities,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
-  deriveAgentWaitReasons,
-  deriveAgentWaitStates,
-  deriveCompactingSince,
-  deriveDetachedTaskIds,
   deriveBackgroundTasksPanelModel,
-  deriveOpenRequestWaits,
+  deriveCompactingSince,
   foldBackgroundTasks,
 } from "@t3tools/client-runtime/state/backgroundTasks";
 import { deriveContextWindowSnapshotsByAgent } from "@t3tools/client-runtime/state/contextWindow";
@@ -46,7 +45,7 @@ import { useThreadSelection } from "../../state/use-thread-selection";
 import { ThreadFeed } from "../threads/ThreadFeed";
 import { AgentCard, AgentStatus } from "./AgentCard";
 import { useAgentStatusClock } from "./agentStatusClock";
-import { BackgroundTasksSection, WaitingOnSection } from "./BackgroundTasksSection";
+import { BackgroundTasksSection } from "./BackgroundTasksSection";
 
 type ThreadAgentsRouteScreenProps = StaticScreenProps<{
   readonly environmentId: string;
@@ -70,7 +69,14 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
   const { selectedEnvironmentRuntime } = useThreadSelection();
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [idleOpen, setIdleOpen] = useState(true);
+  const idleOpenAtom = idleAgentsOpenAtom(
+    scopedThreadKey({
+      environmentId: EnvironmentId.make(_props.route.params.environmentId),
+      threadId: ThreadId.make(_props.route.params.threadId),
+    }),
+  );
+  const idleOpen = useAtomValue(idleOpenAtom);
+  const setIdleOpen = useAtomSet(idleOpenAtom);
   const chevronColor = useUniwindTheme()["--color-chevron"];
   const transcriptListRef = useRef<LegendListRef>(null);
   const freeze = useSharedValue(false);
@@ -158,34 +164,8 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
       }),
     [allAgents, backgroundTasks],
   );
-  const agentWaits = useMemo(
-    () =>
-      deriveAgentWaitStates({
-        tasks: backgroundTasks,
-        agents: allAgents.map((agent) => ({
-          id: agent.id,
-          title: formatSubagentTitle(agent.title),
-          status: agent.status,
-          startedAt: agent.startedAt,
-          // Members block their coordinator, not main.
-          parentAgentId: agent.parentAgentId,
-        })),
-        requests: activities ? deriveOpenRequestWaits(activities) : [],
-        agentWaitReasons: activities ? deriveAgentWaitReasons(activities) : new Map(),
-        detachedIds: activities ? deriveDetachedTaskIds(activities) : new Set(),
-        // A dead session cannot still be compacting: the wait dies with the
-        // provider process exactly as running tasks do.
-        compactingSince: activities && agentSessionLive ? deriveCompactingSince(activities) : null,
-        mainTurnActive: sessionStatus === "running",
-      }),
-    [agentSessionLive, allAgents, backgroundTasks, sessionStatus, activities],
-  );
   const statusClock = useAgentStatusClock(
-    activeAgents.length > 0 ||
-      selectedAgentWorking ||
-      backgroundTasksModel.activeCount > 0 ||
-      // A pending approval with no running work still shows a ticking wait.
-      agentWaits.length > 0,
+    activeAgents.length > 0 || selectedAgentWorking || backgroundTasksModel.activeCount > 0,
   );
   // The status clock re-renders this screen every second while agents are
   // active; a fresh latestTurn object here would defeat ThreadFeed's memo and
@@ -287,7 +267,7 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
   return (
     <View className="flex-1 bg-screen">
       <ScrollView contentContainerClassName="gap-2 p-3">
-        {allAgents.length === 0 && !backgroundTasksModel.hasTasks && agentWaits.length === 0 ? (
+        {allAgents.length === 0 && !backgroundTasksModel.hasTasks ? (
           <View className="items-center px-8 py-16">
             <Text className="text-base font-t3-semibold text-foreground">No agents yet</Text>
             <Text className="mt-2 text-center text-sm leading-5 text-foreground-muted">
@@ -297,7 +277,6 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
           </View>
         ) : (
           <>
-            <WaitingOnSection waits={agentWaits} clock={statusClock} />
             {activeAgents.length > 0 ? (
               <View className="gap-2 rounded-2xl border border-primary/25 bg-card/40 p-2">
                 <View className="flex-row items-center gap-2 px-1 py-1">
@@ -314,7 +293,6 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
                           key={group.workflow.id}
                           group={visible}
                           clock={statusClock}
-                          windows={contextWindowByAgentId}
                           onOpen={openAgent}
                         />,
                       ]
@@ -327,7 +305,6 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
                       key={agent.id}
                       agent={agent}
                       clock={statusClock}
-                      contextWindow={contextWindowByAgentId.get(agent.id) ?? null}
                       onOpen={openAgent}
                     />
                   ))}
@@ -363,7 +340,6 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
                               key={group.workflow.id}
                               group={visible}
                               clock={statusClock}
-                              windows={contextWindowByAgentId}
                               onOpen={openAgent}
                             />,
                           ]
@@ -376,7 +352,6 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
                           key={agent.id}
                           agent={agent}
                           clock={statusClock}
-                          contextWindow={contextWindowByAgentId.get(agent.id) ?? null}
                           onOpen={openAgent}
                         />
                       ))}

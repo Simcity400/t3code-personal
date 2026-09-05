@@ -25,6 +25,10 @@ vi.mock("electron-updater", () => ({
   autoUpdater: autoUpdaterMock,
 }));
 
+vi.mock("electron", () => ({
+  app: { runningUnderARM64Translation: false },
+}));
+
 import * as ElectronUpdater from "./ElectronUpdater.ts";
 
 describe("ElectronUpdater", () => {

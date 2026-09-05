@@ -12,7 +12,7 @@ import { TaskControls, TaskStopButton } from "./agents/TaskControls";
  *   it settles; older collapsed runs can still be opened at run granularity.
  * - Static status dots, DOM-write elapsed timers, plain token counters.
  */
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { LegendListRef } from "@legendapp/list/react";
 import type {
   AgentPanelModel,
@@ -23,6 +23,7 @@ import {
   formatSubagentModelLabel,
   formatSubagentTitle,
   formatSubagentTokenCount,
+  idleAgentsOpenAtom,
   filterWorkflowForPanelSection,
   flattenAgentPanelRoster,
   isActiveSubagentStatus,
@@ -33,10 +34,7 @@ import {
   selectSubagentTranscriptMessages,
   subagentPanelSection,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import type {
-  AgentWaitState,
-  BackgroundTasksPanelModel,
-} from "@t3tools/client-runtime/state/backgroundTasks";
+import type { BackgroundTasksPanelModel } from "@t3tools/client-runtime/state/backgroundTasks";
 import {
   deriveCompactingSince,
   emptyBackgroundTasksPanelModel,
@@ -58,11 +56,10 @@ import type {
   TimestampFormat,
 } from "@t3tools/contracts";
 import { ArrowLeft, Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
-import { createContext, use, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   BackgroundTasksSection,
-  WaitingOnStrip,
   subscribeElapsedTick,
 } from "~/components/agents/BackgroundTasksSection";
 import {
@@ -71,11 +68,7 @@ import {
   deriveWorkLogEntries,
   type TimelineEntry,
 } from "~/session-logic";
-import {
-  deriveContextWindowSnapshotsByAgent,
-  deriveLatestContextWindowSnapshot,
-  type ContextWindowSnapshot,
-} from "~/lib/contextWindow";
+import { deriveLatestContextWindowSnapshot } from "~/lib/contextWindow";
 import { ContextWindowMeter } from "~/components/chat/ContextWindowMeter";
 import type { TurnDiffSummary } from "~/types";
 import { cn } from "~/lib/utils";
@@ -103,9 +96,6 @@ const STATUS_VISUALS: Record<RuntimeSubagent["status"], { dotClass: string; labe
   cancelled: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
   interrupted: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
 };
-
-/** Stable identity so the default prop never remounts the strip. */
-const EMPTY_AGENT_WAITS: ReadonlyArray<AgentWaitState> = [];
 
 function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
   return (
@@ -196,61 +186,24 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
   );
 }
 
-/**
- * Per-agent context-window snapshots, keyed by agent id.
- *
- * Supplied through context rather than threaded as a prop: roster rows sit
- * three components deep (section → workflow → phase → row), and this data is
- * read only by the leaf.
- */
-const EMPTY_AGENT_CONTEXT_WINDOWS: ReadonlyMap<string | null, ContextWindowSnapshot> = new Map();
-const AgentContextWindowCtx = createContext<ReadonlyMap<string | null, ContextWindowSnapshot>>(
-  EMPTY_AGENT_CONTEXT_WINDOWS,
-);
-
-/**
- * "42% ctx" — the roster's compact form of the transcript header's full meter.
- *
- * Deliberately a PERCENTAGE, never a token count: the neighbouring "Σ … tok"
- * is a cumulative total, and two raw token figures side by side are
- * indistinguishable to a reader.
- */
-function formatContextPercentage(usage: ContextWindowSnapshot): string | null {
-  if (usage.usedPercentage === null || !Number.isFinite(usage.usedPercentage)) {
-    return null;
-  }
-  return `${Math.round(usage.usedPercentage)}% ctx`;
-}
-
 function AgentRow({ agent, onOpen }: { agent: RuntimeSubagent; onOpen: () => void }) {
-  const contextWindow = use(AgentContextWindowCtx).get(agent.id) ?? null;
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const title = formatSubagentTitle(agent.title);
-  const role =
-    agent.role?.trim().toLocaleLowerCase() === agent.title.trim().toLocaleLowerCase()
-      ? null
-      : agent.role;
-  // Two different numbers that read alike unless they are labelled apart:
-  // "Σ … tok" is everything this agent has ever processed (a running total,
-  // summed into the panel footer the same way), while "… ctx" is how full its
-  // context window is right now. The sigma matches the footer so a reader
-  // learns one convention, not two.
   const metadata = [
     modelLabel,
     agent.usage ? `Σ ${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "Σ — tok",
-    contextWindow ? formatContextPercentage(contextWindow) : null,
     agent.usage?.toolUses !== undefined ? `Σ ${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
 
   return (
-    <div className="flex min-w-0 items-center">
+    <div className="flex w-full min-w-0 items-center rounded-md pr-1.5 hover:bg-accent/40 focus-within:bg-accent/40">
       <button
         type="button"
         onClick={onOpen}
-        className="grid h-[3.875rem] min-w-0 flex-1 grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/40"
+        className="grid h-[3.875rem] min-w-0 flex-1 grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left"
         aria-label={`Open ${title} transcript`}
       >
         <span className="col-start-1 row-start-1 flex items-center">
@@ -258,11 +211,6 @@ function AgentRow({ agent, onOpen }: { agent: RuntimeSubagent; onOpen: () => voi
         </span>
         <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
           <span className="min-w-0 truncate text-sm font-medium">{title}</span>
-          {role ? (
-            <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
-              {role}
-            </span>
-          ) : null}
         </span>
         <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
           <span className="inline-flex items-center gap-1">
@@ -979,9 +927,7 @@ function AgentTranscript({
         </span>
         <TaskStopButton taskId={agent.id} label={title} active={isWorking} />
         {/* The same meter the main chat shows, on this agent's own window. */}
-        {contextWindow ? (
-          <ContextWindowMeter usage={contextWindow} modelDisplayName={agent.model} />
-        ) : null}
+        {contextWindow ? <ContextWindowMeter usage={contextWindow} /> : null}
       </header>
       <div className="relative min-h-0 flex-1">
         <MessagesTimeline
@@ -1067,7 +1013,6 @@ function AgentsPanelContent({
   onImageExpand,
   loadEarlier,
   tasksModel = emptyBackgroundTasksPanelModel(),
-  waits = EMPTY_AGENT_WAITS,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
@@ -1105,8 +1050,6 @@ function AgentsPanelContent({
     | undefined;
   /** Background work running beside the roster (shells, monitors, watch loops). */
   tasksModel?: BackgroundTasksPanelModel;
-  /** One line per blocked agent, main first. */
-  waits?: ReadonlyArray<AgentWaitState>;
 }) {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   useEffect(() => {
@@ -1115,7 +1058,15 @@ function AgentsPanelContent({
     onRequestedAgentHandled?.();
   }, [onRequestedAgentHandled, requestedAgentId]);
 
-  const [idleOpen, setIdleOpen] = useState(true);
+  const idleOpenAtom = idleAgentsOpenAtom(
+    threadRef
+      ? scopedThreadKey(threadRef)
+      : environmentId && threadId
+        ? scopedThreadKey({ environmentId, threadId })
+        : null,
+  );
+  const idleOpen = useAtomValue(idleOpenAtom);
+  const setIdleOpen = useAtomSet(idleOpenAtom);
   const [workflowOpenById, setWorkflowOpenById] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(model.workflows.map((group) => [group.workflow.id, workflowIsLive(group)])),
   );
@@ -1193,12 +1144,6 @@ function AgentsPanelContent({
     previousPhaseStateByKeyRef.current = nextStates;
   }, [model.workflows]);
   const selectedAgent = allAgents.find((agent) => agent.id === selectedAgentId) ?? null;
-  // One pass over the thread's activities yields every agent's meter; each row
-  // then reads its own by id instead of re-walking the list per agent.
-  const contextWindowByAgentId = useMemo(
-    () => deriveContextWindowSnapshotsByAgent(activities),
-    [activities],
-  );
 
   if (selectedAgent && threadRef) {
     return (
@@ -1227,7 +1172,7 @@ function AgentsPanelContent({
   // A thread can have background work and no subagents at all (a backgrounded
   // shell, a Monitor watch loop), and that is exactly when this panel earns
   // its keep — so the empty state only applies when there is nothing of either.
-  if (!model.hasAgents && !tasksModel.hasTasks && waits.length === 0) {
+  if (!model.hasAgents && !tasksModel.hasTasks) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <Bot aria-hidden className="size-6 text-muted-foreground/60" />
@@ -1241,69 +1186,66 @@ function AgentsPanelContent({
   }
 
   return (
-    <AgentContextWindowCtx value={contextWindowByAgentId}>
-      <div className="flex h-full min-h-0 flex-col">
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="flex flex-col gap-2 p-2">
-            <WaitingOnStrip waits={waits} />
-            <AgentRosterSection
-              title="Active"
-              workflows={sections.activeWorkflows}
-              directAgents={sections.activeDirectAgents}
-              environmentId={environmentId}
-              threadId={threadId}
-              workflowOpenById={workflowOpenById}
-              phaseOpenByKey={phaseOpenByKey}
-              onWorkflowOpenChange={(workflowId, open) =>
-                setWorkflowOpenById((current) => ({ ...current, [workflowId]: open }))
-              }
-              onPhaseOpenChange={(workflowId, phaseIndex, open) =>
-                setPhaseOpenByKey((current) => ({
-                  ...current,
-                  [workflowPhaseDisclosureKey(workflowId, phaseIndex)]: open,
-                }))
-              }
-              onOpenAgent={(agent) => setSelectedAgentId(agent.id)}
-            />
-            <AgentRosterSection
-              title="Idle"
-              workflows={sections.idleWorkflows}
-              directAgents={sections.idleDirectAgents}
-              environmentId={environmentId}
-              threadId={threadId}
-              open={idleOpen}
-              onToggle={() => setIdleOpen((value) => !value)}
-              workflowOpenById={workflowOpenById}
-              phaseOpenByKey={phaseOpenByKey}
-              onWorkflowOpenChange={(workflowId, open) =>
-                setWorkflowOpenById((current) => ({ ...current, [workflowId]: open }))
-              }
-              onPhaseOpenChange={(workflowId, phaseIndex, open) =>
-                setPhaseOpenByKey((current) => ({
-                  ...current,
-                  [workflowPhaseDisclosureKey(workflowId, phaseIndex)]: open,
-                }))
-              }
-              onOpenAgent={(agent) => setSelectedAgentId(agent.id)}
-            />
-            <BackgroundTasksSection model={tasksModel} />
-          </div>
-        </ScrollArea>
-        <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
-          <span className="flex items-center gap-2">
-            {model.runningCount + model.waitingCount > 0 ? (
-              <span className="text-info-foreground">
-                ● {model.runningCount + model.waitingCount} working
-              </span>
-            ) : null}
-            {model.idleCount + model.settledCount > 0 ? (
-              <span>{model.idleCount + model.settledCount} idle</span>
-            ) : null}
-          </span>
-          <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
-        </footer>
-      </div>
-    </AgentContextWindowCtx>
+    <div className="flex h-full min-h-0 flex-col">
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="flex flex-col gap-2 p-2">
+          <AgentRosterSection
+            title="Active"
+            workflows={sections.activeWorkflows}
+            directAgents={sections.activeDirectAgents}
+            environmentId={environmentId}
+            threadId={threadId}
+            workflowOpenById={workflowOpenById}
+            phaseOpenByKey={phaseOpenByKey}
+            onWorkflowOpenChange={(workflowId, open) =>
+              setWorkflowOpenById((current) => ({ ...current, [workflowId]: open }))
+            }
+            onPhaseOpenChange={(workflowId, phaseIndex, open) =>
+              setPhaseOpenByKey((current) => ({
+                ...current,
+                [workflowPhaseDisclosureKey(workflowId, phaseIndex)]: open,
+              }))
+            }
+            onOpenAgent={(agent) => setSelectedAgentId(agent.id)}
+          />
+          <AgentRosterSection
+            title="Idle"
+            workflows={sections.idleWorkflows}
+            directAgents={sections.idleDirectAgents}
+            environmentId={environmentId}
+            threadId={threadId}
+            open={idleOpen}
+            onToggle={() => setIdleOpen((value) => !value)}
+            workflowOpenById={workflowOpenById}
+            phaseOpenByKey={phaseOpenByKey}
+            onWorkflowOpenChange={(workflowId, open) =>
+              setWorkflowOpenById((current) => ({ ...current, [workflowId]: open }))
+            }
+            onPhaseOpenChange={(workflowId, phaseIndex, open) =>
+              setPhaseOpenByKey((current) => ({
+                ...current,
+                [workflowPhaseDisclosureKey(workflowId, phaseIndex)]: open,
+              }))
+            }
+            onOpenAgent={(agent) => setSelectedAgentId(agent.id)}
+          />
+          <BackgroundTasksSection model={tasksModel} />
+        </div>
+      </ScrollArea>
+      <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
+        <span className="flex items-center gap-2">
+          {model.runningCount + model.waitingCount > 0 ? (
+            <span className="text-info-foreground">
+              ● {model.runningCount + model.waitingCount} working
+            </span>
+          ) : null}
+          {model.idleCount + model.settledCount > 0 ? (
+            <span>{model.idleCount + model.settledCount} idle</span>
+          ) : null}
+        </span>
+        <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
+      </footer>
+    </div>
   );
 }
 

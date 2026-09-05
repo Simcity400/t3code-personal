@@ -1,7 +1,9 @@
 import {
   classifyTaskAgentKind,
   EventId,
+  isUnnamedTask,
   readTaskStates,
+  taskAssignmentTitle,
   RuntimeTaskUsage,
   TaskRunHandles,
   TaskWorkflowPhase,
@@ -128,8 +130,12 @@ export function updateTaskState(
   if (parent && parent !== id) state.parentAgentId = parent;
   const title =
     text(payload.title) ??
-    (state.title === id ? (text(payload.detail) ?? text(payload.description)) : null);
-  if (title && (title !== id || state.title === id)) state.title = title;
+    (isUnnamedTask(state.title, id) ? (text(payload.detail) ?? text(payload.description)) : null);
+  if (title && (!isUnnamedTask(title, id) || isUnnamedTask(state.title, id))) state.title = title;
+  const prompt = text(payload.prompt);
+  if (state.agentKind === "agent" && isUnnamedTask(state.title, id) && prompt) {
+    state.title = taskAssignmentTitle(prompt) ?? state.title;
+  }
   for (const key of ["agentIndex", "phaseIndex", "attempt"] as const) {
     const value = payload[key];
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) state[key] = value;

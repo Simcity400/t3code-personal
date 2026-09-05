@@ -2,6 +2,7 @@ import * as Cause from "effect/Cause";
 import { canResumeCrossProviderTask } from "@t3tools/client-runtime/state/subagentRuntime";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { createContext, use, useMemo, useState, type ReactNode } from "react";
+import { Play, Square } from "lucide-react";
 import {
   readTaskStates,
   type OrchestrationThreadActivity,
@@ -107,9 +108,10 @@ export function TaskStopButton({
   const button = (
     <button
       type="button"
-      aria-label={`${action} ${label}`}
+      aria-label={`${busy ? (canResume ? "Resuming" : "Stopping") : action} ${label}`}
+      aria-busy={busy}
       disabled={busy || !canAct}
-      className="shrink-0 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
+      className="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent disabled:opacity-50"
       onClick={async (event) => {
         event.stopPropagation();
         if (busy || !canAct) return;
@@ -136,14 +138,22 @@ export function TaskStopButton({
         }
       }}
     >
-      {busy ? (canResume ? "Resuming…" : "Stopping…") : action}
+      {canResume ? (
+        <Play aria-hidden className="size-3 fill-current" />
+      ) : (
+        <Square aria-hidden className="size-3 fill-current" />
+      )}
     </button>
   );
   return (
     <Tooltip>
       <TooltipTrigger render={<span className="inline-flex">{button}</span>} />
       <TooltipPopup>
-        {canAct ? `${action} ${label}` : "This provider does not expose individual task stopping."}
+        {busy
+          ? `${canResume ? "Resuming" : "Stopping"} ${label}…`
+          : canAct
+            ? `${action} ${label}`
+            : "This provider does not expose individual task stopping."}
       </TooltipPopup>
     </Tooltip>
   );
