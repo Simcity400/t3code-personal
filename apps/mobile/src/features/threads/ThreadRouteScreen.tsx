@@ -957,6 +957,7 @@ function ThreadRouteContent(
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
           onStopAll={hasLiveCrossProviderChildren ? handleStopAll : undefined}
+          onStopBackgroundWork={handleStopAll}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

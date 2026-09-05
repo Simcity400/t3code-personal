@@ -132,7 +132,10 @@ export interface ThreadDetailScreenProps {
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  /** Stop all: only supplied while a cross-provider child is live. */
   readonly onStopAll?: (() => void) | undefined;
+  /** Tree-scoped stop for background work that outlived the turn; always available. */
+  readonly onStopBackgroundWork: () => void;
   readonly onSendMessage: () => Promise<{ readonly messageId: MessageId | null } | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
@@ -830,13 +833,14 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onOpenAgents={props.onOpenAgents}
                 showScrollToEnd={showScrollToEndButton}
                 onScrollToEnd={handleScrollToEnd}
-                onStopAll={
+                onStopBackgroundWork={
                   floatingStatus?.kind === "waiting" &&
                   props.selectedThread.backgroundWait != null &&
                   props.selectedThread.compactingSince == null
-                    ? props.onStopAll
+                    ? props.onStopBackgroundWork
                     : undefined
                 }
+                stopBackgroundWorkLabel={props.onStopAll ? "Stop all" : "Stop"}
               />
               <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
                 {props.activePendingApproval || props.activePendingUserInput ? (

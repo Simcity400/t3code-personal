@@ -40,10 +40,12 @@ export const makeProviderAuthService = Effect.gen(function* () {
     // and reports the failure on its task row.
     yield* (providers.stopCrossProviderSessions?.(instanceId) ?? Effect.void).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("provider auth could not stop every cross-provider agent", {
-          instanceId,
-          cause: Cause.pretty(cause),
-        }),
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("provider auth could not stop every cross-provider agent", {
+              instanceId,
+              cause: Cause.pretty(cause),
+            }),
       ),
     );
     const bindings = yield* directory.listBindings().pipe(
