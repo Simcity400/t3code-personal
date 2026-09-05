@@ -2681,8 +2681,70 @@ describe("subagent reply labels", () => {
     ];
 
     const model = deriveAgentPanelModel({
-      agents: foldSubagentActivities(activities),
-      v2Projection: null,
+      agents: foldSubagentActivities([
+        ...activities,
+        ...[
+          {
+            id: "wf-1",
+            kind: "workflow",
+            title: "audit-auth-flow",
+            taskType: "local_workflow",
+            parentAgentId: null,
+            agentIndex: null,
+            phaseIndex: null,
+          },
+          {
+            id: "wf-1:wf:0",
+            kind: "workflow_agent",
+            title: "audit_entrypoints",
+            taskType: "subagent",
+            parentAgentId: "wf-1",
+            agentIndex: 0,
+            phaseIndex: 0,
+          },
+        ].map((identity) =>
+          makeActivity({
+            id: `state:${identity.id}`,
+            kind: "task.state",
+            tone: "info",
+            summary: identity.title,
+            payload: {
+              ...identity,
+              agentKind: "agent",
+              status: "completed",
+              role: null,
+              model: null,
+              effort: null,
+              waitReason: null,
+              waitingSince: null,
+              asynchronous: false,
+              activationCount: 1,
+              usage: null,
+              progress: null,
+              lastToolName: null,
+              result: null,
+              error: null,
+              outputFile: null,
+              phaseTitle: "Audit",
+              attempt: null,
+              workflowName: "audit-auth-flow",
+              phases: [],
+              runHandles: null,
+              recentActivity: [],
+              command: null,
+              server: null,
+              tool: null,
+              canStop: false,
+              backgrounded: false,
+              ambient: false,
+              firstSeenAt: "2026-02-23T00:00:01.000Z",
+              startedAt: "2026-02-23T00:00:01.000Z",
+              completedAt: "2026-02-23T00:00:09.000Z",
+              updatedAt: "2026-02-23T00:00:09.000Z",
+            },
+          }),
+        ),
+      ]),
     });
     // The member is reachable only through its workflow group, which is the
     // whole point: a direct-spawn-only lookup misses it.

@@ -1,3 +1,4 @@
+import { projectedTaskActivities } from "./taskState.test-fixtures.ts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   classifyTaskAgentKind,
@@ -9,7 +10,7 @@ import {
   deriveSubagentReplies,
   deriveSubagentTranscript,
   deriveAgentPanelModel,
-  foldSubagentActivities,
+  foldSubagentActivities as selectfoldSubagentActivities,
   formatSubagentModelLabel,
   formatSubagentTitle,
   formatSubagentTokenCount,
@@ -1448,7 +1449,7 @@ describe("deriveAgentPanelModel", () => {
     ).toEqual(["direct-a", "direct-b"]);
   });
 
-  it("keeps first-seen order after the roster retention ranking runs", () => {
+  it("keeps every agent in first-seen order without silently evicting old transcripts", () => {
     const starts = Array.from({ length: 101 }, (_, index) =>
       activity(
         "task.started",
@@ -1470,8 +1471,8 @@ describe("deriveAgentPanelModel", () => {
     const ids = deriveAgentPanelModel({ agents: cappedRoster }).directAgents.map(
       (agent) => agent.id,
     );
-    expect(ids).toHaveLength(100);
-    expect(ids.slice(0, 3)).toEqual(["capped-0", "capped-2", "capped-3"]);
+    expect(ids).toHaveLength(101);
+    expect(ids.slice(0, 3)).toEqual(["capped-0", "capped-1", "capped-2"]);
     expect(ids.at(-1)).toBe("capped-100");
   });
 
@@ -1496,17 +1497,6 @@ describe("deriveAgentPanelModel", () => {
     // running only if a member is genuinely pending/running — this asserts
     // the settled-count rule: no member settled, phase not done.
     expect(model.workflows[0]!.phases[0]!.state).not.toBe("done");
-  });
-
-  it("v2 projection wins outright and sources are never merged", () => {
-    const v2Agent = { ...roster[0]!, id: "v2-only", title: "From v2" };
-    const model = deriveAgentPanelModel({ agents: roster, v2Projection: [v2Agent] });
-    const allIds = [
-      ...model.workflows.map((group) => group.workflow.id),
-      ...model.directAgents.map((agent) => agent.id),
-    ];
-    expect(allIds).toContain("v2-only");
-    expect(allIds).not.toContain("direct-1");
   });
 
   it("orphaned members fall back to the direct list", () => {
@@ -2090,7 +2080,7 @@ describe("deriveSubagentReplies", () => {
     expect(replies).toHaveLength(1);
   });
 
-  it("falls back to the child's turn-final message when the protocol has no result field", () => {
+  it("never copies the child's own final message into the parent transcript", () => {
     // Codex: `collabAgentToolCall` carries no output, so what the parent read
     // is the last thing the child said before it went idle.
     const replies = deriveSubagentReplies(
@@ -2109,11 +2099,10 @@ describe("deriveSubagentReplies", () => {
       ],
     );
 
-    expect(replies).toHaveLength(1);
-    expect(replies[0]).toMatchObject({ agentId: "child-1", text: "The answer is 42." });
+    expect(replies).toHaveLength(0);
   });
 
-  it("does not resend a turn-final message when repeated idle rows land", () => {
+  it("does not fabricate a reply from repeated idle rows", () => {
     const replies = deriveSubagentReplies(
       [
         activity("task.started", { taskId: "child-1", title: "child", taskType: "collab" }),
@@ -2131,7 +2120,7 @@ describe("deriveSubagentReplies", () => {
       [message("m1", "child-1", "done", "2026-08-01T10:04:00.000Z")],
     );
 
-    expect(replies).toHaveLength(1);
+    expect(replies).toHaveLength(0);
   });
 
   it("routes a nested agent's report to the subagent that owns it, not the parent", () => {
@@ -2197,3 +2186,7 @@ describe("deriveSubagentReplies identity", () => {
     expect(second).toBe(first);
   });
 });
+
+function foldSubagentActivities(...args: Parameters<typeof selectfoldSubagentActivities>) {
+  return selectfoldSubagentActivities(projectedTaskActivities(args[0]), args[1]);
+}

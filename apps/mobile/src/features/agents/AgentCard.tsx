@@ -1,5 +1,8 @@
+import { TaskStopButton } from "./TaskControls";
 import {
   formatSubagentTitle,
+  formatSubagentModelLabel,
+  formatSubagentTokenCount,
   isActiveSubagentStatus,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -98,9 +101,19 @@ function AgentCardImpl({
           />
         ) : null}
         <AgentStatus agent={agent} clock={clock} />
+        <TaskStopButton taskId={agent.id} label={title} active={status.working} />
       </View>
       <Text className="mt-1 text-xs text-foreground-muted" numberOfLines={1}>
-        {agent.progress ?? agent.result ?? agent.error ?? agent.role ?? "No activity yet"}
+        {agent.error ?? agent.progress ?? agent.result ?? agent.role ?? "No activity yet"}
+      </Text>
+      <Text className="mt-1 text-xs text-foreground-tertiary" numberOfLines={1}>
+        {[
+          formatSubagentModelLabel(agent.model, agent.effort),
+          agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tokens` : null,
+          agent.activationCount > 1 ? `Run ${agent.activationCount}` : null,
+        ]
+          .filter(Boolean)
+          .join(" ? ")}
       </Text>
     </Pressable>
   );
@@ -115,5 +128,6 @@ export const AgentCard = memo(
   (prev, next) =>
     prev.agent === next.agent &&
     prev.onOpen === next.onOpen &&
+    prev.contextWindow === next.contextWindow &&
     (!isActiveSubagentStatus(next.agent.status) || prev.clock.tick === next.clock.tick),
 );

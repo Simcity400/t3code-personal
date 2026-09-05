@@ -1,17 +1,18 @@
+import { projectedTaskActivities } from "./taskState.test-fixtures.ts";
 import { describe, expect, it } from "vite-plus/test";
 import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tools/contracts";
 
-import { foldSubagentActivities } from "./subagentRuntime.ts";
+import { foldSubagentActivities as selectfoldSubagentActivities } from "./subagentRuntime.ts";
 import {
   backgroundTaskKind,
   backgroundTaskSourceLabel,
-  deriveAgentWaitReasons,
+  deriveAgentWaitReasons as selectderiveAgentWaitReasons,
   deriveCompactingSince,
-  deriveDetachedTaskIds,
+  deriveDetachedTaskIds as selectderiveDetachedTaskIds,
   deriveAgentWaitStates,
   deriveBackgroundTasksPanelModel,
   deriveOpenRequestWaits,
-  foldBackgroundTasks,
+  foldBackgroundTasks as selectfoldBackgroundTasks,
   formatElapsedBetween,
   formatElapsedDuration,
   isActiveBackgroundTaskStatus,
@@ -145,7 +146,7 @@ describe("foldBackgroundTasks", () => {
     expect(task.endedAt).not.toBeNull();
   });
 
-  it("maps a stopped completion to cancelled and a failure to failed", () => {
+  it("maps a stopped completion to interrupted and a failure to failed", () => {
     const tasks = foldBackgroundTasks([
       activity("task.started", { taskId: "a", taskType: "shell", detail: "tail -f log" }),
       activity("task.completed", { taskId: "a", taskType: "shell", status: "stopped" }),
@@ -157,7 +158,7 @@ describe("foldBackgroundTasks", () => {
         summary: "exit 1",
       }),
     ]);
-    expect(byId(tasks, "a").status).toBe("cancelled");
+    expect(byId(tasks, "a").status).toBe("interrupted");
     expect(byId(tasks, "b").status).toBe("failed");
     expect(byId(tasks, "b").error).toBe("exit 1");
     expect(byId(tasks, "b").result).toBeNull();
@@ -192,7 +193,7 @@ describe("foldBackgroundTasks", () => {
     const task = byId(tasks, "sh-1");
     expect(task.result).toBe("built in 4s");
     // The terminal task.updated settled it; the completion must not slide it.
-    expect(task.endedAt).toBe(task.updatedAt);
+    expect(task.endedAt! < task.updatedAt).toBe(true);
   });
 
   it("does not reopen a settled task when a late start row arrives", () => {
@@ -782,7 +783,7 @@ describe("foldBackgroundTasks timing", () => {
     expect(byId(viaCompleted, "b").status).toBe("failed");
   });
 
-  it("keeps live work and failures when far more than the cap arrives", () => {
+  it("keeps all task records, including live work and failures, beyond the old cap", () => {
     const rows = [];
     for (let index = 0; index < 260; index += 1) {
       rows.push(
@@ -803,7 +804,7 @@ describe("foldBackgroundTasks timing", () => {
     const ids = new Set(tasks.map((task) => task.id));
     expect(ids.has("live-1")).toBe(true);
     expect(ids.has("bad-1")).toBe(true);
-    expect(tasks.length).toBeLessThanOrEqual(200);
+    expect(tasks.length).toBe(262);
   });
 });
 
@@ -1542,3 +1543,19 @@ describe("a task the provider stopped listing", () => {
     ).toEqual([]);
   });
 });
+
+function foldBackgroundTasks(...args: Parameters<typeof selectfoldBackgroundTasks>) {
+  return selectfoldBackgroundTasks(projectedTaskActivities(args[0]), args[1]);
+}
+
+function foldSubagentActivities(...args: Parameters<typeof selectfoldSubagentActivities>) {
+  return selectfoldSubagentActivities(projectedTaskActivities(args[0]), args[1]);
+}
+
+function deriveAgentWaitReasons(...args: Parameters<typeof selectderiveAgentWaitReasons>) {
+  return selectderiveAgentWaitReasons(projectedTaskActivities(args[0]));
+}
+
+function deriveDetachedTaskIds(...args: Parameters<typeof selectderiveDetachedTaskIds>) {
+  return selectderiveDetachedTaskIds(projectedTaskActivities(args[0]));
+}

@@ -5469,6 +5469,14 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         NodeAssert.equal(usage.payload.usage.usedTokens, 10_500);
       }
 
+      NodeAssert.ok(adapter.stopTask);
+      yield* adapter.stopTask(threadId, child);
+      NodeAssert.deepEqual(runtimeMock.state.abortCalls, [child]);
+      NodeAssert.equal(yield* adapter.hasSession(threadId), true);
+      const rejected = yield* adapter.stopTask(threadId, "unrelated-session").pipe(Effect.result);
+      NodeAssert.equal(rejected._tag, "Failure");
+      NodeAssert.deepEqual(runtimeMock.state.abortCalls, [child]);
+
       // Nothing the child produced reached the parent unattributed.
       const leaked = events.filter(
         (event) => event.type === "content.delta" && event.payload.agentId === undefined,

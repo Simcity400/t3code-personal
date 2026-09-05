@@ -104,6 +104,13 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     }
   }
 
+  readonly stopTaskCalls: string[] = [];
+  stopTaskError: Error | undefined;
+  readonly stopTask = async (taskId: string): Promise<void> => {
+    if (this.stopTaskError) throw this.stopTaskError;
+    this.stopTaskCalls.push(taskId);
+  };
+
   readonly setModel = async (model?: string): Promise<void> => {
     this.setModelCalls.push(model);
   };
@@ -318,6 +325,49 @@ const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
 const SYNTHETIC_SUBAGENT_MODEL = "claude-synthetic-subagent[expanded]";
 
 describe("ClaudeAdapterLive", () => {
+  it.effect("stops only the requested native task and leaves the session open", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      assert.ok(adapter.stopTask);
+      const synthetic = yield* adapter.stopTask(THREAD_ID, "workflow:wf:0").pipe(Effect.result);
+      assert.equal(synthetic._tag, "Failure");
+      yield* adapter.stopTask(THREAD_ID, "child-shell");
+      assert.deepEqual(harness.query.stopTaskCalls, ["child-shell"]);
+      assert.equal(harness.query.closeCalls, 0);
+      assert.equal(yield* adapter.hasSession(THREAD_ID), true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("a rejected native task stop does not close the parent", () => {
+    const harness = makeHarness();
+    harness.query.stopTaskError = new Error("Unknown task");
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      assert.ok(adapter.stopTask);
+      const result = yield* adapter.stopTask(THREAD_ID, "gone").pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      assert.equal(harness.query.closeCalls, 0);
+      assert.equal(yield* adapter.hasSession(THREAD_ID), true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("returns validation error for non-claude provider on startSession", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

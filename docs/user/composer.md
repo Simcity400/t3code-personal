@@ -1,5 +1,8 @@
 # Message composer
 
+On web and desktop, multiline drafts use the same proportional line spacing as transcript text.
+The compact composer grows with your draft without adding a full blank line between lines.
+
 Messages can contain up to 120,000 characters. If a draft is longer, T3 Code keeps it in the
 composer and shows how many characters need to be removed. Shorten the draft or split it into
 multiple messages, then send again in the same thread.

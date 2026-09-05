@@ -3602,6 +3602,19 @@ export function makeOpenCodeAdapter(
       startSession,
       sendTurn,
       interruptTurn,
+      stopTask: Effect.fn("OpenCode.stopTask")(function* (threadId, taskId) {
+        const context = yield* ensureSessionContext(sessions, threadId);
+        if (!context.childAgentSessionIds.has(taskId)) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "session.abort",
+            detail: "The task is not a child of this session.",
+          });
+        }
+        yield* runOpenCodeSdk("session.abort", (signal) =>
+          context.client.session.abort({ sessionID: taskId }, { signal }),
+        ).pipe(Effect.asVoid, Effect.mapError(toRequestError));
+      }),
       respondToRequest,
       respondToUserInput,
       stopSession,

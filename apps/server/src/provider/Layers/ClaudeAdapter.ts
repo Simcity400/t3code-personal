@@ -431,6 +431,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
   readonly close: () => void;
+  stopTask?: (taskId: string) => Promise<void>;
 }
 
 export interface ClaudeAdapterLiveOptions {
@@ -5868,6 +5869,29 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
+  const stopTask: NonNullable<ClaudeAdapterShape["stopTask"]> = Effect.fn("stopTask")(
+    function* (threadId, taskId) {
+      const context = yield* requireSession(threadId);
+      if (taskId.includes(":wf:"))
+        return yield* toRequestError(
+          threadId,
+          "task/stop",
+          "This workflow member has no native task-stop handle.",
+        );
+      const stop = context.query.stopTask;
+      if (!stop)
+        return yield* toRequestError(
+          threadId,
+          "task/stop",
+          "This Claude SDK cannot stop individual tasks.",
+        );
+      yield* Effect.tryPromise({
+        try: () => stop.call(context.query, taskId),
+        catch: (cause) => toRequestError(threadId, "task/stop", cause),
+      });
+    },
+  );
+
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {
       const context = yield* requireSession(threadId);
@@ -5983,6 +6007,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     startSession,
     sendTurn,
     interruptTurn,
+    stopTask,
     readThread,
     rollbackThread,
     respondToRequest,

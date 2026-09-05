@@ -61,7 +61,6 @@ import {
 import {
   composerFloatingLayerProps,
   isInsideCollapsedComposerControls,
-  isInsideComposerFloatingLayer,
   isInsideRestingComposerControlScope,
 } from "./composerEventScope";
 import {
@@ -5095,11 +5094,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   className={cn(
                     showMobilePendingAnswerActions && "max-sm:pb-11",
                     isComposerResting &&
-                      "max-h-[min(20rem,40dvh)] min-h-8 overflow-y-auto whitespace-pre-wrap leading-8",
+                      "max-h-[min(20rem,40dvh)] min-h-8 overflow-y-auto whitespace-pre-wrap py-1 leading-relaxed",
                   )}
                   placeholderClassName={cn(
                     isComposerResting &&
-                      "flex items-center overflow-hidden whitespace-nowrap leading-8",
+                      "flex items-center overflow-hidden whitespace-nowrap leading-relaxed",
                   )}
                   onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                   onChange={onPromptChange}

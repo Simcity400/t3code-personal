@@ -351,15 +351,12 @@ function requestKindFromCanonicalRequestType(
 
 /**
  * Copies the optional TaskAgentLinkage bundle from a task.* runtime payload
- * into the persisted activity payload. Identity fields ride on every row so
- * client folds survive activity retention; absent fields stay absent.
+ * into the persisted activity payload for the current task-state reducer.
+ * Thin lifecycle frames leave absent fields untouched.
  */
 function taskLinkageActivityFields(payload: Record<string, unknown>): Record<string, unknown> {
   const fields: Record<string, unknown> = {
-    // Server-stamped classification: persisted rows are self-describing, so
-    // clients trust the stamp instead of re-deriving agent-vs-background
-    // from taskType denylists and marker heuristics (legacy rows without a
-    // stamp keep the client fallback).
+    // Classification is normalized at the provider boundary.
     agentKind: classifyTaskAgentKind({
       taskType: typeof payload.taskType === "string" ? payload.taskType : undefined,
       agentId: typeof payload.agentId === "string" ? payload.agentId : undefined,
@@ -2258,7 +2255,20 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(event, taskTitle);
+      const activities = runtimeEventToActivities(event, taskTitle).map((activity) => {
+        if (!activity.kind.startsWith("task.")) return activity;
+        const payload = activity.payload as Record<string, unknown>;
+        return {
+          ...activity,
+          payload: {
+            ...payload,
+            canStop:
+              (event.provider === "claudeAgent" && !String(payload.taskId).includes(":wf:")) ||
+              ((event.provider === "codex" || event.provider === "opencode") &&
+                payload.agentKind === "agent"),
+          },
+        };
+      });
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
           Effect.flatMap((commandId) =>

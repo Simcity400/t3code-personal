@@ -75,6 +75,9 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
 
+  /** Stop one native task without interrupting its parent or siblings. */
+  readonly stopTask?: (threadId: ThreadId, taskId: string) => Effect.Effect<void, TError>;
+
   /**
    * Respond to an interactive approval request.
    */

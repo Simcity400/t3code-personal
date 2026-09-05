@@ -1511,47 +1511,6 @@ pending_approval_requests AS (
             )
             AND json_extract(activity.payload_json, '$.requestId') IS NOT NULL
         ),
-        agent_activity_rows AS MATERIALIZED (
-          SELECT activity_id, sequence, created_at, kind, payload_json,
-            json_extract(payload_json, '$.taskId') AS task_id,
-            json_extract(payload_json, '$.agentKind') AS agent_kind
-          FROM projection_thread_activities
-          WHERE thread_id = ${threadId}
-            AND kind IN ('task.started', 'task.updated', 'task.progress', 'task.completed')
-        ),
-        agent_tasks AS (
-          SELECT task_id, MAX(sequence) AS last_sequence
-          FROM agent_activity_rows
-          WHERE agent_kind = 'agent' AND task_id IS NOT NULL
-          GROUP BY task_id
-          ORDER BY last_sequence DESC, task_id
-          LIMIT 100
-        ),
-        agent_lifecycle AS (
-          SELECT
-            activity.activity_id,
-            ROW_NUMBER() OVER (
-              PARTITION BY task.task_id, activity.kind
-              ORDER BY activity.sequence DESC, activity.created_at DESC, activity.activity_id DESC
-            ) AS kind_order,
-            ROW_NUMBER() OVER (
-              PARTITION BY task.task_id
-              ORDER BY activity.sequence ASC, activity.created_at ASC, activity.activity_id ASC
-            ) AS first_order
-          FROM agent_tasks AS task
-          INNER JOIN agent_activity_rows AS activity ON activity.task_id = task.task_id
-        ),
-        agent_field_anchors AS (
-          SELECT activity.activity_id,
-            ROW_NUMBER() OVER (
-              PARTITION BY task.task_id, field.key
-              ORDER BY activity.sequence DESC, activity.created_at DESC, activity.activity_id DESC
-            ) AS field_order
-          FROM agent_tasks AS task
-          INNER JOIN agent_activity_rows AS activity ON activity.task_id = task.task_id
-          INNER JOIN json_each(activity.payload_json) AS field
-          WHERE field.type != 'null' AND field.key NOT IN ('taskId', 'agentKind')
-        ),
         pinned_activity_ids AS (
           SELECT activity_id
           FROM pending_approval_activities
@@ -1562,18 +1521,19 @@ pending_approval_requests AS (
           WHERE request_order = 1
             AND kind = 'user-input.requested'
           UNION
-          SELECT activity_id
-          FROM agent_lifecycle
-          WHERE kind_order = 1 OR first_order = 1
-          UNION
-          SELECT activity_id FROM agent_field_anchors WHERE field_order = 1
+          SELECT activity_id FROM projection_thread_activities
+          WHERE thread_id = ${threadId} AND (
+            kind = 'task.state'
+            OR (kind IN ('task.started', 'task.updated', 'task.progress') AND json_type(payload_json, '$.prompt') = 'text')
+            OR (kind IN ('tool.started', 'tool.updated', 'tool.completed') AND (
+              json_extract(payload_json, '$.itemType') = 'collab_agent_tool_call'
+              OR (json_extract(payload_json, '$.itemType') = 'user_message' AND json_type(payload_json, '$.agentId') = 'text')
+            ))
+          )
         )
   `;
 
-  // Requests and agent identities must survive the recent work-log window.
-  // Agent rows are bounded by the roster's 100 identities and one latest row
-  // per lifecycle kind and populated payload field, plus the initial identity.
-  // Independent patches preserve the latest status, usage, progress and metadata.
+  // Current task records are independent of the paginated work log.
   const listPinnedThreadActivityRowsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadActivityDbRowSchema,

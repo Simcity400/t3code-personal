@@ -1304,6 +1304,41 @@ const make = Effect.gen(function* () {
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
+    if (event.payload.taskId !== undefined) {
+      const taskId = event.payload.taskId;
+      const recordStop = (
+        kind: "task.stop.requested" | "task.stop.accepted" | "task.stop.failed",
+        detail?: string,
+      ) =>
+        orchestrationEngine
+          .dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(`${kind}:${event.eventId}`),
+            threadId: event.payload.threadId,
+            createdAt: event.occurredAt,
+            activity: {
+              id: EventId.make(`task-stop:${JSON.stringify([event.payload.threadId, taskId])}`),
+              kind,
+              summary: kind === "task.stop.failed" ? "Could not stop task" : "Task stop requested",
+              tone: kind === "task.stop.failed" ? "error" : "info",
+              turnId: null,
+              createdAt: event.occurredAt,
+              payload: { taskId, ...(detail ? { detail } : {}) },
+            },
+          })
+          .pipe(Effect.asVoid);
+      yield* recordStop("task.stop.requested");
+      // Never turn a rejected individual stop into a session-wide stop.
+      yield* providerService.interruptTurn({ threadId: event.payload.threadId, taskId }).pipe(
+        Effect.timeout("10 seconds"),
+        Effect.andThen(recordStop("task.stop.accepted")),
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+          return recordStop("task.stop.failed", formatFailureDetail(cause));
+        }),
+      );
+      return;
+    }
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
       return;
