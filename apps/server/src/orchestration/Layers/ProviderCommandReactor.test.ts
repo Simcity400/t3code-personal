@@ -3111,6 +3111,62 @@ describe("ProviderCommandReactor", () => {
   );
 
   effectIt.effect(
+    "a failed Stop all on a running main closes its session as the escape hatch",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            interruptTurnEffect: () =>
+              Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: "codex",
+                  method: "turn/interrupt",
+                  detail: "provider is wedged",
+                }),
+              ),
+          }),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const now = "2026-01-01T00:00:00.000Z";
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("running-main"),
+          threadId,
+          createdAt: now,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: asTurnId("turn-1"),
+            lastError: null,
+            updatedAt: now,
+          },
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("failed-tree"),
+          threadId,
+          scope: "tree",
+          createdAt: now,
+        });
+        yield* Effect.promise(() => harness.drain());
+        const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (thread) => thread.id === threadId,
+        );
+        expect(harness.stopSession).toHaveBeenCalledWith({ threadId });
+        expect(thread?.session).toMatchObject({
+          status: "stopped",
+          activeTurnId: null,
+          lastError: "provider is wedged",
+        });
+        expect(
+          thread?.activities.some((activity) => activity.kind === "provider.turn.interrupt.failed"),
+        ).toBe(true);
+      }),
+  );
+
+  effectIt.effect(
     "preserves a running session and records the failure when self interrupt fails",
     () =>
       Effect.gen(function* () {

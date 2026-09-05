@@ -3255,7 +3255,6 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           }),
         );
         NodeAssert.equal(adapter.capabilities.crossProviderAgents, serverUrl === undefined);
-        NodeAssert.equal(adapter.capabilities.isolatedTurnInterrupt, false);
         yield* adapter.startSession({
           threadId: asThreadId(serverUrl ? "external-cap" : "local-cap"),
           runtimeMode: "full-access",
@@ -3265,138 +3264,6 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           serverUrl ?? "http://127.0.0.1:4301",
         );
       }
-    }),
-  );
-
-  it.effect("self Stop preserves live native descendants but allows idle history", () =>
-    Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      const threadId = asThreadId("thread-scoped-stop");
-      const root = "http://127.0.0.1:9999/session";
-      runtimeMock.state.sessionStatus = "busy";
-      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
-      const turn = yield* adapter.sendTurn({
-        threadId,
-        input: "Continue working",
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("opencode"),
-          "opencode/kimi-k3",
-        ),
-      });
-      runtimeMock.state.sessionChildrenById.set(root, [{ id: "native-child" }]);
-      runtimeMock.state.sessionParentById.set("native-child", root);
-      runtimeMock.state.sessionParentById.set("native-grandchild", "native-child");
-      runtimeMock.state.sessionStatusImplementation = async () => ({
-        data: {
-          [root]: { type: "busy" },
-          "native-child": { type: "idle" },
-          "native-grandchild": { type: "busy" },
-        },
-      });
-      for (const scope of [undefined, "self"] as const) {
-        const result = yield* adapter
-          .interruptTurn(threadId, turn.turnId, scope)
-          .pipe(Effect.result);
-        NodeAssert.equal(result._tag, "Failure");
-        if (result._tag === "Failure") NodeAssert.match(result.failure.message, /Stop all/);
-        NodeAssert.deepEqual(runtimeMock.state.abortCalls, []);
-        NodeAssert.deepEqual(runtimeMock.state.closeCalls, []);
-        NodeAssert.equal(
-          (yield* adapter.listSessions()).find((session) => session.threadId === threadId)
-            ?.activeTurnId,
-          turn.turnId,
-        );
-      }
-      runtimeMock.state.sessionStatusImplementation = async () => ({
-        data: {
-          [root]: { type: "busy" },
-          "native-child": { type: "idle" },
-          "native-grandchild": { type: "idle" },
-          "independent-bridge-session": { type: "busy" },
-        },
-      });
-      yield* adapter.interruptTurn(threadId);
-      NodeAssert.deepEqual(runtimeMock.state.abortCalls, [root]);
-      NodeAssert.deepEqual(runtimeMock.state.sessionChildrenCalls, [root, root, root]);
-      NodeAssert.equal(
-        (yield* adapter.listSessions()).find((session) => session.threadId === threadId)
-          ?.activeTurnId,
-        undefined,
-      );
-      yield* adapter.stopSession(threadId);
-    }),
-  );
-
-  it.effect(
-    "self Stop fails closed when the native child roster or descendant status is unavailable",
-    () =>
-      Effect.gen(function* () {
-        const adapter = yield* OpenCodeAdapter;
-        const threadId = asThreadId("thread-unavailable-isolation");
-        const root = "http://127.0.0.1:9999/session";
-        yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
-        runtimeMock.state.sessionChildrenImplementation = async () => {
-          throw new Error("children unavailable");
-        };
-        const rosterFailure = yield* adapter.interruptTurn(threadId).pipe(Effect.result);
-        NodeAssert.equal(rosterFailure._tag, "Failure");
-        NodeAssert.deepEqual(runtimeMock.state.abortCalls, []);
-        NodeAssert.equal(runtimeMock.state.sessionStatusCalls, 0);
-        runtimeMock.state.sessionChildrenImplementation = null;
-        runtimeMock.state.sessionChildrenById.set(root, [{ id: "native-child" }]);
-        runtimeMock.state.sessionStatusImplementation = async () => {
-          throw new Error("status unavailable");
-        };
-        const statusFailure = yield* adapter.interruptTurn(threadId).pipe(Effect.result);
-        NodeAssert.equal(statusFailure._tag, "Failure");
-        NodeAssert.deepEqual(runtimeMock.state.abortCalls, []);
-        NodeAssert.deepEqual(runtimeMock.state.closeCalls, []);
-        NodeAssert.equal(yield* adapter.hasSession(threadId), true);
-        yield* adapter.stopSession(threadId);
-      }),
-  );
-
-  it.effect("self Stop leaves independent adapter sessions running", () =>
-    Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      const selected = asThreadId("bridge-selected");
-      const independent = asThreadId("bridge-independent");
-      runtimeMock.state.createdSessionIds.push("native-selected", "native-independent");
-      runtimeMock.state.autoPromptEcho = false;
-      yield* adapter.startSession({ threadId: selected, runtimeMode: "full-access" });
-      yield* adapter.startSession({ threadId: independent, runtimeMode: "full-access" });
-      const selectedTurn = yield* adapter.sendTurn({
-        threadId: selected,
-        input: "Work",
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("opencode"),
-          "opencode/kimi-k3",
-        ),
-      });
-      const independentTurn = yield* adapter.sendTurn({
-        threadId: independent,
-        input: "Keep working",
-        modelSelection: createModelSelection(
-          ProviderInstanceId.make("opencode"),
-          "opencode/kimi-k3",
-        ),
-      });
-      runtimeMock.state.sessionStatusImplementation = async () => ({
-        data: {
-          "native-selected": { type: "busy" },
-          "native-independent": { type: "busy" },
-        },
-      });
-      yield* adapter.interruptTurn(selected, selectedTurn.turnId, "self");
-      NodeAssert.deepEqual(runtimeMock.state.abortCalls, ["native-selected"]);
-      NodeAssert.equal(
-        (yield* adapter.listSessions()).find((session) => session.threadId === independent)
-          ?.activeTurnId,
-        independentTurn.turnId,
-      );
-      NodeAssert.deepEqual(runtimeMock.state.closeCalls, []);
-      yield* adapter.stopSession(selected);
-      yield* adapter.stopSession(independent);
     }),
   );
 
@@ -3451,7 +3318,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
 
       const interruptFiber = yield* adapter
-        .interruptTurn(threadId, turn.turnId, "tree")
+        .interruptTurn(threadId, turn.turnId)
         .pipe(Effect.result, Effect.forkChild);
       yield* Effect.promise(() => parentAbortStarted.promise);
       runtimeMock.state.sessionChildrenById.get(rootSessionId)?.push({ id: "ses_late_child" });
@@ -3575,7 +3442,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
 
       const interruptFiber = yield* adapter
-        .interruptTurn(threadId, turn.turnId, "tree")
+        .interruptTurn(threadId, turn.turnId)
         .pipe(Effect.forkChild);
       yield* Effect.promise(() => limitReached.promise);
       yield* Effect.yieldNow;
@@ -3631,7 +3498,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
 
       const interruptFiber = yield* adapter
-        .interruptTurn(threadId, turn.turnId, "tree")
+        .interruptTurn(threadId, turn.turnId)
         .pipe(Effect.result, Effect.forkChild);
       yield* Effect.promise(() => failingChildStarted.promise);
       yield* Effect.promise(() => siblingAbortStarted.promise);
@@ -4974,7 +4841,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
 
       const interruptFiber = yield* adapter
-        .interruptTurn(threadId, turn.turnId, "tree")
+        .interruptTurn(threadId, turn.turnId)
         .pipe(Effect.forkChild);
       yield* Effect.promise(() => abortStarted.promise);
       errorEvent.resolve({
@@ -5014,9 +4881,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.equal(sessionDuringCleanup?.status, "error");
       NodeAssert.equal(sessionDuringCleanup?.activeTurnId, undefined);
 
-      const secondInterruptFiber = yield* adapter
-        .interruptTurn(threadId, undefined, "tree")
-        .pipe(Effect.forkChild);
+      const secondInterruptFiber = yield* adapter.interruptTurn(threadId).pipe(Effect.forkChild);
       const nextTurnFiber = yield* adapter
         .sendTurn({
           threadId,

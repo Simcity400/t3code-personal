@@ -470,12 +470,14 @@ describe("ProviderRuntimeIngestion", () => {
         "context-window.updated",
         "runtime.error",
         "runtime.warning",
-        "content.delta",
       ]) {
         expect(thread.activities.find((activity) => activity.kind === kind)?.payload).toMatchObject(
           { agentId: "bridge", bridgeAgentId: "bridge" },
         );
       }
+      // Reasoning deltas are dropped for children exactly as for the main
+      // thread; only completed items reach the transcript.
+      expect(thread.activities.some((activity) => activity.kind === "content.delta")).toBe(false);
       expect(
         thread.activities.find((activity) => activity.kind === "user-input.requested")?.payload,
       ).toMatchObject({ delivery: "agent" });

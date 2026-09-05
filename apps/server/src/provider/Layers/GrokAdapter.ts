@@ -1963,17 +1963,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         );
       });
 
-    // ACP cancellation may include opaque descendants, so it requires explicit tree scope.
-    const interruptTurn: GrokAdapterShape["interruptTurn"] = (threadId, turnId, scope = "self") =>
+    const interruptTurn: GrokAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.gen(function* () {
-        if (scope === "self") {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "interruptTurn",
-            issue:
-              "Grok cannot confirm an individual stop preserves native descendants. Use Stop all.",
-          });
-        }
         const observed = yield* Effect.sync(() => {
           const ctx = sessions.get(threadId);
           if (!ctx || ctx.stopped) {
@@ -2023,14 +2014,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               observed.interruptedTurnId ?? turnId ?? activeTurnId ?? ctx.session.activeTurnId;
             yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
             yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
-            yield* ctx.acp.cancel.pipe(
-              Effect.mapError((error) =>
-                mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
-              ),
-              Effect.tapError(() =>
-                Effect.sync(() => {
-                  if (interruptedTurnId) ctx.interruptedTurnIds.delete(interruptedTurnId);
-                }),
+            yield* Effect.ignore(
+              ctx.acp.cancel.pipe(
+                Effect.mapError((error) =>
+                  mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
+                ),
               ),
             );
             if (interruptedTurnId) {
@@ -2150,11 +2138,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
     return {
       provider: PROVIDER,
-      capabilities: {
-        sessionModelSwitch: "in-session",
-        isolatedTurnInterrupt: false,
-        nativeDescendantsObservable: false,
-      },
+      capabilities: { sessionModelSwitch: "in-session" },
       startSession,
       sendTurn,
       interruptTurn,

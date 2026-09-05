@@ -1361,7 +1361,6 @@ const make = Effect.gen(function* () {
         const latestThread = yield* resolveThread(event.payload.threadId);
         const latestSession = latestThread?.session;
         if (
-          event.payload.scope !== "tree" &&
           latestSession &&
           (((latestSession.status === "stopped" || latestSession.status === "ready") &&
             latestSession.status !== thread.session?.status) ||
@@ -1370,6 +1369,42 @@ const make = Effect.gen(function* () {
               latestSession.activeTurnId !== event.payload.turnId))
         ) {
           return;
+        }
+        // Stop all is the escape hatch for a wedged provider: when the
+        // interrupt itself fails, close the root session outright so the user
+        // is never left with a running agent and no way to end it. A plain
+        // Stop stays narrow and only reports the failure.
+        if (event.payload.scope === "tree" && latestSession?.status === "running") {
+          yield* providerService.stopSession({ threadId: event.payload.threadId }).pipe(
+            Effect.catchCause((stopCause) => {
+              if (Cause.hasInterruptsOnly(stopCause)) {
+                return Effect.interrupt;
+              }
+              return Effect.logWarning(
+                "provider command reactor failed to stop session after interrupt failure",
+                {
+                  threadId: event.payload.threadId,
+                  cause: Cause.pretty(stopCause),
+                  originalCause: Cause.pretty(cause),
+                },
+              );
+            }),
+          );
+          const stoppedThread = yield* resolveThread(event.payload.threadId);
+          const stoppedSession = stoppedThread?.session;
+          if (stoppedSession && stoppedSession.status !== "stopped") {
+            yield* setThreadSession({
+              threadId: event.payload.threadId,
+              session: {
+                ...stoppedSession,
+                status: "stopped",
+                activeTurnId: null,
+                lastError: detail,
+                updatedAt: event.payload.createdAt,
+              },
+              createdAt: event.payload.createdAt,
+            });
+          }
         }
         yield* appendProviderFailureActivity({
           threadId: event.payload.threadId,

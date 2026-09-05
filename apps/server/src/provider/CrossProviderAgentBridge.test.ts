@@ -124,8 +124,6 @@ const makeAdapter = Effect.fn("test.makeAdapter")(function* (provider: ProviderD
   } = { start: Effect.void, send: Effect.void, interrupt: Effect.void, stopSession: Effect.void };
   const capabilities = {
     sessionModelSwitch: "in-session" as const,
-    isolatedTurnInterrupt: true,
-    nativeDescendantsObservable: true,
     supportsInputSteering: false,
   };
   let turnSequence = 0;
@@ -414,9 +412,9 @@ const expectRefused = Effect.fn("test.expectRefused")(function* <A, E, R>(
 });
 
 it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
-  it.effect.each(["isolation", "provider"] as const)(
-    "failed manual Stop at the %s boundary fences rollback of an older suspended activation save",
-    (boundary) =>
+  it.effect(
+    "failed manual Stop at the provider boundary fences rollback of an older suspended activation save",
+    () =>
       Effect.gen(function* () {
         const h = yield* makeHarness();
         const child = yield* h.spawn();
@@ -443,17 +441,13 @@ it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
           .stopTask(rootId, child.agentId, true)
           .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
         yield* Deferred.await(entered);
-        if (boundary === "isolation") {
-          h.claude.capabilities.isolatedTurnInterrupt = false;
-          h.claude.capabilities.nativeDescendantsObservable = false;
-        } else
-          h.claude.gates.interrupt = Effect.fail(
-            new ProviderAdapterValidationError({
-              provider: "claudeAgent",
-              operation: "interruptTurn",
-              issue: "The runtime cannot confirm Stop",
-            }),
-          );
+        h.claude.gates.interrupt = Effect.fail(
+          new ProviderAdapterValidationError({
+            provider: "claudeAgent",
+            operation: "interruptTurn",
+            issue: "The runtime cannot confirm Stop",
+          }),
+        );
         const stopFinished = yield* Deferred.make<void>();
         const stopping = yield* h.bridge
           .stopTask(rootId, child.agentId)
@@ -585,7 +579,7 @@ it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
         assert.isTrue(Exit.isFailure(stopped));
         if (Exit.isFailure(stopped))
           assert.include(Cause.pretty(stopped.cause), "Stop status could not be persisted");
-        assert.deepEqual(h.claude.interruptions, [[turn.input.threadId, undefined, scope]]);
+        assert.deepEqual(h.claude.interruptions, [[turn.input.threadId]]);
         const status = h.events
           .filter((event) => event.type === "task.updated")
           .findLast((event) => event.payload.taskId === child.agentId);
@@ -947,11 +941,8 @@ it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
         assert.deepEqual(
           h.claude.interruptions,
           scope === "self"
-            ? [[turn.input.threadId, undefined, "self"]]
-            : [
-                [turn.input.threadId, undefined, "tree"],
-                [siblingTurn.input.threadId, undefined, "tree"],
-              ],
+            ? [[turn.input.threadId]]
+            : [[turn.input.threadId], [siblingTurn.input.threadId]],
         );
         assert.isTrue(
           yield* Deferred.isDone(finished),
@@ -1143,7 +1134,7 @@ it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
         );
         const nestedTurn = yield* h.codex.nextTurn;
         yield* h.bridge.stopTask(rootId, parent.agentId);
-        assert.deepEqual(h.claude.interruptions, [[parentTurn.input.threadId, undefined, "self"]]);
+        assert.deepEqual(h.claude.interruptions, [[parentTurn.input.threadId]]);
         assert.deepEqual(h.codex.interruptions, []);
         assert.strictEqual(
           (yield* h.bridge.wait(h.root, { agentId: nested.agentId })).status,
@@ -1151,10 +1142,10 @@ it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
         );
         yield* h.bridge.stopTree(rootId);
         assert.deepEqual(h.claude.interruptions, [
-          [parentTurn.input.threadId, undefined, "self"],
-          [parentTurn.input.threadId, undefined, "tree"],
+          [parentTurn.input.threadId],
+          [parentTurn.input.threadId],
         ]);
-        assert.deepEqual(h.codex.interruptions, [[nestedTurn.input.threadId, undefined, "tree"]]);
+        assert.deepEqual(h.codex.interruptions, [[nestedTurn.input.threadId]]);
         assert.deepEqual(h.claude.stoppedSessions, []);
         assert.deepEqual(h.codex.stoppedSessions, []);
       }),
@@ -1174,7 +1165,7 @@ it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
       const stopped = yield* Effect.result(h.bridge.stopTask(rootId, child.agentId));
       assert.strictEqual(stopped._tag, "Failure");
       if (stopped._tag === "Failure") assert.strictEqual(stopped.failure, failure);
-      assert.deepEqual(h.claude.interruptions, [[turn.input.threadId, undefined, "self"]]);
+      assert.deepEqual(h.claude.interruptions, [[turn.input.threadId]]);
       assert.deepEqual(h.claude.stoppedSessions, []);
       yield* expectRefused(h.bridge.send(h.root, { agentId: child.agentId, prompt: "Do more" }));
     }),
@@ -1698,8 +1689,8 @@ it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
           assert.instanceOf(result.failure, ProviderValidationError);
           assert.include(result.failure.issue, "Cannot confirm tree termination");
         }
-        assert.deepEqual(h.claude.interruptions, [[parentTurn.input.threadId, undefined, "tree"]]);
-        assert.deepEqual(h.codex.interruptions, [[nestedTurn.input.threadId, undefined, "tree"]]);
+        assert.deepEqual(h.claude.interruptions, [[parentTurn.input.threadId]]);
+        assert.deepEqual(h.codex.interruptions, [[nestedTurn.input.threadId]]);
         const failedTask = h.events
           .filter((event) => event.type === "task.updated")
           .findLast((event) => event.payload.taskId === parent.agentId);
@@ -1769,74 +1760,30 @@ it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
       }),
   );
 
-  it.effect.each([true, false])(
-    "advertises individual stop with native descendants only when isolatedTurnInterrupt=%s",
-    (isolatedTurnInterrupt) =>
+  it.effect(
+    "individual stop reaches the child's own session while its native descendants run",
+    () =>
       Effect.gen(function* () {
         const h = yield* makeHarness();
-        h.claude.capabilities.isolatedTurnInterrupt = isolatedTurnInterrupt;
         const child = yield* h.spawn();
         const turn = yield* h.claude.nextTurn;
         const latest = () =>
           h.events
             .filter((event) => event.type === "task.updated")
             .findLast((event) => event.payload.taskId === child.agentId);
-        assert.strictEqual(latest()?.payload.canStop, true);
         yield* h.emit(turn.input.threadId, {
           type: "task.started",
           payload: { taskId: "native-1", taskType: "local_agent", agentKind: "agent" },
         });
-        assert.strictEqual(latest()?.payload.canStop, isolatedTurnInterrupt);
-        yield* h.emit(turn.input.threadId, {
-          type: "task.completed",
-          payload: { taskId: "native-1", status: "completed" },
-        });
+        // A child's native descendants belong to its session; they stop with
+        // it through the adapter's ordinary interrupt, so the control stays on.
         assert.strictEqual(latest()?.payload.canStop, true);
-      }),
-  );
-
-  it.effect(
-    "an opaque empty native roster disables individual stop and rejects both direct stop entry points",
-    () =>
-      Effect.gen(function* () {
-        const h = yield* makeHarness();
-        h.claude.capabilities.isolatedTurnInterrupt = false;
-        h.claude.capabilities.nativeDescendantsObservable = false;
-        const child = yield* h.spawn();
-        const turn = yield* h.claude.nextTurn;
-        const task = h.events
-          .filter((event) => event.type === "task.updated")
-          .findLast((event) => event.payload.taskId === child.agentId);
-        assert.strictEqual(task?.payload.canStop, false);
-        yield* expectRefused(h.bridge.control(h.root, { agentId: child.agentId }, "interrupt"));
-        yield* expectRefused(h.bridge.stopTask(rootId, child.agentId));
-        assert.deepEqual(h.claude.interruptions, []);
+        assert.isTrue(yield* h.bridge.stopTask(rootId, child.agentId));
+        assert.deepEqual(h.claude.interruptions, [[turn.input.threadId]]);
         assert.deepEqual(h.claude.stoppedSessions, []);
         assert.strictEqual(
-          (yield* h.bridge.wait(h.root, { agentId: child.agentId })).closed,
-          false,
-        );
-        yield* h.bridge.stopTree(rootId);
-        assert.deepEqual(h.claude.interruptions, [[turn.input.threadId, undefined, "tree"]]);
-      }),
-  );
-
-  it.effect(
-    "an opaque empty native roster refuses close even when isolated turn interruption is supported",
-    () =>
-      Effect.gen(function* () {
-        const h = yield* makeHarness();
-        h.claude.capabilities.nativeDescendantsObservable = false;
-        const child = yield* h.spawn();
-        const turn = yield* h.claude.nextTurn;
-        yield* expectRefused(h.bridge.control(h.root, { agentId: child.agentId }, "close"));
-        assert.deepEqual(h.claude.stoppedSessions, []);
-        assert.deepEqual(h.claude.interruptions, []);
-        assert.deepEqual(h.cleared, []);
-        assert.strictEqual(h.claude.sessions.has(turn.input.threadId), true);
-        assert.strictEqual(
-          (yield* h.bridge.wait(h.root, { agentId: child.agentId })).closed,
-          false,
+          (yield* h.bridge.wait(h.root, { agentId: child.agentId })).status,
+          "interrupted",
         );
       }),
   );
@@ -2141,7 +2088,7 @@ it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
       );
       const result = yield* Fiber.join(stopping);
       assert.strictEqual(result._tag, "Failure");
-      assert.deepEqual(h.codex.interruptions, [[childTurn.input.threadId, undefined, "tree"]]);
+      assert.deepEqual(h.codex.interruptions, [[childTurn.input.threadId]]);
       assert.deepEqual(h.claude.stoppedSessions, []);
     }),
   );
@@ -2171,10 +2118,7 @@ it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
         assert.strictEqual((yield* Fiber.join(stopping))._tag, "Failure");
         h.claude.gates.interrupt = Effect.void;
         assert.isTrue(yield* h.bridge.stopTask(rootId, child.agentId));
-        assert.deepEqual(h.claude.interruptions, [
-          [turn.input.threadId, undefined, "self"],
-          [turn.input.threadId, undefined, "self"],
-        ]);
+        assert.deepEqual(h.claude.interruptions, [[turn.input.threadId], [turn.input.threadId]]);
         assert.strictEqual(
           (yield* h.bridge.wait(h.root, { agentId: child.agentId })).status,
           "interrupted",
@@ -2681,10 +2625,7 @@ it.layer(NodeCrypto.layer)("CrossProviderAgentBridge", (it) => {
         assert.strictEqual(state.status, "interrupted");
         assert.strictEqual(state.queuedMessages, 0);
         assert.lengthOf(h.claude.deliveries, 1);
-        assert.deepEqual(h.claude.interruptions, [
-          [turn.input.threadId, undefined, "self"],
-          [turn.input.threadId, undefined, "self"],
-        ]);
+        assert.deepEqual(h.claude.interruptions, [[turn.input.threadId], [turn.input.threadId]]);
         yield* expectRefused(
           h.bridge.send(h.root, { agentId: child.agentId, prompt: "Bypass the newer stop" }),
         );

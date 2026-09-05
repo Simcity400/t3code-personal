@@ -14,6 +14,7 @@ import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts"
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
+  hasLiveCrossProviderTasks,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   requestOlderThreadTurns,
@@ -526,6 +527,12 @@ function ThreadRouteContent(
     });
   }, [interruptThreadTurn, selectedThread]);
 
+  // Stop all only appears once a cross-provider child is running: until then
+  // the plain Stop already ends everything this thread owns.
+  const hasLiveCrossProviderChildren = useMemo(
+    () => (agentActivities ? hasLiveCrossProviderTasks(agentActivities) : false),
+    [agentActivities],
+  );
   const handleStopAll = useCallback(() => {
     if (!selectedThread) return;
     return interruptThreadTurn({
@@ -949,7 +956,7 @@ function ThreadRouteContent(
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
-          onStopAll={handleStopAll}
+          onStopAll={hasLiveCrossProviderChildren ? handleStopAll : undefined}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

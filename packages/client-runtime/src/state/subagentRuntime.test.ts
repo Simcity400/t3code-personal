@@ -20,6 +20,7 @@ import {
   formatSubagentModelLabel,
   formatSubagentTitle,
   formatSubagentTokenCount,
+  hasLiveCrossProviderTasks,
   idleAgentsOpenAtom,
   isAgentAttributedToolActivity,
   isParentScopedActivity,
@@ -2423,3 +2424,30 @@ describe("deriveSubagentReplies identity", () => {
 function foldSubagentActivities(...args: Parameters<typeof selectfoldSubagentActivities>) {
   return selectfoldSubagentActivities(projectedTaskActivities(args[0]), args[1]);
 }
+
+describe("hasLiveCrossProviderTasks", () => {
+  it("is true only while an independently owned child is still active", () => {
+    const running = projectedTaskActivities([
+      activity("task.started", { taskId: "native-1", taskType: "subagent", title: "Native" }),
+      activity("task.updated", {
+        taskId: "cross-provider:abc",
+        taskType: "cross_provider",
+        executionOwner: "cross-provider",
+        status: "running",
+        title: "Claude agent",
+      }),
+    ]);
+    expect(hasLiveCrossProviderTasks(running)).toBe(true);
+    const settled = projectedTaskActivities([
+      activity("task.started", { taskId: "native-1", taskType: "subagent", title: "Native" }),
+      activity("task.updated", {
+        taskId: "cross-provider:abc",
+        taskType: "cross_provider",
+        executionOwner: "cross-provider",
+        status: "interrupted",
+        title: "Claude agent",
+      }),
+    ]);
+    expect(hasLiveCrossProviderTasks(settled)).toBe(false);
+  });
+});

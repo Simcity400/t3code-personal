@@ -940,7 +940,7 @@ it.layer(layer)("AntigravityAdapter", (it) => {
         yield* h.emitNative(started);
         yield* h.waitForEvent((event) => event.type === "task.progress");
         if (settlement === "cancelled") {
-          yield* h.adapter.interruptTurn(threadId, undefined, "tree");
+          yield* h.adapter.interruptTurn(threadId);
         } else {
           if (settlement === "completed") {
             yield* h.emitNative(
@@ -1107,16 +1107,7 @@ it.layer(layer)("AntigravityAdapter", (it) => {
             error: new AcpErrors.AcpTransportError({ detail: "Process exited.", cause: undefined }),
           });
         } else if (stop === "cancel") {
-          for (const scope of [undefined, "self"] as const) {
-            const result = yield* h.adapter
-              .interruptTurn(threadId, undefined, scope)
-              .pipe(Effect.result);
-            expect(result._tag).toBe("Failure");
-            if (result._tag === "Failure") expect(result.failure.message).toContain("Stop all");
-            expect(h.calls.filter((call) => call.startsWith("cancel:"))).toHaveLength(0);
-            expect(yield* h.adapter.hasSession(threadId)).toBe(true);
-          }
-          yield* h.adapter.interruptTurn(threadId, undefined, "tree");
+          yield* h.adapter.interruptTurn(threadId);
         } else if (stop === "steer") {
           const steering = yield* h.adapter
             .sendTurn({ threadId, input: "Change direction" })

@@ -567,7 +567,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         0,
       );
 
-      yield* adapter.interruptTurn(threadId, undefined, "tree");
+      yield* adapter.interruptTurn(threadId);
       const completed = yield* Deferred.await(turnCompleted).pipe(
         Effect.timeout("2 seconds"),
         TestClock.withLive,
@@ -720,7 +720,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         0,
       );
 
-      yield* adapter.interruptTurn(threadId, undefined, "tree");
+      yield* adapter.interruptTurn(threadId);
       const completed = yield* Deferred.await(turnCompleted).pipe(
         Effect.timeout("2 seconds"),
         TestClock.withLive,
@@ -992,7 +992,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
 
       yield* Effect.gen(function* () {
         yield* Effect.sleep("500 millis");
-        yield* adapter.interruptTurn(threadId, undefined, "tree");
+        yield* adapter.interruptTurn(threadId);
       }).pipe(Effect.forkChild({ startImmediately: true }));
 
       yield* adapter.sendTurn({
@@ -1092,7 +1092,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const firstTurnId = yield* Deferred.await(firstTurnStarted).pipe(Effect.timeout("2 seconds"));
       yield* waitForFileContent(requestLogPath, 80, '"method":"session/prompt"');
 
-      yield* adapter.interruptTurn(threadId, firstTurnId, "tree").pipe(Effect.timeout("2 seconds"));
+      yield* adapter.interruptTurn(threadId, firstTurnId).pipe(Effect.timeout("2 seconds"));
       const followUp = yield* adapter
         .sendTurn({ threadId, input: "complete the follow-up", attachments: [] })
         .pipe(Effect.timeout("2 seconds"));
@@ -1344,7 +1344,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
           event.type === "turn.completed" && String(event.threadId) === String(threadId),
       );
 
-      yield* adapter.interruptTurn(threadId, firstTurnId, "tree").pipe(Effect.timeout("2 seconds"));
+      yield* adapter.interruptTurn(threadId, firstTurnId).pipe(Effect.timeout("2 seconds"));
       yield* Fiber.join(firstSendTurnFiber).pipe(Effect.timeout("3 seconds"));
       yield* Deferred.await(turnCompleted).pipe(Effect.timeout("3 seconds"));
 
@@ -1410,7 +1410,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         .sendTurn({ threadId, input: "interrupt before prompt starts", attachments: [] })
         .pipe(Effect.forkChild);
       const firstTurnId = yield* Deferred.await(firstTurnStarted).pipe(Effect.timeout("2 seconds"));
-      yield* adapter.interruptTurn(threadId, firstTurnId, "tree").pipe(Effect.timeout("2 seconds"));
+      yield* adapter.interruptTurn(threadId, firstTurnId).pipe(Effect.timeout("2 seconds"));
       yield* Fiber.join(firstSendTurnFiber).pipe(Effect.timeout("3 seconds"));
       yield* Deferred.await(turnCompleted).pipe(Effect.timeout("3 seconds"));
 
@@ -1480,7 +1480,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         .sendTurn({ threadId, input: "cancel before the late update", attachments: [] })
         .pipe(Effect.forkChild);
       const turnId = yield* Deferred.await(turnStarted).pipe(Effect.timeout("2 seconds"));
-      yield* adapter.interruptTurn(threadId, turnId, "tree").pipe(Effect.timeout("2 seconds"));
+      yield* adapter.interruptTurn(threadId, turnId).pipe(Effect.timeout("2 seconds"));
       yield* Fiber.join(sendTurnFiber).pipe(Effect.timeout("2 seconds"));
       yield* Deferred.await(lateNativeUpdate).pipe(Effect.timeout("2 seconds"));
       for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
@@ -1565,7 +1565,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         .pipe(Effect.forkChild);
 
       const turnId = yield* Deferred.await(trailingChunkTurnId).pipe(Effect.timeout("2 seconds"));
-      yield* adapter.interruptTurn(threadId, turnId, "tree").pipe(Effect.timeout("2 seconds"));
+      yield* adapter.interruptTurn(threadId, turnId).pipe(Effect.timeout("2 seconds"));
       yield* Fiber.join(sendTurnFiber).pipe(Effect.timeout("2 seconds"));
 
       const turnCompletedEvents = runtimeEvents.filter(

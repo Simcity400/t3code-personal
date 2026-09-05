@@ -1025,7 +1025,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   provider: ServerProvider | null;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
-  onStopAll: () => void;
+  onStopAll?: (() => void) | undefined;
   onImplementPlanInNewThread: () => void;
   onCompactContext?: (() => void) | undefined;
   compactDisabled: boolean;
@@ -1223,7 +1223,7 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }, intent?: ComposerSubmissionIntent) => void;
   onInterrupt: () => void;
-  onStopAll: () => void;
+  onStopAll?: (() => void) | undefined;
   onImplementPlanInNewThread: () => void;
   onRespondToApproval: (
     requestId: ApprovalRequestId,

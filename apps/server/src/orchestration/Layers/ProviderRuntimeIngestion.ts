@@ -476,32 +476,30 @@ function runtimeEventToUnattributedActivities(
   event: ProviderRuntimeEvent,
   taskTitle?: string,
 ): ReadonlyArray<OrchestrationThreadActivity> {
+  // A child's reasoning and plan reach the transcript as completed items only.
+  // Their streaming deltas are dropped just like the main thread's: each one
+  // would otherwise become a durable activity row and a broadcast to every
+  // connected client.
   if (
     event.bridgeAgentId !== undefined &&
-    ((event.type === "content.delta" && event.payload.streamKind !== "assistant_text") ||
-      ((event.type === "item.started" ||
-        event.type === "item.updated" ||
-        event.type === "item.completed") &&
-        ["reasoning", "plan", "context_compaction", "error"].includes(event.payload.itemType)))
+    (event.type === "item.started" ||
+      event.type === "item.updated" ||
+      event.type === "item.completed") &&
+    ["reasoning", "plan", "context_compaction", "error"].includes(event.payload.itemType)
   ) {
     const kind =
-      event.type === "content.delta"
-        ? event.type
-        : event.payload.itemType === "context_compaction"
-          ? "context-compaction"
-          : event.payload.itemType === "error"
-            ? "runtime.error"
-            : event.type;
+      event.payload.itemType === "context_compaction"
+        ? "context-compaction"
+        : event.payload.itemType === "error"
+          ? "runtime.error"
+          : event.type;
     return [
       {
         id: event.eventId,
         createdAt: event.createdAt,
         kind,
         tone: kind === "runtime.error" ? "error" : "info",
-        summary:
-          event.type === "content.delta"
-            ? event.payload.streamKind
-            : (event.payload.title ?? event.payload.itemType),
+        summary: event.payload.title ?? event.payload.itemType,
         payload: {
           ...event.payload,
           ...(event.itemId !== undefined ? { itemId: event.itemId } : {}),
@@ -1756,11 +1754,7 @@ const make = Effect.gen(function* () {
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
-      if (
-        event.type === "content.delta" &&
-        event.payload.streamKind !== "assistant_text" &&
-        event.bridgeAgentId === undefined
-      ) {
+      if (event.type === "content.delta" && event.payload.streamKind !== "assistant_text") {
         return;
       }
 
