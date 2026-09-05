@@ -101,6 +101,10 @@ The backend agent runtime that actually performs work. Six drivers ship built in
 
 The live provider-backed runtime attached to a thread. Session shape is in [the orchestration contracts][1], and lifecycle is managed in [ProviderService.ts][14].
 
+#### Cross-provider child
+
+An independently owned provider session whose transcript and task state belong to a visible root thread. Its hidden execution identity is distinct from that root; stopping the root does not stop the child. See [cross-provider execution](cross-provider-agents.md).
+
 #### Runtime mode
 
 The safety/access mode for a thread or session. [The contracts][1] define four values: `approval-required`, `auto-accept-edits`, `auto`, and `full-access`. See [permission modes][18].

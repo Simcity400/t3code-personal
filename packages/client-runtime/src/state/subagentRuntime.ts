@@ -4,6 +4,7 @@ import {
   readTaskStates,
   type RuntimeTaskUsage,
   type TaskRunHandles,
+  type TaskState,
   type OrchestrationMessage,
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
@@ -503,6 +504,8 @@ export function isAgentAttributedToolActivity(activity: OrchestrationThreadActiv
  * Assistant and user message items stay out: they are the transcript's
  * messages, delivered through `selectSubagentTranscriptMessages`, and would
  * otherwise render a second time as tool cards.
+ * The selected agent's own task lifecycle belongs to the roster, not its
+ * transcript: replaying it here would make the agent appear to spawn itself.
  */
 export function selectSubagentTranscriptActivities(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
@@ -513,6 +516,12 @@ export function selectSubagentTranscriptActivities(
       return [];
     }
     const payload = activity.payload as Record<string, unknown>;
+    if (
+      activity.kind.startsWith("task.") &&
+      (asString(payload.taskId) === agentId || asString(payload.id) === agentId)
+    ) {
+      return [];
+    }
     // `agentId` is how Claude stamps the owning conversation; `parentAgentId`
     // is how providers that model children as their own threads (Codex,
     // OpenCode) name it on the child's task rows. Matching only the former hid
@@ -534,6 +543,94 @@ export function selectSubagentTranscriptActivities(
       },
     ];
   });
+}
+
+export interface SubagentTranscriptContent {
+  readonly id: string;
+  readonly kind: "plan" | "reasoning";
+  readonly text: string;
+  readonly createdAt: string;
+  readonly turnId: OrchestrationMessage["turnId"];
+  readonly streaming: boolean;
+}
+
+export function isSubagentTranscriptContentActivity(
+  activity: OrchestrationThreadActivity,
+): boolean {
+  const payload = asRecord(activity.payload);
+  if (!payload) return false;
+  return (
+    activity.kind === "turn.proposed.completed" ||
+    (activity.kind === "content.delta" &&
+      ["reasoning_text", "reasoning_summary_text", "plan_text"].includes(
+        String(payload?.streamKind),
+      )) ||
+    (["item.started", "item.updated", "item.completed"].includes(activity.kind) &&
+      (payload?.itemType === "reasoning" || payload?.itemType === "plan"))
+  );
+}
+
+/** Reads already agent-scoped activities into Markdown blocks, retaining provider item boundaries. */
+export function deriveSubagentTranscriptContent(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyArray<SubagentTranscriptContent> {
+  const blocks: Array<{
+    id: string;
+    kind: SubagentTranscriptContent["kind"];
+    chunks: string[];
+    createdAt: string;
+    turnId: SubagentTranscriptContent["turnId"];
+    streaming: boolean;
+    item: string;
+  }> = [];
+  const open = new Map<string, (typeof blocks)[number]>();
+  for (const activity of activities) {
+    if (!isSubagentTranscriptContentActivity(activity)) continue;
+    const payload = asRecord(activity.payload)!;
+    const kind =
+      activity.kind === "turn.proposed.completed" ||
+      payload.itemType === "plan" ||
+      payload.streamKind === "plan_text"
+        ? "plan"
+        : "reasoning";
+    const item = asString(payload.itemId) ?? activity.turnId ?? "current";
+    const stream =
+      asString(payload.streamKind) ?? (kind === "plan" ? "plan_text" : "reasoning_text");
+    const key = `${kind}:${stream}:${item}`;
+    const delta = activity.kind === "content.delta";
+    const text = delta
+      ? payload.delta
+      : activity.kind === "turn.proposed.completed"
+        ? payload.planMarkdown
+        : payload.detail;
+    let block = open.get(key);
+    if (!block && typeof text === "string" && text.length > 0) {
+      block = {
+        id: `agent-content:${activity.id}`,
+        kind,
+        chunks: [],
+        createdAt: activity.createdAt,
+        turnId: activity.turnId,
+        streaming: true,
+        item,
+      };
+      blocks.push(block);
+      open.set(key, block);
+    }
+    if (block && typeof text === "string" && text.length > 0) {
+      if (delta) block.chunks.push(text);
+      else block.chunks = [text];
+    }
+    if (activity.kind.endsWith(".completed")) {
+      for (const [candidateKey, candidate] of open) {
+        if (candidate.kind === kind && candidate.item === item) {
+          candidate.streaming = false;
+          open.delete(candidateKey);
+        }
+      }
+    }
+  }
+  return blocks.map(({ chunks, item: _item, ...block }) => ({ ...block, text: chunks.join("") }));
 }
 
 /**
@@ -1195,7 +1292,9 @@ export function deriveSubagentReplies(
    * top-level child it is the root provider thread, which is not an agent).
    */
   const ownerOf = (agentId: string, stampedOwner: string | undefined): string | null => {
-    if (stampedOwner) return stampedOwner;
+    // Bridge attribution names the speaker itself, not the recipient. Its
+    // task hierarchy still identifies the conversation receiving the report.
+    if (stampedOwner && stampedOwner !== agentId) return stampedOwner;
     const parent = parentAgentIdByAgentId.get(agentId);
     return parent !== undefined && knownAgentIds.has(parent) ? parent : null;
   };
@@ -1250,8 +1349,8 @@ export function deriveSubagentReplies(
     if (seenActivityIds.has(activity.id)) continue;
     seenReplyKeys.add(normalizedReplyKey(agentId, text));
     seenActivityIds.add(activity.id);
-    // `agentId` on a task row names the conversation that OWNS the task, which
-    // is exactly the conversation its report is addressed to.
+    // Resolve provider owner stamps and bridge speaker stamps through the
+    // same hierarchy before selecting the receiving conversation.
     const ownerAgentId = ownerOf(agentId, asString(payload.agentId));
     replies.push({
       id: `subagent-reply:${activity.id}`,
@@ -1278,6 +1377,18 @@ export function deriveSubagentReplies(
   );
 }
 
+/** Explicit Resume is offered only when the server confirms durable wrapper recovery. */
+export function canResumeCrossProviderTask(
+  task: Pick<TaskState, "executionOwner" | "taskType" | "canResume" | "status"> | undefined,
+): boolean {
+  return (
+    task?.executionOwner === "cross-provider" &&
+    task.taskType === "cross_provider" &&
+    task.canResume === true &&
+    ["interrupted", "failed", "completed", "idle"].includes(task.status)
+  );
+}
+
 /**
  * The replies one conversation received: the parent thread (`null`) or one
  * subagent reading its own children's reports.
@@ -1286,7 +1397,9 @@ export function selectSubagentRepliesFor(
   replies: ReadonlyArray<SubagentReplyEntry>,
   ownerAgentId: string | null,
 ): ReadonlyArray<SubagentReplyEntry> {
-  return replies.filter((reply) => reply.ownerAgentId === ownerAgentId);
+  return replies.filter(
+    (reply) => reply.ownerAgentId === ownerAgentId && reply.agentId !== ownerAgentId,
+  );
 }
 
 /** Timeline-bypassing synthesized rows (Codex children, workflow members). */

@@ -2,7 +2,10 @@ import { projectedTaskActivities } from "./taskState.test-fixtures.ts";
 import { describe, expect, it } from "vite-plus/test";
 import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tools/contracts";
 
-import { foldSubagentActivities as selectfoldSubagentActivities } from "./subagentRuntime.ts";
+import {
+  foldSubagentActivities as selectfoldSubagentActivities,
+  selectSubagentTranscriptActivities,
+} from "./subagentRuntime.ts";
 import {
   backgroundTaskKind,
   backgroundTaskSourceLabel,
@@ -1422,6 +1425,26 @@ describe("the compacting wait", () => {
     expect(deriveCompactingSince([compactingRow(true, "2026-09-04T10:00:00.000Z")])).toBe(
       "2026-09-04T10:00:00.000Z",
     );
+  });
+
+  it("ignores child compaction start and end while tracking parent edges", () => {
+    const parent = compactingRow(true, "2026-09-04T10:00:00.000Z");
+    const childStart = {
+      ...compactingRow(true, "2026-09-04T10:00:10.000Z"),
+      payload: { compacting: true, agentId: "child" },
+    };
+    const childEnd = {
+      ...compactingRow(false, "2026-09-04T10:00:20.000Z"),
+      payload: { compacting: false, agentId: "child" },
+    };
+    expect(deriveCompactingSince([childStart])).toBeNull();
+    expect(deriveCompactingSince(selectSubagentTranscriptActivities([childStart], "child"))).toBe(
+      childStart.createdAt,
+    );
+    expect(deriveCompactingSince([parent, childStart, childEnd])).toBe(parent.createdAt);
+    expect(
+      deriveCompactingSince([parent, childStart, compactingRow(false, "2026-09-04T10:00:30.000Z")]),
+    ).toBeNull();
   });
 
   it("reports nothing once compaction has ended", () => {

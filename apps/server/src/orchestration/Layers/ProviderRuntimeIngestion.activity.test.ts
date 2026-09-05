@@ -16,6 +16,60 @@ const base = {
 };
 
 describe("runtimeEventToActivities task progress", () => {
+  it("keeps bridge question delivery and cancellation semantics", () => {
+    const requested = runtimeEventToActivities({
+      ...base,
+      bridgeAgentId: "bridge",
+      eventId: EventId.make("question"),
+      type: "user-input.requested",
+      payload: {
+        questions: [],
+        responseMode: "message",
+        delivery: "agent",
+        agentId: "bridge:native",
+      },
+    });
+    expect(requested[0]?.payload).toMatchObject({
+      delivery: "agent",
+      agentId: "bridge:native",
+      bridgeAgentId: "bridge",
+    });
+    const cancelled = runtimeEventToActivities({
+      ...base,
+      bridgeAgentId: "bridge",
+      eventId: EventId.make("cancel"),
+      type: "user-input.resolved",
+      payload: { answers: {}, cancelled: true, reason: "Session closed", agentId: "bridge:native" },
+    });
+    expect(cancelled[0]?.summary).toBe("User input cancelled");
+    expect(cancelled[0]?.payload).toMatchObject({
+      cancelled: true,
+      reason: "Session closed",
+      agentId: "bridge:native",
+    });
+  });
+
+  it("marks remapped native task ownership without replacing native identity", () => {
+    const activities = runtimeEventToActivities({
+      ...base,
+      bridgeAgentId: "bridge",
+      eventId: EventId.make("native"),
+      type: "task.updated",
+      payload: {
+        taskId: RuntimeTaskId.make("bridge:native"),
+        taskType: "subagent",
+        parentAgentId: "bridge",
+        status: "running",
+        canStop: true,
+      },
+    });
+    expect(activities[0]?.payload).toMatchObject({
+      taskId: "bridge:native",
+      executionOwner: "cross-provider",
+      parentAgentId: "bridge",
+      canStop: true,
+    });
+  });
   it("persists usage independently from replaceable activity", () => {
     const taskId = RuntimeTaskId.make("agent-1");
     const usageOnly = {

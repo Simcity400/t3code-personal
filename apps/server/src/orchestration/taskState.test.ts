@@ -30,6 +30,98 @@ function activity(
 }
 
 describe("server task state", () => {
+  it("projects a confirmed bridge stop over an initialization failure without a new activation", () => {
+    const taskId = "cross-provider:83801a69-835b-4a68-a69e-0c513ba8441b";
+    const failed = activity("task.updated", {
+      taskId,
+      taskType: "cross_provider",
+      executionOwner: "cross-provider",
+      agentKind: "agent",
+      agentId: taskId,
+      status: "failed",
+      error: "Send initialization interrupted",
+      canResume: false,
+      canStop: false,
+    });
+    const stopped = activity("task.updated", {
+      taskId,
+      status: "interrupted",
+      canResume: true,
+      canStop: false,
+    });
+    const failedEvent = { ...failed, createdAt: "2026-09-05T08:10:43.920Z" };
+    const stoppedEvent = { ...stopped, createdAt: "2026-09-05T08:10:43.921Z" };
+    const failedRows = projectTaskActivity(threadId, [], failedEvent);
+    const stoppedRows = projectTaskActivity(threadId, failedRows, stoppedEvent);
+    const [state] = readTaskStates(stoppedRows);
+    expect(state).toMatchObject({
+      id: taskId,
+      status: "interrupted",
+      executionOwner: "cross-provider",
+      canResume: true,
+      canStop: false,
+      error: null,
+      activationCount: 1,
+      completedAt: stoppedEvent.createdAt,
+      updatedAt: stoppedEvent.createdAt,
+    });
+    expect(updateTaskState(state, failedEvent)).toEqual(state);
+    expect(
+      updateTaskState(state, { ...stoppedEvent, createdAt: "2026-09-05T08:10:43.922Z" }),
+    ).toMatchObject({ completedAt: stoppedEvent.createdAt, activationCount: 1 });
+  });
+
+  it("keeps native terminal deduplication even for bridge-owned descendants", () => {
+    const failed = updateTaskState(
+      undefined,
+      activity("task.updated", {
+        taskId: "bridge:native",
+        taskType: "local_agent",
+        executionOwner: "cross-provider",
+        status: "failed",
+      }),
+    );
+    expect(
+      updateTaskState(
+        failed,
+        activity("task.updated", { taskId: "bridge:native", status: "interrupted" }, 1),
+      ),
+    ).toMatchObject({ status: "failed", completedAt: failed?.completedAt });
+  });
+
+  it("retains bridge execution ownership through thin native descendant updates", () => {
+    const start = updateTaskState(
+      undefined,
+      activity("task.updated", {
+        taskId: "bridge:native",
+        taskType: "local_agent",
+        agentKind: "agent",
+        executionOwner: "cross-provider",
+        parentAgentId: "bridge",
+        status: "running",
+        canStop: true,
+      }),
+    );
+    const end = updateTaskState(
+      start,
+      activity(
+        "task.updated",
+        {
+          taskId: "bridge:native",
+          status: "interrupted",
+          canStop: false,
+        },
+        1,
+      ),
+    );
+    expect(end).toMatchObject({
+      executionOwner: "cross-provider",
+      parentAgentId: "bridge",
+      status: "interrupted",
+      canStop: false,
+      agentKind: "agent",
+    });
+  });
   it("preserves a shell's identity and owner through thin updates", () => {
     const start = updateTaskState(
       undefined,

@@ -7,6 +7,7 @@ import { ProviderAuthService } from "../Services/ProviderAuthService.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
+import { isCrossProviderSessionId } from "../CrossProviderAgentBridge.ts";
 
 export const makeProviderAuthService = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry;
@@ -33,6 +34,16 @@ export const makeProviderAuthService = Effect.gen(function* () {
   const stopSessions = Effect.fn("ProviderAuthService.stopSessions")(function* (
     instanceId: ProviderInstanceId,
   ) {
+    yield* (providers.stopCrossProviderSessions?.(instanceId) ?? Effect.void).pipe(
+      Effect.mapError(
+        () =>
+          new ProviderSetupError({
+            instanceId,
+            operation: "stopSessions",
+            detail: "Could not stop all agents for this provider. Try again.",
+          }),
+      ),
+    );
     const bindings = yield* directory.listBindings().pipe(
       Effect.mapError(
         () =>
@@ -47,7 +58,10 @@ export const makeProviderAuthService = Effect.gen(function* () {
     const threadIds = new Set(
       bindings
         .filter(
-          (binding) => binding.providerInstanceId === instanceId && binding.status !== "stopped",
+          (binding) =>
+            binding.providerInstanceId === instanceId &&
+            binding.status !== "stopped" &&
+            !isCrossProviderSessionId(binding.threadId),
         )
         .map((binding) => binding.threadId),
     );

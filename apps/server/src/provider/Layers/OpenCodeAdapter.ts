@@ -738,6 +738,81 @@ const failPendingOpenCodeCancellation = Effect.fn("failPendingOpenCodeCancellati
   ).pipe(Effect.ignore);
 });
 
+/** Check only active native sessions; completed session history is not live work. */
+const ensureOpenCodeInterruptIsolation = Effect.fn("ensureOpenCodeInterruptIsolation")(function* (
+  context: OpenCodeSessionContext,
+  selectedSessionId: string,
+) {
+  const children = yield* runOpenCodeSdk("session.children", (signal) =>
+    context.client.session.children({ sessionID: selectedSessionId }, { signal }),
+  ).pipe(Effect.mapError(toRequestError));
+  if (children.data === undefined) {
+    return yield* new ProviderAdapterRequestError({
+      provider: PROVIDER,
+      method: "session.abort",
+      detail:
+        "OpenCode native child roster is unavailable; individual stop isolation cannot be confirmed. Use Stop all.",
+    });
+  }
+  const hasKnownChildren =
+    (selectedSessionId === context.openCodeSessionId && context.childAgentSessionIds.size > 0) ||
+    Array.from(context.childAgentParentById.values()).includes(selectedSessionId);
+  // A confirmed empty native roster needs no liveness probe. Keep status failures
+  // available to cancellation reconciliation rather than consuming them here.
+  if (children.data.length === 0 && !hasKnownChildren) return;
+  const response = yield* runOpenCodeSdk("session.status", (signal) =>
+    context.client.session.status(undefined, { signal }),
+  ).pipe(Effect.mapError(toRequestError));
+  const statuses = Option.getOrUndefined(decodeOpenCodeSessionStatusMap(response.data));
+  if (statuses === undefined) {
+    return yield* new ProviderAdapterRequestError({
+      provider: PROVIDER,
+      method: "session.abort",
+      detail:
+        "OpenCode native task status is unavailable; individual stop isolation cannot be confirmed. Use Stop all.",
+    });
+  }
+  const descendants = yield* Effect.forEach(
+    Object.entries(statuses).filter(
+      ([id, status]) => id !== selectedSessionId && status.type !== "idle",
+    ),
+    Effect.fn(function* ([id]) {
+      const visited = new Set<string>();
+      let current: string | undefined = id;
+      while (current !== undefined && !visited.has(current)) {
+        if (current === selectedSessionId) return true;
+        if (current === context.openCodeSessionId) return false;
+        if (
+          selectedSessionId === context.openCodeSessionId &&
+          context.childAgentSessionIds.has(current)
+        )
+          return true;
+        visited.add(current);
+        const knownParent = context.childAgentParentById.get(current);
+        if (knownParent !== undefined) {
+          current = knownParent;
+        } else {
+          const sessionId: string = current;
+          const session = yield* runOpenCodeSdk("session.get", (signal) =>
+            context.client.session.get({ sessionID: sessionId }, { signal }),
+          ).pipe(Effect.mapError(toRequestError));
+          current = session.data?.parentID;
+        }
+      }
+      return false;
+    }),
+    { concurrency: 8 },
+  );
+  if (descendants.some(Boolean)) {
+    return yield* new ProviderAdapterRequestError({
+      provider: PROVIDER,
+      method: "session.abort",
+      detail:
+        "OpenCode cannot guarantee an individual stop preserves live native descendants. Use Stop all.",
+    });
+  }
+});
+
 const abortOpenCodeDescendants = Effect.fn("abortOpenCodeDescendants")(function* (
   context: OpenCodeSessionContext,
 ) {
@@ -3318,11 +3393,18 @@ export function makeOpenCodeAdapter(
     });
 
     const interruptTurn: OpenCodeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
-      function* (threadId, turnId) {
+      function* (threadId, turnId, scope = "self") {
         const context = yield* ensureSessionContext(sessions, threadId);
         const activeTurnId = context.activeTurnId;
         if (turnId !== undefined && activeTurnId !== turnId) {
           return;
+        }
+        // Native task tools can couple the child's cancellation to the parent
+        // prompt. Without verified isolation, abort is individual only when
+        // this native session has no live descendants. Bridge sessions are separate.
+        if (scope === "self") {
+          yield* ensureOpenCodeInterruptIsolation(context, context.openCodeSessionId);
+          if (sessions.get(threadId) !== context || context.activeTurnId !== activeTurnId) return;
         }
         const interruptedTurnId = turnId ?? activeTurnId;
         yield* cancelIdleReconciliation(context);
@@ -3388,7 +3470,7 @@ export function makeOpenCodeAdapter(
           parentAbortOutcome.source === "request" ? parentAbortOutcome.exit : Exit.void;
 
         const descendantAbortOutcome = yield* Effect.raceFirst(
-          abortOpenCodeDescendants(context).pipe(
+          (scope === "tree" ? abortOpenCodeDescendants(context) : Effect.void).pipe(
             Effect.timeout("10 seconds"),
             Effect.catchTags({
               OpenCodeRuntimeError: (cause) => Effect.fail(toRequestError(cause)),
@@ -3597,6 +3679,9 @@ export function makeOpenCodeAdapter(
     return {
       provider: PROVIDER,
       capabilities: {
+        isolatedTurnInterrupt: false,
+        // connectToOpenCodeServer treats only a nonempty trimmed serverUrl as external.
+        crossProviderAgents: !openCodeSettings.serverUrl?.trim(),
         sessionModelSwitch: "in-session",
       },
       startSession,
@@ -3611,6 +3696,7 @@ export function makeOpenCodeAdapter(
             detail: "The task is not a child of this session.",
           });
         }
+        yield* ensureOpenCodeInterruptIsolation(context, taskId);
         yield* runOpenCodeSdk("session.abort", (signal) =>
           context.client.session.abort({ sessionID: taskId }, { signal }),
         ).pipe(Effect.asVoid, Effect.mapError(toRequestError));

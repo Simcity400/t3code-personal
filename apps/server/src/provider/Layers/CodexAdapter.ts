@@ -2400,9 +2400,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     return session;
   });
 
-  const interruptTurn: CodexAdapterShape["interruptTurn"] = (threadId, turnId) =>
+  const interruptTurn: CodexAdapterShape["interruptTurn"] = (threadId, turnId, scope = "self") =>
     requireSession(threadId).pipe(
-      Effect.flatMap((session) => session.runtime.interruptTurn(turnId)),
+      Effect.flatMap((session) => session.runtime.interruptTurn(turnId, undefined, scope)),
       Effect.mapError((cause) =>
         cause._tag === "ProviderAdapterSessionNotFoundError"
           ? cause
@@ -2540,6 +2540,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   return {
     provider: PROVIDER,
     capabilities: {
+      isolatedTurnInterrupt: true,
+      supportsInputSteering: true,
       sessionModelSwitch: "in-session",
       promptlessTurnContinuation: true,
     },

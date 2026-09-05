@@ -12,6 +12,7 @@ import {
   formatSubagentTitle,
   isActiveSubagentStatus,
   subagentPanelSection,
+  selectSubagentTranscriptActivities,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   deriveAgentWaitReasons,
@@ -132,6 +133,14 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
     return null;
   }, [transcript]);
   const selectedAgentWorking = selectedAgent ? isActiveSubagentStatus(selectedAgent.status) : false;
+  const selectedAgentCompacting = useMemo(
+    () =>
+      activities && selectedAgentId
+        ? deriveCompactingSince(selectSubagentTranscriptActivities(activities, selectedAgentId)) !==
+          null
+        : false,
+    [activities, selectedAgentId],
+  );
   // Background work the subagent fold deliberately drops: shells, monitors,
   // and a subagent's own internal tasks. Same durable activities, so this
   // survives reload exactly as the roster does.
@@ -235,7 +244,11 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
             {selectedAgentContextWindow ? (
               <ContextWindowChip usage={selectedAgentContextWindow} />
             ) : null}
-            <AgentStatus agent={selectedAgent} clock={statusClock} />
+            {selectedAgentWorking && selectedAgentCompacting ? (
+              <Text className="text-xs text-foreground-muted">Compacting context</Text>
+            ) : (
+              <AgentStatus agent={selectedAgent} clock={statusClock} />
+            )}
             <TaskStopButton
               taskId={selectedAgent.id}
               label={selectedAgent.title}

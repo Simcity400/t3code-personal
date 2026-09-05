@@ -10,6 +10,9 @@ import {
   selectSubagentRepliesFor,
   selectSubagentTranscriptActivities,
   selectSubagentTranscriptMessages,
+  deriveSubagentTranscriptContent,
+  isSubagentTranscriptContentActivity,
+  type SubagentTranscriptContent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { MessageId } from "@t3tools/contracts";
 import type {
@@ -131,6 +134,13 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
 
 type RawThreadFeedEntry =
   | {
+      readonly type: "transcript-content";
+      readonly id: string;
+      readonly createdAt: string;
+      readonly turnId: TurnId | null;
+      readonly content: SubagentTranscriptContent;
+    }
+  | {
       readonly type: "message";
       readonly id: string;
       readonly createdAt: string;
@@ -151,6 +161,7 @@ type RawThreadFeedEntry =
     };
 
 export type ThreadFeedEntry =
+  | Extract<RawThreadFeedEntry, { type: "transcript-content" }>
   | Extract<RawThreadFeedEntry, { type: "message" }>
   | {
       readonly type: "activity-group";
@@ -1377,7 +1388,7 @@ function deriveThreadFeedTurnFolds(
     const turnId =
       entry.type === "message" && entry.message.role === "assistant"
         ? entry.message.turnId
-        : entry.type === "activity-group"
+        : entry.type === "activity-group" || entry.type === "transcript-content"
           ? entry.turnId
           : null;
     if (!turnId) {
@@ -1926,13 +1937,26 @@ export function buildThreadFeed(
   );
   const oldestLoadedMessageCreatedAt =
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
-  const workLogEntries = deriveWorkLogEntries(
+  const scopedActivities =
     transcriptAgentId === undefined
       ? thread.activities
-      : selectSubagentTranscriptActivities(thread.activities, transcriptAgentId),
+      : selectSubagentTranscriptActivities(thread.activities, transcriptAgentId);
+  const content =
+    transcriptAgentId === undefined ? [] : deriveSubagentTranscriptContent(scopedActivities);
+  const workLogEntries = deriveWorkLogEntries(
+    transcriptAgentId === undefined
+      ? scopedActivities
+      : scopedActivities.filter((activity) => !isSubagentTranscriptContentActivity(activity)),
   );
   const entries = Arr.sortWith(
     [
+      ...content.map<RawThreadFeedEntry>((block) => ({
+        type: "transcript-content",
+        id: block.id,
+        createdAt: block.createdAt,
+        turnId: block.turnId,
+        content: block,
+      })),
       ...messages.map<RawThreadFeedEntry>((message) => ({
         type: "message",
         id: message.id,
@@ -2011,8 +2035,19 @@ export function buildThreadFeed(
           };
         }),
     ],
-    (s) => new Date(s.createdAt),
-    Order.Date,
+    (entry) => entry,
+    Order.combine(
+      Order.mapInput(Order.Date, (entry: RawThreadFeedEntry) => new Date(entry.createdAt)),
+      Order.mapInput(Order.Number, (entry: RawThreadFeedEntry) =>
+        transcriptAgentId === undefined
+          ? 0
+          : entry.type === "message"
+            ? entry.message.role === "user"
+              ? 0
+              : 2
+            : 1,
+      ),
+    ),
   );
 
   return groupAdjacentActivities(entries);

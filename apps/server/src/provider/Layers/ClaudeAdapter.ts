@@ -5878,6 +5878,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           "task/stop",
           "This workflow member has no native task-stop handle.",
         );
+      if (
+        Array.from(context.liveTaskIds).some(
+          (id) => context.taskAgents.get(id)?.owningAgentId === taskId,
+        )
+      ) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "task/stop",
+          detail:
+            "Claude cannot guarantee an individual task stop preserves its native descendants. Use Stop all.",
+        });
+      }
       const stop = context.query.stopTask;
       if (!stop)
         return yield* toRequestError(
@@ -5892,15 +5904,32 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
-  const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
-    function* (threadId, _turnId) {
-      const context = yield* requireSession(threadId);
-      // interrupt() can acknowledge while resumed background tasks keep the
-      // CLI alive. Stop is a hard session boundary for Claude, so close the
-      // query and let the SDK escalate to SIGKILL when graceful exit fails.
-      yield* stopSessionInternal(context);
-    },
-  );
+  const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(function* (
+    threadId,
+    turnId,
+    scope = "self",
+  ) {
+    const context = yield* requireSession(threadId);
+    if (turnId !== undefined && context.turnState?.turnId !== turnId) return;
+    if (
+      scope === "self" &&
+      (context.liveTaskIds.size > 0 ||
+        context.pendingSubagentEvents.size > 0 ||
+        Array.from(context.inFlightTools.values()).some(
+          (tool) => tool.itemType === "collab_agent_tool_call",
+        ))
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "turn/interrupt",
+        detail:
+          "Claude cannot stop only this agent while native tasks share its query. Use Stop all.",
+      });
+    }
+    // Closing this query is scoped to this adapter session. Bridge children
+    // have independent queries; native tasks in this query require tree Stop.
+    yield* stopSessionInternal(context);
+  });
 
   const readThread: ClaudeAdapterShape["readThread"] = Effect.fn("readThread")(
     function* (threadId) {
@@ -6002,6 +6031,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   return {
     provider: PROVIDER,
     capabilities: {
+      isolatedTurnInterrupt: false,
       sessionModelSwitch: "in-session",
     },
     startSession,

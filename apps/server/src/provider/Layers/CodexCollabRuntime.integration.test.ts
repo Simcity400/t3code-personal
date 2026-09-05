@@ -28,6 +28,7 @@ import { makeCodexSessionRuntime } from "./CodexSessionRuntime.ts";
 const ROOT = wireFixture.rootThreadId;
 const [CHILD_A, CHILD_B] = wireFixture.childThreadIds as [string, string];
 const MEMORY = "memory-consolidation-thread";
+const encodeMockPeerScript = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeMcpElicitationResponse = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({
@@ -666,7 +667,7 @@ describe("CodexSessionRuntime collab integration", () => {
 
   // it.live: the runtime talks to a real child process; under it.effect's
   // TestClock the internal timers freeze and the join never completes.
-  it.live("Stop interrupts every live child regardless of registration timing", () =>
+  it.live("self Stop preserves children; tree Stop reports failures", () =>
     Effect.gen(function* () {
       const platform = yield* HostProcessPlatform;
       // Ordering + liveness torture for stop-everything: child A's
@@ -790,9 +791,26 @@ describe("CodexSessionRuntime collab integration", () => {
         .pipe(Effect.result);
       assert.equal(unknownStop._tag, "Failure");
 
-      // Stop everything. A's interrupt hangs forever — the bounded child
-      // deadline must expire and the parent interrupt must still be sent.
       yield* runtime.interruptTurn();
+      yield* runtime.interruptTurn(undefined, undefined, "self");
+      const selfInterrupts = NodeFS.readFileSync(interruptsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { threadId: string });
+      assert.deepEqual(
+        selfInterrupts.map((entry) => entry.threadId),
+        [CHILD_B, ROOT, ROOT],
+      );
+
+      // Stop everything. The parent must be interrupted before child cleanup,
+      // and A's hung interrupt must not prevent other cancellation attempts.
+      const treeResult = yield* runtime
+        .interruptTurn(undefined, undefined, "tree")
+        .pipe(Effect.result);
+      assert.equal(treeResult._tag, "Failure");
+      if (treeResult._tag === "Failure") {
+        assert.include(treeResult.failure.message, "not confirmed");
+      }
 
       const parseInterruptLine = (line: string) => JSON.parse(line) as { threadId?: string };
       const interrupted = NodeFS.readFileSync(interruptsPath, "utf8")
@@ -810,11 +828,108 @@ describe("CodexSessionRuntime collab integration", () => {
         interruptedThreads.has(MEMORY),
         "memory consolidation must be interrupted without appearing in chat",
       );
-      assert.isTrue(interruptedThreads.has(ROOT), "parent turn must be interrupted last");
+      assert.equal(interrupted[selfInterrupts.length]?.threadId, ROOT);
+      assert.equal(interrupted.filter((entry) => entry.threadId === CHILD_A).length, 1);
 
       yield* runtime.close;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  for (const failParent of [false, true]) {
+    it.live(
+      `tree Stop includes racing launches and new turns (parent failure: ${failParent})`,
+      () =>
+        Effect.gen(function* () {
+          const platform = yield* HostProcessPlatform;
+          const started = (threadId: string) =>
+            wireFixture.notifications.find(
+              (entry) => entry.method === "turn/started" && entry.params.threadId === threadId,
+            );
+          const registration = (threadId: string) =>
+            wireFixture.notifications.find(
+              (entry) =>
+                entry.method === "item/completed" &&
+                "item" in entry.params &&
+                entry.params.item.type === "subAgentActivity" &&
+                entry.params.item.agentThreadId === threadId,
+            );
+          const turnA = started(CHILD_A);
+          const turnB = started(CHILD_B);
+          const registerA = registration(CHILD_A);
+          const registerB = registration(CHILD_B);
+          assert.isDefined(turnA);
+          assert.isDefined(turnB);
+          assert.isDefined(turnA.params.turn);
+          assert.isDefined(turnB.params.turn);
+          assert.isDefined(registerA);
+          assert.isDefined(registerB);
+          const replacementTurnId = "child-a-racing-turn";
+          const script = {
+            rootThreadId: ROOT,
+            holdTurnOpen: true,
+            ...(failParent ? { failInterruptFor: ROOT } : {}),
+            notifications: [registerA, turnA],
+            interruptNotifications: {
+              [CHILD_A]: [
+                [
+                  registerB,
+                  turnB,
+                  {
+                    ...turnA,
+                    params: {
+                      ...turnA.params,
+                      turn: { ...turnA.params.turn, id: replacementTurnId },
+                    },
+                  },
+                ],
+              ],
+            },
+          };
+          NodeFS.writeFileSync(scriptPath, yield* encodeMockPeerScript(script), "utf8");
+          const interruptsPath = `${scriptPath}.interrupts`;
+          NodeFS.rmSync(interruptsPath, { force: true });
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              NodeFS.rmSync(scriptPath, { force: true });
+              NodeFS.rmSync(interruptsPath, { force: true });
+            }),
+          );
+          const runtime = yield* makeCodexSessionRuntime({
+            threadId: ThreadId.make("thread-collab-stop-race"),
+            binaryPath: peerPath(platform),
+            cwd: "/tmp",
+            runtimeMode: "full-access",
+            environment: { ...process.env, ...peerEnvironment, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+          });
+          const ready = yield* runtime.events.pipe(
+            Stream.filter((event) => event.method === "collabAgent/turnStarted"),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped,
+          );
+          yield* runtime.start();
+          const parent = yield* runtime.sendTurn({ input: "Launch during cancellation" });
+          yield* Fiber.join(ready);
+          const result = yield* runtime
+            .interruptTurn(undefined, undefined, "tree")
+            .pipe(Effect.result);
+          assert.equal(result._tag, failParent ? "Failure" : "Success");
+          if (result._tag === "Failure")
+            assert.include(result.failure.message, "thread already closed");
+          const interrupts = NodeFS.readFileSync(interruptsPath, "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line) as { threadId: string; turnId: string });
+          assert.deepEqual(interrupts[0], { threadId: ROOT, turnId: parent.turnId });
+          assert.deepEqual(interrupts.slice(1), [
+            { threadId: CHILD_A, turnId: turnA.params.turn.id },
+            { threadId: CHILD_A, turnId: replacementTurnId },
+            { threadId: CHILD_B, turnId: turnB.params.turn.id },
+          ]);
+          yield* runtime.close;
+        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
+  }
 
   it.live("Stop targets the active turn when Codex has accepted a queued follow-up", () =>
     Effect.gen(function* () {
