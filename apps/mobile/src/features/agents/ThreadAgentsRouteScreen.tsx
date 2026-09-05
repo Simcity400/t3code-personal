@@ -279,7 +279,6 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
                           key={group.workflow.id}
                           group={visible}
                           clock={statusClock}
-                          windows={contextWindowByAgentId}
                           onOpen={openAgent}
                         />,
                       ]
@@ -292,7 +291,6 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
                       key={agent.id}
                       agent={agent}
                       clock={statusClock}
-                      contextWindow={contextWindowByAgentId.get(agent.id) ?? null}
                       onOpen={openAgent}
                     />
                   ))}
@@ -328,7 +326,6 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
                               key={group.workflow.id}
                               group={visible}
                               clock={statusClock}
-                              windows={contextWindowByAgentId}
                               onOpen={openAgent}
                             />,
                           ]
@@ -341,7 +338,6 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
                           key={agent.id}
                           agent={agent}
                           clock={statusClock}
-                          contextWindow={contextWindowByAgentId.get(agent.id) ?? null}
                           onOpen={openAgent}
                         />
                       ))}

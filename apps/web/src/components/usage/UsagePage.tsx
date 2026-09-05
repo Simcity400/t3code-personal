@@ -57,12 +57,12 @@ const WINDOW_OPTIONS = [
   { days: 90, label: "90 days" },
 ] as const;
 
-export function UsagePage() {
+export function UsagePage({ initialMetric = "cost" }: { initialMetric?: UsageMetric }) {
   const [windowSelection, setWindowSelection] = useState(() => ({
     days: 30,
     window: makeWindow(30),
   }));
-  const [metric, setMetric] = useState<UsageMetric>("cost");
+  const [metric, setMetric] = useState<UsageMetric>(initialMetric);
   const showingLimits = metric === "limits";
   const [breakdown, setBreakdown] = useState<"model" | "time">("model");
   const { days: windowDays, window } = windowSelection;

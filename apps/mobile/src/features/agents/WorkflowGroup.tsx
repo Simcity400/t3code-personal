@@ -1,6 +1,5 @@
 import { View } from "react-native";
 import type { AgentPanelWorkflowGroup } from "@t3tools/client-runtime/state/subagentRuntime";
-import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/contextWindow";
 import { AppText as Text } from "../../components/AppText";
 import { AgentCard } from "./AgentCard";
 import type { AgentStatusClockSnapshot } from "./agentStatusClock";
@@ -8,22 +7,14 @@ import type { AgentStatusClockSnapshot } from "./agentStatusClock";
 export function WorkflowGroup({
   group,
   clock,
-  windows,
   onOpen,
 }: {
   group: AgentPanelWorkflowGroup;
   clock: AgentStatusClockSnapshot;
-  windows: ReadonlyMap<string | null, ContextWindowSnapshot>;
   onOpen: (id: string) => void;
 }) {
   const card = (agent: AgentPanelWorkflowGroup["workflow"]) => (
-    <AgentCard
-      key={agent.id}
-      agent={agent}
-      clock={clock}
-      contextWindow={windows.get(agent.id) ?? null}
-      onOpen={onOpen}
-    />
+    <AgentCard key={agent.id} agent={agent} clock={clock} onOpen={onOpen} />
   );
   return (
     <View className="gap-2 rounded-xl border border-border p-2">

@@ -7,6 +7,7 @@ import { AgentCard } from "./AgentCard";
 
 vi.mock("react-native", () => ({ Pressable: "Pressable", View: "View" }));
 vi.mock("../../components/AppText", () => ({ AppText: "Text" }));
+vi.mock("./TaskControls", () => ({ TaskStopButton: () => null }));
 
 describe("AgentCard", () => {
   it("announces working state with elapsed time without animated dots", () => {
