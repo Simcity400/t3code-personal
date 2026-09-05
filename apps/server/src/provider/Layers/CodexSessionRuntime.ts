@@ -1426,7 +1426,10 @@ export const makeCodexSessionRuntime = (
     const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
       Effect.provide(clientContext),
     );
-    const serverNotifications = yield* Queue.unbounded<CodexServerNotification>();
+    const serverNotifications = yield* Queue.unbounded<
+      | CodexServerNotification
+      | { readonly method: "t3/stopBarrier"; readonly done: Deferred.Deferred<void> }
+    >();
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = (purpose: CodexErrors.CodexAppServerIdentifierPurpose) =>
       crypto.randomUUIDv4.pipe(
@@ -2696,8 +2699,32 @@ export const makeCodexSessionRuntime = (
     );
 
     yield* Stream.fromQueue(serverNotifications).pipe(
-      Stream.runForEach(handleRawNotification),
+      Stream.runForEach((notification) =>
+        notification.method === "t3/stopBarrier"
+          ? Deferred.succeed(notification.done, undefined).pipe(Effect.asVoid)
+          : handleRawNotification(notification),
+      ),
       Effect.forkIn(runtimeScope),
+    );
+
+    // Interrupt acknowledgements can overtake the runtime notification consumer.
+    const drainStopNotifications = Effect.gen(function* () {
+      const done = yield* Deferred.make<void>();
+      yield* Queue.offer(serverNotifications, { method: "t3/stopBarrier", done });
+      yield* Deferred.await(done);
+    }).pipe(
+      Effect.timeout("3 seconds"),
+      Effect.catchTag("TimeoutError", (cause) =>
+        Effect.fail(
+          new CodexErrors.CodexAppServerRequestError({
+            code: -32000,
+            method: "turn/interrupt",
+            errorMessage:
+              "Codex native task registration did not drain within 3 seconds; tree stop is unconfirmed.",
+            cause,
+          }),
+        ),
+      ),
     );
 
     const stderrRemainderRef = yield* Ref.make("");
@@ -2937,34 +2964,61 @@ export const makeCodexSessionRuntime = (
           }
           const providerThreadId = yield* readProviderThreadId;
           const session = yield* Ref.get(sessionRef);
-          // Stop-everything: children are full threads with their own turns;
-          // interrupting only the parent leaves the fleet running. Interrupt
-          // each live child turn first, best-effort per child, BOUNDED: the
-          // transport awaits an unbounded Deferred per request, so a wedged
-          // child would otherwise block the parent interrupt forever —
-          // exactly during the runaway fleet where Stop matters most
-          // (review finding). Per-child and overall deadlines guarantee the
-          // parent interrupt below always runs.
-          const liveChildTurns = yield* Ref.get(collabChildLiveTurnsRef);
-          yield* Effect.forEach(
-            Array.from(liveChildTurns.entries()),
-            ([childThreadId, childTurnId]) =>
-              client
-                .request("turn/interrupt", {
-                  threadId: childThreadId,
-                  turnId: childTurnId,
-                })
-                .pipe(Effect.timeoutOption("3 seconds"), Effect.ignore),
-            { concurrency: 8, discard: true },
-          ).pipe(Effect.timeoutOption("10 seconds"), Effect.ignore);
           const effectiveTurnId = turnId ?? session.activeTurnId;
-          if (!effectiveTurnId) {
-            return;
+          // Stop-everything: children are full threads with their own turns, so
+          // interrupting only the parent would leave the fleet running.
+          const interruptNativeTurn = (threadId: string, turnId: string) =>
+            client
+              .request("turn/interrupt", {
+                threadId,
+                turnId,
+              })
+              .pipe(
+                Effect.timeout("3 seconds"),
+                Effect.catchTag("TimeoutError", (cause) =>
+                  Effect.fail(
+                    new CodexErrors.CodexAppServerRequestError({
+                      code: -32000,
+                      method: "turn/interrupt",
+                      errorMessage: `Codex thread ${threadId} interrupt was not confirmed within 3 seconds.`,
+                      cause,
+                    }),
+                  ),
+                ),
+                Effect.exit,
+              );
+          let failedStop: Exit.Failure<unknown, CodexSessionRuntimeError> | undefined;
+          // Stop the launcher before taking any child snapshot. Retain parent
+          // failure while still attempting child cancellation.
+          if (effectiveTurnId) {
+            const parentResult = yield* interruptNativeTurn(providerThreadId, effectiveTurnId);
+            if (Exit.isFailure(parentResult)) failedStop = parentResult;
           }
-          yield* client.request("turn/interrupt", {
-            threadId: providerThreadId,
-            turnId: effectiveTurnId,
-          });
+          const attempted = new Map<string, Set<string>>();
+          while (true) {
+            const drained = yield* drainStopNotifications.pipe(Effect.exit);
+            if (Exit.isFailure(drained)) {
+              failedStop ??= drained;
+              break;
+            }
+            const liveChildTurns = yield* Ref.get(collabChildLiveTurnsRef);
+            const pending = Array.from(liveChildTurns.entries()).filter(
+              ([threadId, turnId]) => !attempted.get(threadId)?.has(turnId),
+            );
+            if (pending.length === 0) break;
+            for (const [threadId, turnId] of pending) {
+              const turns = attempted.get(threadId) ?? new Set<string>();
+              turns.add(turnId);
+              attempted.set(threadId, turns);
+            }
+            const results = yield* Effect.forEach(
+              pending,
+              ([threadId, turnId]) => interruptNativeTurn(threadId, turnId),
+              { concurrency: 8 },
+            );
+            failedStop ??= results.find(Exit.isFailure);
+          }
+          if (failedStop) return yield* Effect.failCause(failedStop.cause);
         }),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;

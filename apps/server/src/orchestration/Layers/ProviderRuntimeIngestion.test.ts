@@ -57,6 +57,9 @@ import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts"
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { selectSubagentTranscriptMessages } from "../../../../../packages/client-runtime/src/state/subagentRuntime.ts";
+import { reconcileCrossProviderExecutions } from "../../serverRuntimeStartup.ts";
+import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -200,7 +203,10 @@ async function waitForThread(
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderRuntimeIngestionService
+    | ProjectionSnapshotQuery
+    | ProviderSessionDirectory,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -254,6 +260,15 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(ThreadPlanProgress.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
+      Layer.provideMerge(
+        Layer.succeed(ProviderSessionDirectory, {
+          getBinding: () => Effect.succeed(Option.none()),
+          getProvider: () => Effect.die("unused"),
+          upsert: () => Effect.die("unused"),
+          listBindings: () => Effect.die("unused"),
+          listThreadIds: () => Effect.die("unused"),
+        }),
+      ),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
@@ -338,6 +353,220 @@ describe("ProviderRuntimeIngestion", () => {
       drain,
     };
   }
+
+  it.each([false, true])(
+    "isolates bridge transcript and lifecycle (streaming=%s)",
+    async (streaming) => {
+      const harness = await createHarness({
+        serverSettings: { enableLegacyTokenStreaming: streaming },
+      });
+      const before = (await harness.readModel()).threads[0]!;
+      const base = {
+        provider: ProviderDriverKind.make("claudeAgent"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-09-05T01:00:00.000Z",
+        bridgeAgentId: "bridge",
+      };
+      let sequence = 0;
+      const emit = (
+        event: Omit<LegacyProviderRuntimeEvent, keyof typeof base | "eventId"> & { type: string },
+      ) =>
+        harness.emit({
+          ...base,
+          ...event,
+          eventId: asEventId(`bridge-${sequence++}`),
+        } as LegacyProviderRuntimeEvent);
+      emit({
+        type: "task.updated",
+        payload: {
+          taskId: "bridge",
+          taskType: "cross_provider",
+          executionOwner: "cross-provider",
+          agentKind: "agent",
+          title: "Child",
+          status: "running",
+          canStop: true,
+        },
+      });
+      emit({
+        type: "item.completed",
+        itemId: "prompt",
+        payload: {
+          itemType: "user_message",
+          agentId: "bridge",
+          detail: "Review this code. ".repeat(40),
+        },
+      });
+      for (const itemId of ["block-one", "block-two", undefined]) {
+        emit({
+          type: "content.delta",
+          ...(itemId ? { itemId } : {}),
+          payload: {
+            streamKind: "assistant_text",
+            delta: `Reply ${itemId ?? "no-id"}`,
+            agentId: "bridge",
+          },
+        });
+      }
+      emit({
+        type: "content.delta",
+        payload: { streamKind: "reasoning_text", delta: "Progress detail", agentId: "bridge" },
+      });
+      emit({
+        type: "user-input.requested",
+        requestId: "question",
+        payload: { agentId: "bridge", responseMode: "message", delivery: "agent", questions: [] },
+      });
+      emit({ type: "turn.proposed.delta", payload: { delta: "# Child plan", agentId: "bridge" } });
+      emit({
+        type: "turn.proposed.completed",
+        payload: { planMarkdown: "# Child plan", agentId: "bridge" },
+      });
+      emit({
+        type: "turn.plan.updated",
+        payload: { agentId: "bridge", plan: [{ step: "Review", status: "inProgress" }] },
+      });
+      emit({ type: "session.state.changed", payload: { state: "compacting", compacting: true } });
+      emit({ type: "thread.state.changed", payload: { state: "compacted" } });
+      emit({
+        type: "thread.token-usage.updated",
+        payload: { agentId: "bridge", usage: { usedTokens: 420 } },
+      });
+      emit({ type: "runtime.error", payload: { message: "Child error" } });
+      emit({ type: "runtime.warning", payload: { message: "Child warning" } });
+      emit({ type: "thread.metadata.updated", payload: { name: "Child title" } });
+      emit({ type: "turn.diff.updated", payload: { unifiedDiff: "child diff" } });
+      emit({ type: "session.exited", payload: {} });
+      emit({ type: "turn.completed", payload: { state: "completed" } });
+      emit({ type: "task.updated", payload: { taskId: "bridge", status: "completed" } });
+      await harness.drain();
+      const thread = (await harness.readModel()).threads[0]!;
+      expect(thread.session).toEqual(before.session);
+      expect(thread.title).toBe(before.title);
+      expect(thread.checkpoints).toEqual(before.checkpoints);
+      expect(thread.proposedPlans).toEqual([]);
+      expect(thread.messages).toHaveLength(3);
+      expect(
+        selectSubagentTranscriptMessages(thread.messages, thread.activities, "bridge")[0]?.text,
+      ).toBe("Review this code. ".repeat(40));
+      expect(
+        thread.messages.map((message) => ({
+          text: message.text,
+          agentId: message.agentId,
+          streaming: message.streaming,
+        })),
+      ).toEqual(
+        ["Reply block-one", "Reply block-two", "Reply no-id"].map((text) => ({
+          text,
+          agentId: "bridge",
+          streaming: false,
+        })),
+      );
+      for (const kind of [
+        "turn.proposed.completed",
+        "turn.plan.updated",
+        "session.compacting",
+        "context-compaction",
+        "context-window.updated",
+        "runtime.error",
+        "runtime.warning",
+      ]) {
+        expect(thread.activities.find((activity) => activity.kind === kind)?.payload).toMatchObject(
+          { agentId: "bridge", bridgeAgentId: "bridge" },
+        );
+      }
+      // Reasoning deltas are dropped for children exactly as for the main
+      // thread; only completed items reach the transcript.
+      expect(thread.activities.some((activity) => activity.kind === "content.delta")).toBe(false);
+      expect(
+        thread.activities.find((activity) => activity.kind === "user-input.requested")?.payload,
+      ).toMatchObject({ delivery: "agent" });
+      expect(
+        thread.activities.find((activity) => activity.kind === "task.state")?.payload,
+      ).toMatchObject({ executionOwner: "cross-provider", status: "completed" });
+      const shell = await harness.readThreadShell();
+      expect(shell?.session).toEqual(before.session);
+    },
+  );
+
+  it("recovers lost child executions and questions idempotently from current projection state", async () => {
+    const harness = await createHarness();
+    const base = {
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-09-05T01:00:00.000Z",
+      bridgeAgentId: "bridge",
+    };
+    harness.emit({
+      ...base,
+      eventId: asEventId("recover-wrapper"),
+      type: "task.updated",
+      payload: {
+        taskId: "bridge",
+        taskType: "cross_provider",
+        executionOwner: "cross-provider",
+        status: "interrupted",
+        canStop: false,
+        canResume: true,
+      },
+    });
+    harness.emit({
+      ...base,
+      eventId: asEventId("recover-native"),
+      type: "task.updated",
+      payload: {
+        taskId: "bridge:native",
+        taskType: "subagent",
+        parentAgentId: "bridge",
+        status: "running",
+        title: "Native reviewer",
+        model: "child-model",
+        canStop: true,
+      },
+    });
+    harness.emit({
+      ...base,
+      eventId: asEventId("recover-question"),
+      type: "user-input.requested",
+      requestId: "recover-request",
+      payload: {
+        agentId: "bridge",
+        questions: [],
+        responseMode: "message",
+        delivery: "agent",
+      },
+    });
+    await harness.drain();
+    const before = (await harness.readModel()).threads[0]!;
+    await runtime!.runPromise(reconcileCrossProviderExecutions);
+    const after = await harness.readModel();
+    const thread = after.threads[0]!;
+    expect(thread.session).toEqual(before.session);
+    expect(
+      thread.activities.find(
+        (activity) =>
+          activity.kind === "task.state" && (activity.payload as { id: string }).id === "bridge",
+      )?.payload,
+    ).toMatchObject({ status: "interrupted", canResume: false, canStop: false });
+    expect(
+      thread.activities.find(
+        (activity) =>
+          activity.kind === "task.state" &&
+          (activity.payload as { id: string }).id === "bridge:native",
+      )?.payload,
+    ).toMatchObject({
+      status: "interrupted",
+      title: "Native reviewer",
+      model: "child-model",
+      parentAgentId: "bridge",
+      executionOwner: "cross-provider",
+    });
+    expect(
+      thread.activities.find((activity) => activity.kind === "user-input.resolved")?.payload,
+    ).toMatchObject({ cancelled: true });
+    await runtime!.runPromise(reconcileCrossProviderExecutions);
+    expect(await harness.readModel()).toEqual(after);
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();

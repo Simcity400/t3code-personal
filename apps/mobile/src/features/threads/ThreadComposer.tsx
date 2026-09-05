@@ -139,6 +139,7 @@ export interface ThreadComposerProps {
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  readonly onStopAll?: (() => void) | undefined;
   readonly onSendMessage: () => Promise<
     { readonly messageId: MessageId | null } | MessageId | null
   >;
@@ -808,12 +809,24 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   onCancel={voiceInput.cancel}
                 />
                 {showStopAction ? (
-                  <ComposerActionButton
-                    accessibilityLabel="Stop agent"
-                    icon="stop.fill"
-                    variant="danger"
-                    onPress={props.onStopThread}
-                  />
+                  <View className="flex-row items-center">
+                    <ComposerActionButton
+                      accessibilityLabel="Stop agent"
+                      icon="stop.fill"
+                      variant="danger"
+                      onPress={props.onStopThread}
+                    />
+                    {props.onStopAll ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Stop all"
+                        onPress={props.onStopAll}
+                        className="min-h-11 justify-center px-2"
+                      >
+                        <Text className="text-xs text-danger-foreground">Stop all</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
                 ) : (
                   <ComposerActionButton
                     accessibilityLabel={attachmentBlockReason ?? sendLabel}
@@ -904,12 +917,24 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     onCancel={voiceInput.cancel}
                   />
                   {showStopAction ? (
-                    <ComposerActionButton
-                      accessibilityLabel="Stop agent"
-                      icon="stop.fill"
-                      variant="danger"
-                      onPress={props.onStopThread}
-                    />
+                    <View className="flex-row items-center">
+                      <ComposerActionButton
+                        accessibilityLabel="Stop agent"
+                        icon="stop.fill"
+                        variant="danger"
+                        onPress={props.onStopThread}
+                      />
+                      {props.onStopAll ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Stop all"
+                          onPress={props.onStopAll}
+                          className="min-h-11 justify-center px-2"
+                        >
+                          <Text className="text-xs text-danger-foreground">Stop all</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
                   ) : voicePresentation.showsSend ? (
                     <ComposerActionButton
                       accessibilityLabel={attachmentBlockReason ?? sendLabel}

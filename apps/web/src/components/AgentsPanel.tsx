@@ -28,12 +28,18 @@ import {
   flattenAgentPanelRoster,
   isActiveSubagentStatus,
   deriveSubagentReplies,
+  deriveSubagentTranscriptContent,
+  isSubagentTranscriptContentActivity,
   selectSubagentTranscriptActivities,
   selectSubagentTranscriptMessages,
   subagentPanelSection,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { BackgroundTasksPanelModel } from "@t3tools/client-runtime/state/backgroundTasks";
-import { emptyBackgroundTasksPanelModel } from "@t3tools/client-runtime/state/backgroundTasks";
+import {
+  deriveCompactingSince,
+  emptyBackgroundTasksPanelModel,
+} from "@t3tools/client-runtime/state/backgroundTasks";
+import { OrchestrationProposedPlanId } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
@@ -60,6 +66,7 @@ import {
   deriveSubagentReplyMessages,
   deriveTimelineEntries,
   deriveWorkLogEntries,
+  type TimelineEntry,
 } from "~/session-logic";
 import { deriveLatestContextWindowSnapshot } from "~/lib/contextWindow";
 import { ContextWindowMeter } from "~/components/chat/ContextWindowMeter";
@@ -812,17 +819,57 @@ function AgentTranscript({
     [nestedReplies, ownMessages],
   );
   const workLogEntries = useMemo(
-    () => deriveWorkLogEntries(transcriptActivities),
+    () =>
+      deriveWorkLogEntries(
+        transcriptActivities.filter((activity) => !isSubagentTranscriptContentActivity(activity)),
+      ),
     [transcriptActivities],
   );
   const contextWindow = useMemo(
     () => deriveLatestContextWindowSnapshot(transcriptActivities),
     [transcriptActivities],
   );
-  const timelineEntries = useMemo(
-    () => deriveTimelineEntries(transcriptMessages, [], workLogEntries),
-    [transcriptMessages, workLogEntries],
+  const content = useMemo(
+    () => deriveSubagentTranscriptContent(transcriptActivities),
+    [transcriptActivities],
   );
+  const compactingSince = useMemo(
+    () => deriveCompactingSince(transcriptActivities),
+    [transcriptActivities],
+  );
+  const timelineEntries = useMemo(() => {
+    const plans = content
+      .filter((block) => block.kind === "plan")
+      .map((block) => ({
+        id: OrchestrationProposedPlanId.make(block.id),
+        turnId: block.turnId,
+        planMarkdown: block.text,
+        createdAt: block.createdAt,
+        updatedAt: block.createdAt,
+        implementedAt: null,
+        implementationThreadId: null,
+      }));
+    const reasoning: TimelineEntry[] = content
+      .filter((block) => block.kind === "reasoning")
+      .map((block) => ({
+        id: block.id,
+        createdAt: block.createdAt,
+        kind: "reasoning",
+        content: block,
+      }));
+    const rank = (entry: TimelineEntry) =>
+      entry.kind === "message" ? (entry.message.role === "user" ? 0 : 2) : 1;
+    const contentOrder = new Map(content.map((block, index) => [block.id, index]));
+    return [
+      ...deriveTimelineEntries(transcriptMessages, plans, workLogEntries),
+      ...reasoning,
+    ].toSorted(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) ||
+        rank(left) - rank(right) ||
+        (contentOrder.get(left.id) ?? 0) - (contentOrder.get(right.id) ?? 0),
+    );
+  }, [content, transcriptMessages, workLogEntries]);
   // The agent's CURRENT turn, not its first. A resumed agent runs across
   // several turns, and anchoring on the oldest one made turn folding, the
   // elapsed timer and the working row describe a turn that had long finished.
@@ -874,7 +921,9 @@ function AgentTranscript({
         <StatusDot status={agent.status} />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{title}</span>
         <span className="text-[.65rem] text-muted-foreground">
-          {STATUS_VISUALS[agent.status].label}
+          {isWorking && compactingSince !== null
+            ? "Compacting context"
+            : STATUS_VISUALS[agent.status].label}
         </span>
         <TaskStopButton taskId={agent.id} label={title} active={isWorking} />
         {/* The same meter the main chat shows, on this agent's own window. */}

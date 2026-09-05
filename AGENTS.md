@@ -112,7 +112,7 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 
 ## Review
 
-- After implementation and validation, spawn exactly one native Codex reviewer subagent so its thread is visible in the Subagents panel.
+- After implementation and validation, spawn exactly one native reviewer subagent (whatever the current harness provides) so its thread is visible in the Subagents panel.
 - Give it the requirements, diff, and raw validation evidence. Keep it read-only, fix every finding, and re-review with the same subagent until it approves. If the commit changes afterward, get one final confirmation.
 
 ## Pull requests

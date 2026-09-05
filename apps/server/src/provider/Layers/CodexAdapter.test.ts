@@ -85,8 +85,9 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       }),
   );
 
-  public readonly interruptTurnImpl = vi.fn((_turnId?: TurnId): Promise<void> =>
-    Promise.resolve(undefined),
+  public readonly interruptTurnImpl = vi.fn(
+    (..._args: Parameters<CodexSessionRuntimeShape["interruptTurn"]>): Promise<void> =>
+      Promise.resolve(undefined),
   );
 
   public readonly readThreadImpl = vi.fn((): Promise<CodexThreadSnapshot> =>
@@ -135,8 +136,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     return Effect.promise(() => this.sendTurnImpl(input));
   }
 
-  interruptTurn(turnId?: TurnId) {
-    return Effect.promise(() => this.interruptTurnImpl(turnId));
+  interruptTurn(...args: Parameters<CodexSessionRuntimeShape["interruptTurn"]>) {
+    return Effect.promise(() => this.interruptTurnImpl(...args));
   }
 
   readThread = Effect.promise(() => this.readThreadImpl());

@@ -79,6 +79,56 @@ describe("ThreadDeletionReactor drain", () => {
     payload: { threadId, deletedAt: now },
   });
 
+  effectIt.effect("disposes only the deleted root's agents before its session and terminals", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const archived: OrchestrationEvent = {
+        ...deletedEvent(1),
+        type: "thread.archived",
+        payload: { threadId: ThreadId.make("other-thread"), archivedAt: now, updatedAt: now },
+      };
+      const engine = {
+        latestSequence: Effect.succeed(0),
+        streamDomainEvents: Stream.make(archived, deletedEvent(2)),
+      } as unknown as OrchestrationEngineShape;
+      const providerService = {
+        crossProviderAgents: {
+          disposeTree: (root: ThreadId) =>
+            Effect.sync(() => {
+              calls.push(`tree:${root}`);
+            }),
+        },
+        stopSession: ({ threadId: root }: { threadId: ThreadId }) =>
+          Effect.sync(() => {
+            calls.push(`session:${root}`);
+          }),
+      } as unknown as ProviderServiceShape;
+      const terminalManager = {
+        close: ({ threadId: root }: { threadId: ThreadId }) =>
+          Effect.sync(() => {
+            calls.push(`terminals:${root}`);
+          }),
+      } as unknown as TerminalManager.TerminalManager["Service"];
+      const layer = ThreadDeletionReactorLive.pipe(
+        Layer.provide(Layer.succeed(ProviderService, providerService)),
+        Layer.provide(Layer.succeed(TerminalManager.TerminalManager, terminalManager)),
+        Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),
+      );
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const reactor = yield* ThreadDeletionReactor;
+          yield* reactor.start();
+          yield* reactor.drainThrough(2);
+          expect(calls).toEqual([
+            `tree:${threadId}`,
+            `session:${threadId}`,
+            `terminals:${threadId}`,
+          ]);
+        }),
+      ).pipe(Effect.provide(layer));
+    }),
+  );
+
   effectIt.effect("waits for a published deletion the subscriber has not consumed yet", () =>
     Effect.gen(function* () {
       const stops: Array<number> = [];

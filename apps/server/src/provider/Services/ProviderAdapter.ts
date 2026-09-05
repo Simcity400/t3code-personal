@@ -28,6 +28,10 @@ import type * as Stream from "effect/Stream";
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
+  /** True when sendTurn can deliver input during active work without cancelling it. */
+  readonly supportsInputSteering?: boolean;
+  /** False when this adapter cannot host T3-managed cross-provider agents. Omitted means allowed. */
+  readonly crossProviderAgents?: boolean;
   /**
    * Declares whether changing the model on an existing session is supported.
    */
@@ -71,7 +75,9 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
   /**
-   * Interrupt an active turn.
+   * Interrupt an active turn, including the native descendants this session
+   * owns. Cross-provider children run as separate adapter sessions and are
+   * never reached through their parent's interrupt.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
 

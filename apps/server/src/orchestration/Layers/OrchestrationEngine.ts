@@ -204,6 +204,17 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
+          ...(envelope.command.type === "thread.turn.interrupt" &&
+          envelope.command.taskId !== undefined
+            ? {
+                taskState: Option.getOrNull(
+                  yield* projectionSnapshotQuery.getTaskState({
+                    threadId: envelope.command.threadId,
+                    taskId: envelope.command.taskId,
+                  }),
+                ),
+              }
+            : {}),
           ...(Option.isSome(userInputActivity)
             ? { userInputActivity: userInputActivity.value }
             : {}),
