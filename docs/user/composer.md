@@ -3,6 +3,10 @@
 On web and desktop, multiline drafts use the same proportional line spacing as transcript text.
 The compact composer grows with your draft without adding a full blank line between lines.
 
+On web and desktop, long questions and answer choices scroll within the question panel above
+the input. Question text preserves line breaks, and option descriptions use normal message-sized
+text. Selecting question text does not move focus into the message input.
+
 Messages can contain up to 120,000 characters. If a draft is longer, T3 Code keeps it in the
 composer and shows how many characters need to be removed. Shorten the draft or split it into
 multiple messages, then send again in the same thread.
