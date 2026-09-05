@@ -2990,6 +2990,88 @@ describe("ProviderCommandReactor", () => {
       }),
   );
 
+  effectIt.effect(
+    "an individual stop failure preserves the parent session and reports the target",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            interruptTurnEffect: () =>
+              Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: "codex",
+                  method: "task/stop",
+                  detail: "Task is gone",
+                }),
+              ),
+          }),
+        );
+        const now = "2026-01-01T00:00:00.000Z";
+        const threadId = ThreadId.make("thread-1");
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("task-session"),
+          threadId,
+          createdAt: now,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: TurnId.make("parent-turn"),
+            lastError: null,
+            updatedAt: now,
+          },
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make("register-task"),
+          threadId,
+          createdAt: now,
+          activity: {
+            id: EventId.make("child"),
+            kind: "task.started",
+            tone: "info",
+            summary: "Child",
+            turnId: null,
+            createdAt: now,
+            payload: { taskId: "child", taskType: "subagent" },
+          },
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("stop-child"),
+          threadId,
+          taskId: "child",
+          createdAt: now,
+        });
+        yield* Effect.promise(() => harness.drain());
+        const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (entry) => entry.id === threadId,
+        );
+        expect(harness.interruptTurn).toHaveBeenCalledWith({ threadId, taskId: "child" });
+        expect(harness.stopSession).not.toHaveBeenCalled();
+        expect(thread?.session).toMatchObject({
+          status: "running",
+          activeTurnId: "parent-turn",
+          lastError: null,
+        });
+        expect(
+          thread?.activities.find((activity) => activity.kind === "task.stop.failed"),
+        ).toMatchObject({ payload: { taskId: "child", detail: "Task is gone" } });
+        const invalid = yield* harness.engine
+          .dispatch({
+            type: "thread.turn.interrupt",
+            commandId: CommandId.make("foreign-task"),
+            threadId,
+            taskId: "not-in-thread",
+            createdAt: now,
+          })
+          .pipe(Effect.result);
+        expect(invalid._tag).toBe("Failure");
+      }),
+  );
+
   effectIt.effect("stops a starting session without a bound turn when interrupt fails", () =>
     Effect.gen(function* () {
       const harness = yield* Effect.promise(() =>

@@ -775,6 +775,21 @@ describe("CodexSessionRuntime collab integration", () => {
       );
       assert.isTrue(childBStarted._tag === "Some", "child B turnStarted never arrived");
 
+      yield* runtime.interruptTurn(undefined, CHILD_B);
+      // Only B is stopped: the main agent and A have not received any interrupt.
+      const individual = NodeFS.readFileSync(interruptsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { threadId: string });
+      assert.deepEqual(
+        individual.map((entry) => entry.threadId),
+        [CHILD_B],
+      );
+      const unknownStop = yield* runtime
+        .interruptTurn(undefined, "not-a-child")
+        .pipe(Effect.result);
+      assert.equal(unknownStop._tag, "Failure");
+
       // Stop everything. A's interrupt hangs forever — the bounded child
       // deadline must expire and the parent interrupt must still be sent.
       yield* runtime.interruptTurn();
@@ -973,88 +988,95 @@ describe("CodexSessionRuntime collab integration", () => {
   }
 });
 
-it.live("registers receiver-only children before mapping their transcript", () =>
-  Effect.gen(function* () {
-    const platform = yield* HostProcessPlatform;
-    const childMessageId = "receiver-only-message";
-    const script = {
-      rootThreadId: ROOT,
-      notifications: [
-        {
-          method: "item/completed",
-          params: {
-            threadId: ROOT,
-            turnId: "parent-turn",
-            completedAtMs: 1,
-            item: {
-              type: "collabAgentToolCall",
-              id: "receiver-spawn",
-              tool: "spawnAgent",
-              status: "completed",
-              senderThreadId: ROOT,
-              receiverThreadIds: [CHILD_A, ROOT],
-              prompt: "Review the change",
-              agentsStates: { [CHILD_A]: { status: "pendingInit", message: null } },
+for (const earlyContent of [false, true]) {
+  it.live(
+    `registers receiver-only children and isolates their transcript (early=${earlyContent})`,
+    () =>
+      Effect.gen(function* () {
+        const platform = yield* HostProcessPlatform;
+        const childMessageId = "receiver-only-message";
+        const script = {
+          rootThreadId: ROOT,
+          notifications: [
+            {
+              method: "item/completed",
+              params: {
+                threadId: ROOT,
+                turnId: "parent-turn",
+                completedAtMs: 1,
+                item: {
+                  type: "collabAgentToolCall",
+                  id: "receiver-spawn",
+                  tool: "spawnAgent",
+                  status: "completed",
+                  senderThreadId: ROOT,
+                  receiverThreadIds: [CHILD_A, ROOT],
+                  prompt: "Review the change",
+                  agentsStates: { [CHILD_A]: { status: "pendingInit", message: null } },
+                },
+              },
             },
-          },
-        },
-        {
-          method: "item/agentMessage/delta",
-          params: {
-            threadId: CHILD_A,
-            turnId: "child-turn",
-            itemId: childMessageId,
-            delta: "Child reply",
-          },
-        },
-        {
-          method: "item/completed",
-          params: {
-            threadId: CHILD_A,
-            turnId: "child-turn",
-            completedAtMs: 2,
-            item: { type: "agentMessage", id: childMessageId, text: "Child reply" },
-          },
-        },
-      ],
-    };
-    // @effect-diagnostics-next-line preferSchemaOverJson:off
-    NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
-    yield* Effect.addFinalizer(() => Effect.sync(() => NodeFS.rmSync(scriptPath, { force: true })));
-    const runtime = yield* makeCodexSessionRuntime({
-      threadId: ThreadId.make("receiver-parent"),
-      binaryPath: peerPath(platform),
-      cwd: import.meta.dirname,
-      runtimeMode: "full-access",
-      environment: { ...process.env, ...peerEnvironment, T3_CODEX_COLLAB_SCRIPT: scriptPath },
-    });
-    const collected = yield* runtime.events.pipe(
-      Stream.takeUntil((event) => event.method === "turn/completed"),
-      Stream.runCollect,
-      Effect.forkScoped,
-    );
-    yield* runtime.start();
-    yield* runtime.sendTurn({ input: "Review" });
-    const events = Array.from(yield* Fiber.join(collected));
-    const registration = events.find((event) => event.method === "collabAgent/started");
-    assert.equal((registration?.payload as { agentThreadId?: string })?.agentThreadId, CHILD_A);
-    const messages = events.filter((event) => event.itemId === childMessageId);
-    assert.deepEqual(
-      messages.map((event) => event.method),
-      ["collabAgent/contentDelta", "collabAgent/item"],
-    );
-    for (const event of messages)
-      assert.equal((event.payload as { agentThreadId?: string }).agentThreadId, CHILD_A);
-    assert.isFalse(
-      events.some(
-        (event) =>
-          event.method.startsWith("collabAgent/") &&
-          (event.payload as { agentThreadId?: string })?.agentThreadId === ROOT,
-      ),
-    );
-    yield* runtime.close;
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-);
+            {
+              method: "item/agentMessage/delta",
+              params: {
+                threadId: CHILD_A,
+                turnId: "child-turn",
+                itemId: childMessageId,
+                delta: "Child reply",
+              },
+            },
+            {
+              method: "item/completed",
+              params: {
+                threadId: CHILD_A,
+                turnId: "child-turn",
+                completedAtMs: 2,
+                item: { type: "agentMessage", id: childMessageId, text: "Child reply" },
+              },
+            },
+          ],
+        };
+        if (earlyContent) script.notifications.unshift(script.notifications.splice(1, 1)[0]!);
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => NodeFS.rmSync(scriptPath, { force: true })),
+        );
+        const runtime = yield* makeCodexSessionRuntime({
+          threadId: ThreadId.make("receiver-parent"),
+          binaryPath: peerPath(platform),
+          cwd: import.meta.dirname,
+          runtimeMode: "full-access",
+          environment: { ...process.env, ...peerEnvironment, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+        });
+        const collected = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.method === "turn/completed"),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        yield* runtime.start();
+        yield* runtime.sendTurn({ input: "Review" });
+        const events = Array.from(yield* Fiber.join(collected));
+        const registration = events.find((event) => event.method === "collabAgent/started");
+        assert.equal((registration?.payload as { agentThreadId?: string })?.agentThreadId, CHILD_A);
+        const messages = events.filter((event) => event.itemId === childMessageId);
+        assert.deepEqual(
+          messages.map((event) => event.method),
+          ["collabAgent/contentDelta", "collabAgent/item"],
+        );
+        for (const event of messages)
+          assert.equal((event.payload as { agentThreadId?: string }).agentThreadId, CHILD_A);
+        assert.isFalse(
+          events.some(
+            (event) =>
+              event.method.startsWith("collabAgent/") &&
+              (event.payload as { agentThreadId?: string })?.agentThreadId === ROOT,
+          ),
+        );
+        yield* runtime.close;
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+}
 
 for (const [receiverStatus, turnStatus, emitStarted] of [
   ["completed", "completed", false],
@@ -1072,6 +1094,13 @@ for (const [receiverStatus, turnStatus, emitStarted] of [
         const script = {
           rootThreadId: ROOT,
           notifications: [
+            {
+              method: "turn/started",
+              params: {
+                threadId: CHILD_A,
+                turn: { id: "early-child-turn", items: [], status: "inProgress", error: null },
+              },
+            },
             ...(emitStarted
               ? [
                   {
@@ -1140,6 +1169,14 @@ for (const [receiverStatus, turnStatus, emitStarted] of [
         assert.deepEqual((settled?.payload as { turn?: unknown } | undefined)?.turn, {
           status: turnStatus,
         });
+        const lifecycle = events.filter(
+          (event) =>
+            event.method === "collabAgent/turnStarted" ||
+            event.method === "collabAgent/turnCompleted",
+        );
+        assert.equal(lifecycle.at(-1)?.method, "collabAgent/turnCompleted");
+        const stopped = yield* runtime.interruptTurn(undefined, CHILD_A).pipe(Effect.result);
+        assert.equal(stopped._tag, "Failure");
         yield* runtime.close;
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );

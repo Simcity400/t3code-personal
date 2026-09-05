@@ -1,5 +1,12 @@
+import { WorkflowGroup } from "./WorkflowGroup";
+import {
+  threadHasOlderTurns,
+  requestOlderThreadTurns,
+} from "@t3tools/client-runtime/state/threads";
+import { TaskControls, TaskStopButton } from "./TaskControls";
 import {
   deriveAgentPanelModel,
+  filterWorkflowForPanelSection,
   flattenAgentPanelRoster,
   foldSubagentActivities,
   formatSubagentTitle,
@@ -17,7 +24,7 @@ import {
 } from "@t3tools/client-runtime/state/backgroundTasks";
 import { deriveContextWindowSnapshotsByAgent } from "@t3tools/client-runtime/state/contextWindow";
 import type { LegendListRef } from "@legendapp/list/react-native";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
@@ -29,7 +36,10 @@ import { LoadingScreen } from "../../components/LoadingScreen";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { ContextWindowChip } from "./ContextWindowChip";
 import { buildThreadFeed } from "../../lib/threadActivity";
-import { useSelectedThreadDetail } from "../../state/use-thread-detail";
+import {
+  useSelectedThreadDetail,
+  useSelectedThreadDetailState,
+} from "../../state/use-thread-detail";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { ThreadFeed } from "../threads/ThreadFeed";
@@ -42,8 +52,19 @@ type ThreadAgentsRouteScreenProps = StaticScreenProps<{
   readonly threadId: string;
 }>;
 
-export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
+function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
+  const detailState = useSelectedThreadDetailState();
   const thread = useSelectedThreadDetail();
+  const loadEarlier = threadHasOlderTurns(detailState)
+    ? {
+        loading: detailState.page._tag === "Some" && detailState.page.value.loadingOlder,
+        onLoadEarlier: () =>
+          requestOlderThreadTurns(
+            EnvironmentId.make(_props.route.params.environmentId),
+            ThreadId.make(_props.route.params.threadId),
+          ),
+      }
+    : null;
   const activities = thread?.activities;
   const { selectedEnvironmentRuntime } = useThreadSelection();
   const { selectedThreadCwd } = useSelectedThreadWorktree();
@@ -68,14 +89,11 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
       activities
         ? foldSubagentActivities(activities, {
             sessionLive: agentSessionLive,
-            // Keep the transcript being read alive even when live activity
-            // pushes it past the roster cap.
-            protectedAgentIds: selectedAgentId ? [selectedAgentId] : [],
           })
         : [],
-    [agentSessionLive, activities, selectedAgentId],
+    [agentSessionLive, activities],
   );
-  const model = useMemo(() => deriveAgentPanelModel({ agents, v2Projection: null }), [agents]);
+  const model = useMemo(() => deriveAgentPanelModel({ agents }), [agents]);
   const allAgents = useMemo(() => flattenAgentPanelRoster(model), [model]);
   const selectedAgent = allAgents.find((agent) => agent.id === selectedAgentId) ?? null;
   const activeAgents = useMemo(
@@ -218,11 +236,17 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
               <ContextWindowChip usage={selectedAgentContextWindow} />
             ) : null}
             <AgentStatus agent={selectedAgent} clock={statusClock} />
+            <TaskStopButton
+              taskId={selectedAgent.id}
+              label={selectedAgent.title}
+              active={selectedAgentWorking}
+            />
           </View>
         </View>
         <ThreadFeed
           key={selectedAgent.id}
           keyboardAware={false}
+          loadEarlier={loadEarlier}
           environmentId={EnvironmentId.make(_props.route.params.environmentId)}
           threadId={thread.id}
           workspaceRoot={selectedThreadCwd}
@@ -254,7 +278,7 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
           <View className="items-center px-8 py-16">
             <Text className="text-base font-t3-semibold text-foreground">No agents yet</Text>
             <Text className="mt-2 text-center text-sm leading-5 text-foreground-muted">
-              Subagents spawned by Codex or Claude appear here with live transcripts, alongside any
+              Subagents exposed by your provider appear here with live transcripts, alongside any
               work left running in the background.
             </Text>
           </View>
@@ -269,15 +293,31 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
                   </Text>
                   <Text className="text-xs text-foreground-muted">{activeAgents.length}</Text>
                 </View>
-                {activeAgents.map((agent) => (
-                  <AgentCard
-                    key={agent.id}
-                    agent={agent}
-                    clock={statusClock}
-                    contextWindow={contextWindowByAgentId.get(agent.id) ?? null}
-                    onOpen={openAgent}
-                  />
-                ))}
+                {model.workflows.flatMap((group) => {
+                  const visible = filterWorkflowForPanelSection(group, "active");
+                  return visible
+                    ? [
+                        <WorkflowGroup
+                          key={group.workflow.id}
+                          group={visible}
+                          clock={statusClock}
+                          windows={contextWindowByAgentId}
+                          onOpen={openAgent}
+                        />,
+                      ]
+                    : [];
+                })}
+                {model.directAgents
+                  .filter((agent) => subagentPanelSection(agent.status) === "active")
+                  .map((agent) => (
+                    <AgentCard
+                      key={agent.id}
+                      agent={agent}
+                      clock={statusClock}
+                      contextWindow={contextWindowByAgentId.get(agent.id) ?? null}
+                      onOpen={openAgent}
+                    />
+                  ))}
               </View>
             ) : null}
             {idleAgents.length > 0 ? (
@@ -302,15 +342,31 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
                 </Pressable>
                 {idleOpen ? (
                   <View className="mt-1 gap-2">
-                    {idleAgents.map((agent) => (
-                      <AgentCard
-                        key={agent.id}
-                        agent={agent}
-                        clock={statusClock}
-                        contextWindow={contextWindowByAgentId.get(agent.id) ?? null}
-                        onOpen={openAgent}
-                      />
-                    ))}
+                    {model.workflows.flatMap((group) => {
+                      const visible = filterWorkflowForPanelSection(group, "idle");
+                      return visible
+                        ? [
+                            <WorkflowGroup
+                              key={group.workflow.id}
+                              group={visible}
+                              clock={statusClock}
+                              windows={contextWindowByAgentId}
+                              onOpen={openAgent}
+                            />,
+                          ]
+                        : [];
+                    })}
+                    {model.directAgents
+                      .filter((agent) => subagentPanelSection(agent.status) === "idle")
+                      .map((agent) => (
+                        <AgentCard
+                          key={agent.id}
+                          agent={agent}
+                          clock={statusClock}
+                          contextWindow={contextWindowByAgentId.get(agent.id) ?? null}
+                          onOpen={openAgent}
+                        />
+                      ))}
                   </View>
                 ) : null}
               </View>
@@ -324,5 +380,20 @@ export function ThreadAgentsRouteScreen(_props: ThreadAgentsRouteScreenProps) {
         )}
       </ScrollView>
     </View>
+  );
+}
+
+export function ThreadAgentsRouteScreen(props: ThreadAgentsRouteScreenProps) {
+  const thread = useSelectedThreadDetail();
+  return (
+    <TaskControls
+      activities={thread?.activities ?? []}
+      threadRef={{
+        environmentId: EnvironmentId.make(props.route.params.environmentId),
+        threadId: ThreadId.make(props.route.params.threadId),
+      }}
+    >
+      <ThreadAgentsRouteScreenContent {...props} />
+    </TaskControls>
   );
 }

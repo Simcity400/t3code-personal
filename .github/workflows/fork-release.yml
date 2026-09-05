@@ -4,21 +4,19 @@ name: Fork Release
 # publishes them as one GitHub prerelease on this repository. Packaged apps
 # point their electron-updater feed here (GITHUB_REPOSITORY at build time), so
 # the in-app update button picks these releases up; the merged update manifest
-# lists both installers and electron-updater picks the one matching the
-# machine's CPU. Kept separate from upstream's release.yml to avoid merge
+# lists both installers; the desktop adapter selects the installed CPU
+# architecture before electron-updater caches or downloads the update. Kept separate from upstream's release.yml to avoid merge
 # conflicts; that workflow needs T3's own secrets and runners and cannot run
 # on this fork.
 
 # Every direct push to main publishes the personal Windows build so the one
 # installed app follows the same branch as mobile OTA and source checkouts.
-# Pushes that only touch workflows or docs ship nothing new, so they do not
-# spend a build. workflow_dispatch remains available for a manual rebuild.
+# Markdown-only pushes do not spend a build. Workflow changes are release-relevant. workflow_dispatch remains available for a manual rebuild.
 on:
   push:
     branches:
       - main
     paths-ignore:
-      - ".github/**"
       - "**.md"
   workflow_call:
     inputs:
@@ -33,7 +31,7 @@ permissions:
 
 concurrency:
   group: fork-release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   # This workflow only builds and publishes. fork-sync.yml owns merging
@@ -105,7 +103,6 @@ jobs:
     if: ${{ !cancelled() && (needs.build_wsl_node_pty.result == 'success' || needs.build_wsl_node_pty.result == 'skipped') }}
     runs-on: windows-2025
     timeout-minutes: 60
-    continue-on-error: ${{ matrix.arch == 'arm64' }}
     strategy:
       fail-fast: false
       matrix:
@@ -151,6 +148,17 @@ jobs:
               - --filter=@t3tools/desktop...
               - --filter=t3...
               - --filter=@t3tools/scripts...
+
+      - name: Check fork update and agent invariants
+        if: matrix.arch == 'x64'
+        shell: bash
+        run: |
+          vp test run \
+            scripts/fork-sync.test.ts \
+            scripts/merge-update-manifests.test.ts \
+            apps/desktop/src/updates/windowsUpdateSelection.test.ts \
+            apps/server/src/provider/Layers/CodexSessionRuntime.test.ts \
+            packages/client-runtime/src/state/subagentRuntime.test.ts
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -272,15 +280,11 @@ jobs:
             exit 1
           fi
 
-          # x64 stays the primary manifest: its entry also fills the legacy
-          # top-level path/sha512 fields that older updaters read. The arm64
-          # entry is merged in when its leg produced one.
-          if [[ -f nightly-arm64.yml ]]; then
-            node ../scripts/merge-update-manifests.ts --platform win nightly-x64.yml nightly-arm64.yml nightly.yml
-          else
-            echo "No arm64 manifest; publishing x64 only" >&2
-            cp nightly-x64.yml nightly.yml
+          if [[ ! -f nightly-arm64.yml ]]; then
+            echo "Missing nightly-arm64.yml: both Windows architectures are required" >&2
+            exit 1
           fi
+          node ../scripts/merge-update-manifests.ts --platform win nightly-x64.yml nightly-arm64.yml nightly.yml
           rm -f nightly-x64.yml nightly-arm64.yml
 
           # electron-updater's private GitHub provider always requests
@@ -292,13 +296,26 @@ jobs:
           cat nightly.yml
           ls -la
 
-      - name: Publish release
+      - name: Upload draft release
+        id: upload
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.build.outputs.tag }}
           target_commitish: ${{ inputs.ref != '' && inputs.ref || github.sha }}
           name: ${{ needs.build.outputs.name }}
-          prerelease: true
+          draft: true
+          # Authenticated private feeds can see drafts; the updater selects the
+          # first prerelease without excluding them. Mark it prerelease only in
+          # the final publish PATCH after all assets have been verified.
+          prerelease: false
           make_latest: false
           files: release-publish/*
           fail_on_unmatched_files: true
+
+      - name: Verify assets and publish the complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.upload.outputs.id }}
+        run: |
+          node scripts/fork-sync.ts verify-release
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false -F prerelease=true

@@ -400,7 +400,12 @@ function deriveWorkLogEntries(
     // Terminal bypassed updates reach classification, which re-homes them to
     // the Agents screen.
     if (activity.kind === "task.updated" && !isTerminalTaskUpdate(activity)) continue;
-    if (activity.kind === "tool.progress") continue;
+    if (
+      activity.kind === "tool.progress" ||
+      activity.kind === "task.state" ||
+      activity.kind.startsWith("task.stop.")
+    )
+      continue;
     if (activity.kind === "context-window.updated") continue;
     // Panel state, not a log entry — see the web work log for the reasoning.
     if (activity.kind === "session.compacting") continue;

@@ -8,26 +8,18 @@ personal customizations, backed up at
 
 - **Start the app**: use the "T3 Code (Nightly)" Start Menu shortcut. It points
   directly to `%LOCALAPPDATA%\Programs\t3code\T3 Code (Nightly).exe`.
-- **Get updates**: just push to `main`. GitHub Actions runs again on this account
-  (the 2026-08-17 → 2026-09-03 billing block is over), so every push to `main`
-  starts `fork-release.yml`, which packages that exact commit and publishes it as a
-  private prerelease; `fork-mobile-preview.yml` publishes the matching iPhone OTA
-  update. Official changes arrive on their own: `fork-sync.yml` runs every two hours,
-  merges `upstream/main` when npm's `t3` nightly moves, re-pins the four package
-  versions, pushes `main`, and then calls both `fork-release.yml` and
-  `fork-mobile-preview.yml` — so no machine ever merges or pins locally. When it cannot
-  finish on its own — a genuine merge conflict, or a push GitHub refuses — it stops and
-  pushes the `needs-merge-help` marker branch, which the in-app pill turns into "open
-  Claude Code and say: finish the upstream merge". The pill only means the sync needs a
-  hand; the run log says which of those it was. Only after a release run finishes
-  does the installed app have a newer version to offer: the updater compares against
-  the newest release on the private feed, so while `main` is ahead of the last
-  published release no update pill appears — correctly, because no newer release
-  exists yet. If a release run fails, re-run it from the Actions tab; there is no
-  local publisher any more (retired 2026-09-04 with the launcher scripts, see below).
+- **Get updates**: pushes to main publish the personal Windows installer and iPhone update.
+  Official published nightlies are checked every 15 minutes. The sync merges the exact
+  release tag, records it in fork-upstream.json, and calls the desktop and mobile pipelines.
+  Failed desktop publication is retried even if that nightly was already integrated.
+  Both Windows x64 and ARM64 builds must pass before a release appears in the installed app.
+  The updater selects the installed architecture and refuses a mismatched installer.
+  Real merge conflicts stop publication and appear in the Fork Sync run; they require a
+  reviewed resolution that preserves the personal features. There is no source-checkout
+  updater or separate merge-help pill. See [the update architecture](docs/internals/personal-fork-updates.md).
   For the private feed, the updater reads the existing `gh` login directly; it does not
   put the GitHub token in the app or agent environment.
-  Two Actions-minute savers (owner, 2026-09-04): pushes that only touch `.github/**` or
+  Two Actions-minute savers (owner, 2026-09-04): pushes that only touch
   `*.md` files do not start a release, and the Linux "Build WSL node-pty" job is off
   unless the repository variable `FORK_WSL_PTY` is `true` — the Windows build then ships
   without the WSL terminal backend. Turn it back on with
@@ -234,65 +226,11 @@ machine.
   deleted. `Setup T3 Code (My Version).cmd` stays: a new machine still needs it once.
   `scripts/lib/personal-*.ts` stay: `apps/mobile/app.config.ts` and
   `fork-mobile-preview.yml` read them.
-- **Only the fork's own workflows** (2026-09-03): `.github/workflows` keeps exactly
-  `fork-sync.yml`, `fork-release.yml` and `fork-mobile-preview.yml`. Every upstream
-  workflow (`ci.yml`, `release.yml`, `deploy-relay.yml`, `pr-size.yml`, `pr-vouch.yml`,
-  `issue-labels.yml`, `publish-aur.yml`, `web-preview.yml`, `thread-transfer-report.yml`,
-  `desktop-macos-preview.yml`, and the four `mobile-*` ones) is deleted here: they need
-  T3's Blacksmith runners, secrets or PR bots, so on this fork they only ever queue runs
-  that cannot succeed. It is not just tidiness — `GITHUB_TOKEN` has no `workflows`
-  permission, so any Actions push that adds or modifies a `.github/workflows/*` file is
-  rejected, which silently broke the sync whenever upstream touched a workflow (in the
-  fork's whole history every merge that touched `.github/workflows` was pushed by hand;
-  the 37 bot merges never did). `fork-sync.yml` now keeps them deleted by itself: it
-  merges with `--no-commit`, resolves a conflict in a non-allowlisted workflow to
-  "delete it", deletes any non-allowlisted workflow a clean merge brought in, and only
-  then commits — so the commit it creates never touches a workflow at all, rather than
-  adding one and deleting it again in a follow-up. A guard then aborts the run before
-  any push if the pushed range's diff still shows **any** workflow path, the fork's own
-  three included — raising the `needs-merge-help` pill as it goes, because that guard
-  firing is a case only a human can clear, and every later run would stop at it too.
-  Still unknown, and unknowable without attempting a push: whether GitHub judges a push
-  by its net diff or by each commit in it — the fork's own history never exercised
-  either, since no bot merge has ever had a workflow-touching commit in its range. So
-  the job is written to be correct under both readings rather than betting on one, and
-  when a push is refused anyway it raises the marker from the commit `origin/main`
-  already holds — a ref create that introduces no new commit, the weakest push there
-  is. Local scenarios drive the shipped steps — extracted verbatim from this YAML —
-  against throwaway bare repos whose `pre-receive` hook models each reading. The
-  end-to-end pair is the one that matters, because it is the only reachable strict
-  case: upstream touches a workflow, the merge step deletes it so the net diff is
-  empty and the guard passes, yet the pushed range still introduces a
-  workflow-touching commit. A per-commit remote refuses that push and the marker
-  lands on the pre-push `origin/main`; a net-diff remote accepts it and no marker
-  appears. Only a remote that refuses even a no-op ref create leaves no pill, and
-  the run says so explicitly.
-
-  Both steps also carry an `EXIT` trap, because the guarantee has to hold for
-  failures nobody predicted, not just the ones with a handler. Under `set -e` a
-  single unexpected error used to end the run with main unpushed, no marker and
-  nothing but a red check — the exact silence this pipeline exists to remove.
-  Review found one: a submodule gitlink committed at
-  `.github/workflows/<name>.yml` checks out as a _directory_, so the `rm -f` that
-  drops upstream-only workflows failed with "Is a directory" and killed the step
-  before the guard. The drop now uses `rm -rf`, and the trap turns any remaining
-  surprise into the same visible outcome as a conflict.
-
-  What is **not** covered locally: a literal tab in a workflow filename. Git on
-  Windows rejects one at both layers — the filesystem maps it into the private-use
-  plane, and `git update-index --cacheinfo` answers `error: Invalid path` — so no
-  scenario here can build that case, and an earlier claim that one did was wrong.
-  Coverage does not actually depend on it: the bug being fixed is git's C-quoting of
-  unusual paths in newline-delimited output, and a non-ASCII byte is C-quoted by the
-  same mechanism, which the `déploiement.yml` scenarios do exercise.
-  Upstream's `infra/relay/scripts/deploy.test.ts` guard over `release.yml` was dropped
-  with it. `fork-release.yml`'s old `sync_upstream` job — a second, weaker copy of the
-  same merge — was deleted; `fork-sync.yml` is the only place that merges upstream.
-  Same round: `fork-mobile-preview.yml` gained a `workflow_call` trigger and
-  `fork-sync.yml` now calls it beside `fork-release.yml`. GitHub never fires a `push`
-  workflow for a push made with `GITHUB_TOKEN`, so before this the iPhone OTA silently
-  stopped following `main` whenever the scheduled sync — rather than a person — was what
-  moved it; only the desktop release was being called explicitly.
+- **Only the fork's own workflows**: the fork keeps fork-sync.yml, fork-release.yml
+  and fork-mobile-preview.yml. Upstream-only workflows require its runners and secrets,
+  so sync removes them inside the merge commit. A collision with a fork-owned workflow
+  stops the run for review. The packaged updater offers complete releases; sync errors
+  are reported in GitHub Actions, not through a separate source-updater pill.
 
 - **One-line composer (web)**: retired 2026-09-03 — upstream's "collapse the resting
   composer" (#7855) collapses the desktop composer to a single line at rest and expands
@@ -469,18 +407,10 @@ machine.
   the two-value field so auto-settlement and the reaper keep meaning "background
   TASKS are alive".
 
-- **Nightly version pin**: `version` in `apps/server`, `apps/desktop`, `apps/web`, and
-  `packages/contracts` package.json is pinned to the published npm nightly so the app
-  identifies as Nightly and device connections install a matching published
-  `t3@<version>` CLI on remote machines. The scheduled `fork-sync.yml` re-pins
-  automatically after merging upstream, then publishes the same packaged app. To re-pin
-  manually:
-  `node scripts/update-release-package-versions.ts $(npm view t3 dist-tags.nightly)`
-  then rebuild. Upstream version bumps conflict with this pin on every sync by
-  construction; since 2026-08-08 `fork-sync.yml` resolves that class automatically
-  (upstream's side wins, then the pin re-stamps), so the `needs-merge-help` pill
-  never appears for that class. It still covers everything else that stops the sync:
-  a genuine code conflict, or a push GitHub refuses.
+- **Nightly integration marker**: fork-upstream.json records the last integrated official
+  release tag and its commit. Source package versions remain upstream-owned. The release
+  pipeline stamps the personal nightly version only while building, avoiding four permanent
+  package-version conflicts on every upstream sync.
 
 ## Notes on upstream files kept as-is
 

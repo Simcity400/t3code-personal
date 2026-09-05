@@ -873,7 +873,12 @@ export function deriveWorkLogEntries(
     // collapse into the batch's single CTA row, never render standalone.
     if (activity.kind === "task.started" && !isAgentTaskStartedActivity(activity)) continue;
     if (activity.kind === "task.updated") continue;
-    if (activity.kind === "tool.progress") continue;
+    if (
+      activity.kind === "tool.progress" ||
+      activity.kind === "task.state" ||
+      activity.kind.startsWith("task.stop.")
+    )
+      continue;
     if (activity.kind === "context-window.updated") continue;
     // Panel state, not a log entry: one row per thread, rewritten on each
     // compaction edge. The Agents panel names the wait while it is live and

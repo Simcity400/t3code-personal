@@ -1,3 +1,4 @@
+import { TaskStopButton } from "./TaskControls";
 /**
  * Mobile counterpart of the web Agents panel's background-task surface.
  *
@@ -104,6 +105,7 @@ function TaskRowImpl({
           {status}
           {elapsed ? ` · ${elapsed}` : ""}
         </Text>
+        <TaskStopButton taskId={task.id} label={task.label} active={live} />
       </View>
       <Text
         className={
@@ -216,10 +218,7 @@ export function BackgroundTasksSection({
 
   // Attribution is needed whenever ANY row belongs to a subagent, including
   // one that only appears under Finished.
-  const showOwners =
-    model.groups.length > 1 ||
-    model.groups.some((group) => group.ownerId !== null) ||
-    model.finished.some((entry) => entry.task.ownerAgentId !== null);
+  const showOwners = true;
 
   return (
     <View

@@ -1,35 +1,11 @@
-/**
- * Background-task observability: the exact complement of the subagent fold.
- *
- * `foldSubagentActivities` keeps the task.* rows ingestion stamped
- * `agentKind: "agent"` and drops everything else. Everything else is real
- * work the user cares about — background shells, Monitor watch loops,
- * plan-mode bookkeeping, a subagent's own internal shells — and until this
- * module existed it had no home but the ordinary work log, where a
- * long-running `pnpm test --watch` was one grey line that never updated.
- *
- * This fold keeps the rows the subagent fold drops, deciding membership from
- * EVIDENCE rather than from the stamp alone (see pass 1 of
- * foldBackgroundTasks). Both read the same durable `thread.activities`, so
- * the panel survives reload, resume and reconnect with no extra persistence.
- *
- * Membership is one shared decision, taken per TASK ID in `taskSurface.ts`
- * and read by both folds, so a task can never render on both surfaces. It
- * used to be taken twice — this fold judged the whole id on evidence while
- * the roster fold judged each row on its stamp — and the two disagreed
- * whenever a resumed session lost a task's identity: the thin terminal row
- * that followed carried no taskType, ingestion defaulted it to "agent", and
- * the roster built a phantom agent beside the real background row here.
- *
- * The wait model is deliberately provider-neutral: it is derived from the
- * shared request pipeline (`approval.requested` / `user-input.requested`,
- * which every adapter feeds) plus task ownership, so a provider that exposes
- * no task lifecycle at all still gets correct "waiting on" lines.
- */
-import { MONITOR_TASK_TYPES, type OrchestrationThreadActivity } from "@t3tools/contracts";
+/** Background-task presentation and wait relationships from server-owned task state. */
+import {
+  readTaskStates,
+  MONITOR_TASK_TYPES,
+  type OrchestrationThreadActivity,
+} from "@t3tools/contracts";
 
 import type { RuntimeSubagentStatus } from "./subagentRuntime.ts";
-import { deriveTaskSurfaces } from "./taskSurface.ts";
 
 /**
  * Presentation bucket for a background task. Derived from the provider's
@@ -117,306 +93,44 @@ export function backgroundTaskKind(taskType: string | null | undefined): Backgro
   return "other";
 }
 
-const SUMMARY_CHAR_LIMIT = 180;
-const TASK_LIMIT = 200;
-
-function bounded(value: string): string {
-  return value.length <= SUMMARY_CHAR_LIMIT ? value : `${value.slice(0, SUMMARY_CHAR_LIMIT - 1)}…`;
-}
-
 function asString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-const RUNTIME_STATUSES: ReadonlySet<string> = new Set([
-  "pending",
-  "running",
-  "waiting",
-  "idle",
-  "completed",
-  "failed",
-  "cancelled",
-  "interrupted",
-]);
-
-function asStatus(value: unknown): BackgroundTaskStatus | undefined {
-  return typeof value === "string" && RUNTIME_STATUSES.has(value)
-    ? (value as BackgroundTaskStatus)
-    : undefined;
-}
-
-/** task.completed's three-value status → the shared vocabulary. */
-const COMPLETED_STATUS: ReadonlyMap<string, BackgroundTaskStatus> = new Map([
-  ["completed", "completed"],
-  ["failed", "failed"],
-  ["stopped", "cancelled"],
-]);
-
-interface MutableTask {
-  id: string;
-  kind: BackgroundTaskKind;
-  taskType: string | null;
-  label: string;
-  command: string | null;
-  server: string | null;
-  tool: string | null;
-  ownerAgentId: string | null;
-  status: BackgroundTaskStatus;
-  startedAt: string | null;
-  endedAt: string | null;
-  progress: string | null;
-  result: string | null;
-  error: string | null;
-  backgrounded: boolean;
-  ambient: boolean;
-  firstSeenAt: string;
-  updatedAt: string;
-}
-
-function getOrCreate(tasks: Map<string, MutableTask>, taskId: string, at: string): MutableTask {
-  const existing = tasks.get(taskId);
-  if (existing) return existing;
-  const created: MutableTask = {
-    id: taskId,
-    kind: "other",
-    taskType: null,
-    label: taskId,
-    command: null,
-    server: null,
-    tool: null,
-    ownerAgentId: null,
-    status: "running",
-    startedAt: null,
-    endedAt: null,
-    progress: null,
-    result: null,
-    error: null,
-    backgrounded: false,
-    ambient: false,
-    firstSeenAt: at,
-    updatedAt: at,
-  };
-  tasks.set(taskId, created);
-  return created;
-}
-
-/**
- * Identity fields ride on every row (ingestion repeats the linkage bundle),
- * so metadata fills in from whichever row survived activity retention.
- * Fill-if-absent: a later thinner row must never blank a known field.
- */
-function fillMetadata(task: MutableTask, payload: Record<string, unknown>): void {
-  const taskType = asString(payload.taskType);
-  if (taskType && task.taskType === null) {
-    task.taskType = taskType;
-    task.kind = backgroundTaskKind(taskType);
-  }
-  const owner = asString(payload.agentId);
-  if (owner && task.ownerAgentId === null) task.ownerAgentId = owner;
-  const command = asString(payload.command);
-  if (command && task.command === null) task.command = bounded(command);
-  const server = asString(payload.server);
-  if (server && task.server === null) task.server = bounded(server);
-  const tool = asString(payload.tool);
-  if (tool && task.tool === null) task.tool = bounded(tool);
-  // `detail` is ingestion's truncated copy of the provider description.
-  //
-  // The command line outranks all of them for a shell: the provider's
-  // description is a humanized summary of the call, and a panel showing five
-  // "Running tests" rows names none of them. It may arrive after the
-  // description (the launching call is only read at task_started, and a
-  // resumed task recovers it from a later snapshot), so it is allowed to
-  // replace a label that came from a description — but never one it already
-  // set itself.
-  const label =
-    asString(payload.title) ?? asString(payload.description) ?? asString(payload.detail);
-  if (label && task.label === task.id) task.label = bounded(label);
-  if (task.command !== null) task.label = task.command;
-  if (payload.isBackgrounded === true) task.backgrounded = true;
-  else if (payload.isBackgrounded === false) task.backgrounded = false;
-  if (payload.skipTranscript === true) task.ambient = true;
-}
-
-/**
- * First terminal write wins for the settle timestamp — duplicate terminal
- * rows (Claude emits a terminal task.updated then a task.completed) must not
- * slide the clock. A non-terminal status after a terminal one is a genuine
- * restart and clears the previous outcome.
- */
-function applyStatus(task: MutableTask, status: BackgroundTaskStatus, at: string): void {
-  const wasTerminal = isTerminalBackgroundTaskStatus(task.status);
-  // Terminal -> idle is late metadata, not a transition: a settled task did
-  // not become resumable. Applying it left the old endedAt, result and error
-  // hanging off a row now claiming to be idle. The roster fold ignores it for
-  // the same reason.
-  if (wasTerminal && status === "idle") return;
-  const wasResting = wasTerminal || task.status === "idle";
-  task.status = status;
-  if (isTerminalBackgroundTaskStatus(status)) {
-    if (!wasTerminal) task.endedAt = at;
-    return;
-  }
-  if (wasResting && isActiveBackgroundTaskStatus(status)) {
-    task.endedAt = null;
-    task.result = null;
-    task.error = null;
-    // A resumed task times its NEW run. Keeping the original start made a
-    // watch loop that woke up claim an elapsed time spanning the whole
-    // interval it spent settled or idle.
-    task.startedAt = at;
-    return;
-  }
-  if (task.startedAt === null) task.startedAt = at;
-}
-
-/**
- * Folds a thread's persisted activities into background-task state.
- *
- * Tolerant by construction (malformed rows skipped individually, unknown
- * kinds ignored) and pure, so callers memoize on activity-list identity.
- *
- * sessionLive=false marks still-running tasks interrupted: background work
- * dies with its provider session, so a server restart must not leave a panel
- * full of shells that claim to be running. Idle survives — it is already
- * settled.
- */
 export function foldBackgroundTasks(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   options?: { readonly sessionLive?: boolean },
 ): ReadonlyArray<RuntimeBackgroundTask> {
-  const tasks = new Map<string, MutableTask>();
-
-  // ONE membership decision per task id, shared with foldSubagentActivities
-  // (see taskSurface.ts for the rule and the bug that forced it). This fold
-  // renders exactly the ids that surface says are background work.
-  const surfaces = deriveTaskSurfaces(activities);
-
-  for (const activity of activities) {
-    if (typeof activity.payload !== "object" || activity.payload === null) continue;
-    const payload = activity.payload as Record<string, unknown>;
-    const taskId = asString(payload.taskId);
-    if (!taskId || surfaces.get(taskId) !== "background") continue;
-    const at = activity.createdAt;
-
-    switch (activity.kind) {
-      case "task.started": {
-        const task = getOrCreate(tasks, taskId, at);
-        fillMetadata(task, payload);
-        // Order-robustness mirrors the subagent fold: a start row arriving
-        // after a terminal row is a late delivery and only fills metadata.
-        // Reopening comes exclusively from an explicit status transition.
-        if (task.startedAt === null && !isTerminalBackgroundTaskStatus(task.status)) {
-          task.startedAt = at;
-          task.status = "running";
-        } else if (task.status === "idle") {
-          applyStatus(task, "running", at);
-        }
-        task.updatedAt = at;
-        break;
-      }
-      case "task.progress": {
-        const task = getOrCreate(tasks, taskId, at);
-        fillMetadata(task, payload);
-        const status = asStatus(payload.status);
-        if (status) applyStatus(task, status, at);
-        // A task first seen through progress (its start row aged out) still
-        // needs an origin, or the row renders with no elapsed time at all.
-        if (task.startedAt === null && !isTerminalBackgroundTaskStatus(task.status)) {
-          task.startedAt = at;
-        }
-        const progress = asString(payload.summary) ?? asString(payload.detail);
-        if (progress) task.progress = bounded(progress);
-        const error = asString(payload.error);
-        if (error) task.error = bounded(error);
-        task.updatedAt = at;
-        break;
-      }
-      case "task.updated": {
-        const task = getOrCreate(tasks, taskId, at);
-        fillMetadata(task, payload);
-        const wasTerminal = isTerminalBackgroundTaskStatus(task.status);
-        const status = asStatus(payload.status);
-        // First terminal write wins, exactly as task.completed does: two
-        // terminal rows disagreeing (a `killed` patch after a `failed` one)
-        // must not let event kind or arrival order decide the outcome. A
-        // non-terminal status is a genuine restart and still applies.
-        if (status && !(wasTerminal && isTerminalBackgroundTaskStatus(status))) {
-          applyStatus(task, status, at);
-        }
-        const error = asString(payload.error);
-        if (error) task.error = bounded(error);
-        // The provider's own end time beats the ingestion timestamp for the
-        // transition that actually settled the task.
-        const endedAt = asString(payload.endedAt);
-        if (endedAt && !wasTerminal && isTerminalBackgroundTaskStatus(task.status)) {
-          task.endedAt = endedAt;
-        }
-        task.updatedAt = at;
-        break;
-      }
-      case "task.completed": {
-        const task = getOrCreate(tasks, taskId, at);
-        fillMetadata(task, payload);
-        const summary = asString(payload.summary) ?? asString(payload.detail);
-        const status = COMPLETED_STATUS.get(asString(payload.status) ?? "") ?? "completed";
-        if (isTerminalBackgroundTaskStatus(task.status)) {
-          // Already settled by an earlier terminal row: timestamps freeze,
-          // but the completion still carries the result the update lacked.
-          if (summary) {
-            if (task.status === "failed") task.error = task.error ?? bounded(summary);
-            else task.result = task.result ?? bounded(summary);
-          }
-          break;
-        }
-        applyStatus(task, status, at);
-        if (summary) {
-          if (status === "failed") task.error = task.error ?? bounded(summary);
-          else task.result = bounded(summary);
-        }
-        task.updatedAt = at;
-        break;
-      }
-      default:
-        break;
-    }
-  }
-
-  const sessionLive = options?.sessionLive ?? true;
-  const rows = [...tasks.values()].map<RuntimeBackgroundTask>((task) => {
-    const orphaned = !sessionLive && isActiveBackgroundTaskStatus(task.status);
-    return {
-      ...task,
-      status: orphaned ? "interrupted" : task.status,
-      endedAt: orphaned ? (task.endedAt ?? task.updatedAt) : task.endedAt,
-    };
-  });
-
-  // Newest first: a background panel is read top-down for "what is running
-  // now". The cap drops the oldest settled rows, never a live one.
-  rows.sort(
-    (left, right) =>
-      right.firstSeenAt.localeCompare(left.firstSeenAt) || right.id.localeCompare(left.id),
-  );
-  if (rows.length <= TASK_LIMIT) return rows;
-  // Retention priority, then newest-first inside each band. Splitting merely
-  // on terminal-vs-not let 200 idle rows evict a live shell or a recent
-  // failure, which are the two things the panel exists to show.
-  const band = (row: RuntimeBackgroundTask): number => {
-    if (isActiveBackgroundTaskStatus(row.status)) return 0;
-    if (row.status === "failed") return 1;
-    if (row.status === "interrupted") return 2;
-    if (row.status === "idle") return 3;
-    return 4;
-  };
-  return rows
-    .slice()
-    .sort(
-      (left, right) =>
-        band(left) - band(right) || right.firstSeenAt.localeCompare(left.firstSeenAt),
-    )
-    .slice(0, TASK_LIMIT);
+  return readTaskStates(activities)
+    .filter((task) => task.agentKind === "background")
+    .map((task) => ({
+      id: task.id,
+      kind: backgroundTaskKind(task.taskType),
+      taskType: task.taskType,
+      label: task.command ?? task.title,
+      command: task.command,
+      server: task.server,
+      tool: task.tool,
+      ownerAgentId: task.parentAgentId,
+      status:
+        options?.sessionLive === false && isActiveBackgroundTaskStatus(task.status)
+          ? "interrupted"
+          : task.status,
+      startedAt: task.startedAt,
+      endedAt:
+        task.completedAt ??
+        (options?.sessionLive === false && isActiveBackgroundTaskStatus(task.status)
+          ? task.updatedAt
+          : null),
+      progress: task.progress,
+      result: task.result,
+      error: task.error,
+      backgrounded: task.backgrounded,
+      ambient: task.ambient,
+      firstSeenAt: task.firstSeenAt,
+      updatedAt: task.updatedAt,
+    }))
+    .sort((left, right) => right.firstSeenAt.localeCompare(left.firstSeenAt));
 }
 
 /* -------------------------------------------------------------------------
@@ -550,48 +264,17 @@ export function deriveOpenRequestWaits(
   return [...open.values()].toSorted((left, right) => left.since.localeCompare(right.since));
 }
 
-/**
- * Per-agent wait reasons, for providers that name them.
- *
- * Only Codex does today: its `collabAgent/statusChanged` activeFlags
- * distinguish waitingOnApproval from waitingOnUserInput, which the adapter
- * forwards as `waitReason` on task.updated. Read straight from the activity
- * stream rather than from `RuntimeSubagent` so the subagent fold stays
- * untouched. A later non-waiting status clears the reason: a resumed child is
- * not still waiting on the thing that blocked it.
- */
+/** The provider's current named wait, retained independently of work-log history. */
 export function deriveAgentWaitReasons(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ReadonlyMap<string, AgentNamedWait> {
-  const reasons = new Map<string, AgentNamedWait>();
-  for (const activity of activities) {
-    if (activity.kind !== "task.updated") continue;
-    if (typeof activity.payload !== "object" || activity.payload === null) continue;
-    const payload = activity.payload as Record<string, unknown>;
-    const taskId = asString(payload.taskId);
-    if (!taskId) continue;
-    const status = asStatus(payload.status);
-    if (status === undefined) continue;
-    if (status !== "waiting") {
-      reasons.delete(taskId);
-      continue;
-    }
-    const reason = payload.waitReason;
-    if (reason === "approval" || reason === "user-input") {
-      // `since` is when the WAIT started, not when the agent did: a child
-      // that worked for an hour and has been blocked for ten seconds must
-      // not report an hour of waiting. Re-entering the same reason keeps the
-      // original instant so the timer does not restart on every repeat.
-      const existing = reasons.get(taskId);
-      reasons.set(taskId, {
-        reason,
-        since: existing?.reason === reason ? existing.since : activity.createdAt,
-      });
-    } else {
-      reasons.delete(taskId);
-    }
-  }
-  return reasons;
+  return new Map(
+    readTaskStates(activities).flatMap((task) =>
+      task.status === "waiting" && task.waitReason && task.waitingSince
+        ? [[task.id, { reason: task.waitReason, since: task.waitingSince }] as const]
+        : [],
+    ),
+  );
 }
 
 /**
@@ -625,41 +308,15 @@ export function deriveCompactingSince(
   return since;
 }
 
-/**
- * Task ids that cannot block whoever started them: work the provider
- * explicitly detached (Claude's `is_backgrounded`) and work that is
- * asynchronous by protocol (Codex child agents). In both cases the launching
- * tool call returned immediately and the turn carried on, so presenting them
- * as a dependency would assert a relationship no provider reports.
- *
- * Read from the activity stream because `RuntimeSubagent` carries no such
- * field and this module deliberately does not modify the subagent fold.
- */
+/** Detached tasks and asynchronous child agents are not implied parent dependencies. */
 export function deriveDetachedTaskIds(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ReadonlySet<string> {
-  const detached = new Set<string>();
-  for (const activity of activities) {
-    if (typeof activity.payload !== "object" || activity.payload === null) continue;
-    const payload = activity.payload as Record<string, unknown>;
-    const taskId = asString(payload.taskId);
-    if (!taskId) continue;
-    // Codex child agents are asynchronous by protocol: spawnAgent returns
-    // immediately and the parent only blocks if it calls the separate wait
-    // tool, which nothing on the wire reports. An active child therefore
-    // never proves the parent is waiting.
-    //
-    // agentPath is the marker, NOT timelineBypass: Claude stamps that on
-    // workflow members too, purely to keep synthetic rows out of the parent
-    // timeline, and a workflow coordinator genuinely does block its parent.
-    if (payload.timelineBypass === true && asString(payload.agentPath) !== undefined) {
-      detached.add(taskId);
-      continue;
-    }
-    if (payload.isBackgrounded === true) detached.add(taskId);
-    else if (payload.isBackgrounded === false) detached.delete(taskId);
-  }
-  return detached;
+  return new Set(
+    readTaskStates(activities)
+      .filter((task) => task.backgrounded || task.asynchronous)
+      .map((task) => task.id),
+  );
 }
 
 /** Minimal shape the wait derivation needs from a roster agent. */

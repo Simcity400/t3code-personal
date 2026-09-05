@@ -162,20 +162,6 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener(IpcChannels.WINDOW_FULLSCREEN_STATE_CHANNEL, wrappedListener);
     };
   },
-  getForkUpdateState: () => ipcRenderer.invoke(IpcChannels.FORK_UPDATE_GET_STATE_CHANNEL),
-  checkForForkUpdate: () => ipcRenderer.invoke(IpcChannels.FORK_UPDATE_CHECK_CHANNEL),
-  applyForkUpdate: () => ipcRenderer.invoke(IpcChannels.FORK_UPDATE_APPLY_CHANNEL),
-  onForkUpdateState: (listener) => {
-    const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
-      if (typeof state !== "object" || state === null) return;
-      listener(state as Parameters<typeof listener>[0]);
-    };
-
-    ipcRenderer.on(IpcChannels.FORK_UPDATE_STATE_CHANNEL, wrappedListener);
-    return () => {
-      ipcRenderer.removeListener(IpcChannels.FORK_UPDATE_STATE_CHANNEL, wrappedListener);
-    };
-  },
   getUpdateState: () => ipcRenderer.invoke(IpcChannels.UPDATE_GET_STATE_CHANNEL),
   setUpdateChannel: (channel) =>
     ipcRenderer.invoke(IpcChannels.UPDATE_SET_CHANNEL_CHANNEL, channel),

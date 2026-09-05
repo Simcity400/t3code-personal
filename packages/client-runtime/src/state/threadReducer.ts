@@ -305,7 +305,7 @@ export function applyThreadDetailEvent(
       };
 
     case "thread.turn-interrupt-requested": {
-      if (event.payload.turnId === undefined) {
+      if (event.payload.taskId !== undefined || event.payload.turnId === undefined) {
         return { kind: "unchanged" };
       }
       const latestTurn = thread.latestTurn;

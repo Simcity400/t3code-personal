@@ -3739,6 +3739,32 @@ describe("ProviderRuntimeIngestion", () => {
     expect(shell?.compactingSince).toBeNull();
   });
 
+  it("does not advertise native stopping for synthetic Claude workflow members", async () => {
+    const harness = await createHarness();
+    for (const taskId of ["workflow", "workflow:wf:0"]) {
+      harness.emit({
+        type: "task.started",
+        eventId: asEventId(`stop-capability:${taskId}`),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId: asThreadId("thread-1"),
+        payload: { taskId, taskType: "local_agent" },
+      });
+    }
+    await harness.drain();
+    const thread = (await harness.readModel()).threads[0];
+    expect(
+      thread?.activities.find(
+        (row: ProviderRuntimeTestActivity) => row.id === "stop-capability:workflow",
+      )?.payload,
+    ).toMatchObject({ canStop: true });
+    expect(
+      thread?.activities.find(
+        (row: ProviderRuntimeTestActivity) => row.id === "stop-capability:workflow:wf:0",
+      )?.payload,
+    ).toMatchObject({ canStop: false });
+  });
+
   it("projects Codex task lifecycle chunks into thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

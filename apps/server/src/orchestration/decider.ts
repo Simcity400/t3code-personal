@@ -1,5 +1,6 @@
 import {
   EventId,
+  readTaskStates,
   MessageId,
   UserInputRequestedPayload,
   type OrchestrationCommand,
@@ -31,6 +32,7 @@ import {
   requireThreadAbsent,
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
+import { isActiveTask, taskStateActivity, projectTaskActivity } from "./taskState.ts";
 import { projectEvent } from "./projector.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
 
@@ -1066,11 +1068,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.interrupt": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (
+        command.taskId !== undefined &&
+        !readTaskStates(thread.activities).some((task) => task.id === command.taskId)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This task does not belong to the selected thread.",
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -1082,6 +1093,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           ...(command.turnId !== undefined ? { turnId: command.turnId } : {}),
+          ...(command.taskId !== undefined ? { taskId: command.taskId } : {}),
           createdAt: command.createdAt,
         },
       };
@@ -1288,6 +1300,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           session: command.session,
         },
       };
+      if (["stopped", "interrupted", "error"].includes(command.session.status)) {
+        const events = [sessionSetEvent];
+        for (const task of readTaskStates(thread.activities)) {
+          if (!isActiveTask(task.status)) continue;
+          events.push({
+            ...(yield* withEventBase({
+              aggregateKind: "thread",
+              aggregateId: thread.id,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            })),
+            type: "thread.activity-appended",
+            payload: {
+              threadId: thread.id,
+              activity: taskStateActivity(thread.id, {
+                ...task,
+                status: "interrupted",
+                completedAt: command.createdAt,
+                updatedAt: command.createdAt,
+              }),
+            },
+          });
+        }
+        return events;
+      }
       // Only a session coming alive is activity worth waking a settled thread
       // for — status writes like ready/stopped/error arrive after the fact and
       // must not fight a user's explicit settle. Snooze is deliberately NOT
@@ -1472,6 +1509,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           activity: command.activity,
         },
       };
+      const taskEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      for (const activity of projectTaskActivity(thread.id, thread.activities, command.activity)) {
+        taskEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.activity-appended",
+          payload: { threadId: thread.id, activity },
+        });
+      }
       // An approval or user-input request is blocked-on-you work — it must
       // never stay hidden inside a settled slim row.
       const wakesSettledThread =
@@ -1479,7 +1529,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.activity.kind === "user-input.requested";
       // Real activity resets ANY override (settled wakes, active unpins).
       if (thread.settledOverride === null || !wakesSettledThread) {
-        return activityAppendedEvent;
+        return taskEvents.length ? [activityAppendedEvent, ...taskEvents] : activityAppendedEvent;
       }
       const unsettledEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({

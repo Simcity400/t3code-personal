@@ -207,7 +207,10 @@ export interface CodexSessionRuntimeShape {
   readonly sendTurn: (
     input: CodexSessionRuntimeSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
-  readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
+  readonly interruptTurn: (
+    turnId?: TurnId,
+    taskId?: string,
+  ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
     numTurns: number,
@@ -232,7 +235,8 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
-  | CodexSessionRuntimeThreadIdMissingError;
+  | CodexSessionRuntimeThreadIdMissingError
+  | CodexTaskNotRunningError;
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
@@ -275,6 +279,15 @@ export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedErrorC
 ) {
   override get message(): string {
     return `Codex session is missing a provider thread id for ${this.threadId}`;
+  }
+}
+
+export class CodexTaskNotRunningError extends Schema.TaggedErrorClass<CodexTaskNotRunningError>()(
+  "CodexTaskNotRunningError",
+  { taskId: Schema.String },
+) {
+  override get message(): string {
+    return `Codex has no running child turn for ${this.taskId}`;
   }
 }
 
@@ -943,12 +956,7 @@ function readRouteFields(notification: CodexServerNotification): {
  * synthetic `collabAgent/*` provider events the adapter turns into task.*
  * runtime events (timelineBypass keeps them out of the parent chat).
  *
- * WIP, probe-gated: registration is deliberately explicit-signals-only. The
- * spec's "provisionally treat unknown foreign thread ids as v2 children" rule
- * needs a live wire capture of the packaged binary before it lands — blind
- * capture risks eating unrelated traffic. Until then a child whose first
- * notification precedes registration passes through as today (no regression
- * vs main, which passes everything through).
+ * Early child notifications wait for explicit registration before they are attributed.
  */
 interface CollabChildAgentState {
   readonly agentThreadId: string;
@@ -1785,7 +1793,11 @@ export const makeCodexSessionRuntime = (
      * Returns true when the notification was fully handled (must not reach
      * parent-timeline mapping).
      */
-    const interceptCollabChildNotification = (notification: CodexServerNotification) =>
+    const pendingChildNotifications = new Map<string, CodexServerNotification[]>();
+
+    const interceptCollabChildNotification = (
+      notification: CodexServerNotification,
+    ): Effect.Effect<boolean, CodexErrors.CodexAppServerIdentifierGenerationError> =>
       Effect.gen(function* () {
         // Some Codex versions announce children only through collaboration
         // receivers. Register those identities before any child output arrives.
@@ -1839,6 +1851,12 @@ export const makeCodexSessionRuntime = (
                 });
                 yield* startCollabChildMetadataLookup(receiverId);
               }
+              // Replay older child events before the receiver report's current status.
+              const pending = pendingChildNotifications.get(receiverId);
+              if (pending) {
+                pendingChildNotifications.delete(receiverId);
+                for (const early of pending) yield* interceptCollabChildNotification(early);
+              }
               // Wait can register a child on item/started, then settle it on
               // item/completed. Apply reported state to existing identities too.
               const receiverStatus = item.agentsStates[receiverId]?.status;
@@ -1851,6 +1869,11 @@ export const makeCodexSessionRuntime = (
                       ? "interrupted"
                       : undefined;
               if (settledStatus !== undefined) {
+                yield* Ref.update(collabChildLiveTurnsRef, (current) => {
+                  const next = new Map(current);
+                  next.delete(receiverId);
+                  return next;
+                });
                 yield* emitEvent({
                   kind: "notification",
                   threadId: options.threadId,
@@ -2223,7 +2246,14 @@ export const makeCodexSessionRuntime = (
         // legacy suppressor below would drop its lifecycle before it could
         // become synthetic collabAgent events (review finding). The
         // suppressor still covers UNREGISTERED children.
-        if (yield* interceptCollabChildNotification(notification)) {
+        const intercepted = yield* interceptCollabChildNotification(notification);
+        const registeredChildren = yield* Ref.get(collabChildAgentsRef);
+        for (const [childId, pending] of pendingChildNotifications) {
+          if (!registeredChildren.has(childId)) continue;
+          pendingChildNotifications.delete(childId);
+          for (const early of pending) yield* interceptCollabChildNotification(early);
+        }
+        if (intercepted) {
           yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
           return;
         }
@@ -2246,8 +2276,30 @@ export const makeCodexSessionRuntime = (
         })();
         if (
           (childParentTurnId !== undefined || foreignConversation) &&
-          shouldSuppressChildConversationNotification(notification.method)
+          (shouldSuppressChildConversationNotification(notification.method) ||
+            (foreignConversation &&
+              !registeredChildren.has(readNotificationThreadId(notification) ?? "")))
         ) {
+          const earlyChildId = readNotificationThreadId(notification);
+          if (
+            !isMemoryConsolidationNotification &&
+            earlyChildId &&
+            !registeredChildren.has(earlyChildId)
+          ) {
+            const pending = pendingChildNotifications.get(earlyChildId) ?? [];
+            if (
+              pending.length < 256 &&
+              (pendingChildNotifications.has(earlyChildId) || pendingChildNotifications.size < 32)
+            ) {
+              pending.push(notification);
+              pendingChildNotifications.set(earlyChildId, pending);
+            } else {
+              yield* Effect.logWarning(
+                "Codex child notification buffer exhausted before registration",
+                { childId: earlyChildId },
+              );
+            }
+          }
           // Stop-everything must not depend on registration timing: a
           // child's turn/started can arrive before the subAgentActivity that
           // registers it (captured ordering), and suppressing it without
@@ -2875,8 +2927,14 @@ export const makeCodexSessionRuntime = (
               : {}),
           } satisfies ProviderTurnStartResult;
         }),
-      interruptTurn: (turnId) =>
+      interruptTurn: (turnId, taskId) =>
         Effect.gen(function* () {
+          if (taskId !== undefined) {
+            const childTurnId = (yield* Ref.get(collabChildLiveTurnsRef)).get(taskId);
+            if (!childTurnId) return yield* new CodexTaskNotRunningError({ taskId });
+            yield* client.request("turn/interrupt", { threadId: taskId, turnId: childTurnId });
+            return;
+          }
           const providerThreadId = yield* readProviderThreadId;
           const session = yield* Ref.get(sessionRef);
           // Stop-everything: children are full threads with their own turns;

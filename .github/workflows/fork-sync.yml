@@ -1,79 +1,10 @@
 name: Fork Sync
 
-# Fork-only pipeline that makes GitHub the single source of truth. Every two
-# hours it checks whether the official app published a new nightly; when it
-# has, this job merges upstream/main into main and pins the package versions,
-# so every machine only ever pulls a ready-made main — no machine merges or
-# pins locally, and machines can never invent conflicting history.
-#
-# Conflicts confined to the four version-pinned package.json files are
-# resolved automatically (upstream's side wins; the pin step re-stamps them —
-# they conflict on every sync by construction). When any other file conflicts
-# — and equally when the push itself is refused, for a workflow change, a
-# non-fast-forward race, branch protection or a transport failure — the job
-# pushes a marker branch `needs-merge-help`; the in-app fork updater then shows
-# a pill telling Alex to open Claude Code (on any machine) and say "finish the
-# upstream merge". The marker records only that the sync stopped and needs a
-# human, never why: nothing downstream can tell those causes apart, so the run
-# log is the place to look. After a resolved main is pushed, the next sync run
-# deletes the marker automatically.
-#
-# That promise is now total for every way the sync can stop BEFORE main lands.
-# Each of the four `run:` steps — the gate's nightly check, the merge, the pin
-# and the push — carries an EXIT trap that raises the marker and prints an
-# explicit diagnostic on any failure it does not already handle, including ones
-# nobody anticipated. Review found two such holes: a submodule gitlink under
-# .github/workflows that `rm -f` could not delete, killing the merge step before
-# its guard; and the gate job, which runs before any checkout and so raises the
-# marker through the API rather than git. If even the marker cannot be raised,
-# every path says "no in-app pill will appear" in the log rather than failing
-# quietly.
-#
-# The `release` and `mobile` jobs deliberately do NOT raise the pill. They run
-# only after main has been pushed, so a failure there is a failed publish, not a
-# stopped sync; the pill says "finish the upstream merge", which would be a lie.
-# Those show up as a red run.
-#
-# Workflow allowlist. This fork keeps exactly three workflows of its own —
-# fork-sync.yml, fork-release.yml and fork-mobile-preview.yml. Every other
-# `.github/workflows/*` file upstream ships is deleted here: they need T3's
-# Blacksmith runners, secrets or PR bots, so on this fork they only ever queue
-# runs that can never succeed. Keeping them deleted is not cosmetic — a push
-# made with GITHUB_TOKEN is REJECTED outright when it adds or modifies any
-# `.github/workflows/*` file, because that token has no `workflows` permission.
-# Before this allowlist existed, the sync therefore broke silently every time
-# upstream touched a workflow. So the merge step below (a) treats a conflict in
-# a non-allowlisted workflow as "delete it", (b) deletes any non-allowlisted
-# workflow a clean merge brought in — both BEFORE the merge is committed, so the
-# commit this job creates never carries a workflow change at all — and (c)
-# refuses to continue, before anything is pushed, if the pushed range's diff
-# still shows ANY workflow path, the fork's own three included.
-#
-# STILL UNKNOWN, and unknowable without attempting a push: whether GitHub judges
-# a push by its net old..new diff or by each commit in it. No bot merge in this
-# fork's history has ever had a workflow-touching commit in its range, so the
-# fork's own history does not discriminate either. The job is written to be
-# correct under BOTH readings rather than betting on one: (c) is the net-diff
-# check, necessary either way; (b) folding the cleanup into the merge commit
-# costs nothing and is what saves the stricter reading. When a push is refused
-# anyway, `raise_marker` pushes our HEAD first and falls back to the commit
-# origin/main already holds — a ref create that introduces no new commit, so it
-# is the weakest push that exists and survives both readings.
-#
-# That much IS tested locally, against throwaway bare repos whose pre-receive
-# hook models each reading (scratchpad `run_push_scenarios.sh`, driving the
-# shipped step extracted verbatim): under the per-commit hook and under the
-# net-diff hook alike, `main` is refused and the marker still lands on the
-# pre-push origin/main commit. Only a remote that refuses even a no-op ref
-# create leaves no pill, and there the step emits an explicit "no in-app pill
-# will appear" error and exits 1.
-#
-# Costs almost nothing: the gate job is seconds without a checkout, and the
-# full sync only runs when a new nightly is actually out (~once a day).
-
+# Integrate published official nightlies centrally, then build the personal app.
+# Source versions stay upstream-owned; fork-upstream.json records progress.
 on:
   schedule:
-    - cron: "17 */2 * * *"
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -85,442 +16,85 @@ concurrency:
 
 jobs:
   gate:
-    name: Check for a new official nightly
+    name: Check published nightlies and missing builds
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      proceed: ${{ steps.check.outputs.proceed }}
-      nightly: ${{ steps.check.outputs.nightly }}
+      tag: ${{ steps.check.outputs.tag }}
+      sync: ${{ steps.check.outputs.sync }}
+      release: ${{ steps.check.outputs.release }}
+      ref: ${{ steps.check.outputs.ref }}
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - id: check
-        name: Compare npm nightly to the pinned version
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # This job decides whether the sync runs at all, so a persistent
-          # failure here — the npm dist-tags endpoint changing shape, `gh api`
-          # hitting an auth or rate limit, a missing tool — is the worst
-          # silence of the lot: a red run every two hours, forever, and no pill,
-          # because the sync job never starts and its traps never load.
-          #
-          # There is no checkout in this job, so the marker cannot be raised
-          # with git. It is created through the API instead. This self-heals:
-          # the marker makes the NEXT run's gate take the proceed=true branch
-          # below, and a successful sync push then deletes it.
-          raise_marker() {
-            local sha out
-            if ! sha="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha 2>/dev/null)"                || [ -z "$sha" ]; then
-              echo "::error::Could not read main to raise the needs-merge-help marker, so no in-app pill will appear; this red run is the only notice."
-              return 1
-            fi
-            if out="$(gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs"                         -f ref=refs/heads/needs-merge-help -f sha="$sha" 2>&1)"; then
-              return 0
-            fi
-            # Already there is success: the pill is up, which is all that matters.
-            case "$out" in
-              *"Reference already exists"*) return 0 ;;
-            esac
-            echo "$out"
-            echo "::error::Could not raise the needs-merge-help marker, so no in-app pill will appear; this red run is the only notice."
-            return 1
-          }
-          # No `handled` flag: this step has no explicit non-zero exit whose own
-          # diagnostic would need to win. The ordinary "nothing to do" path
-          # falls off the end with status 0, so the trap stays quiet there.
-          on_unexpected_exit() {
-            status=$?
-            if [ "$status" -ne 0 ]; then
-              raise_marker || true
-              echo "::error::The sync could not check for a new nightly, so no merge was attempted. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
-            fi
-            exit "$status"
-          }
-          trap on_unexpected_exit EXIT
-          nightly="$(curl -fsSL https://registry.npmjs.org/-/package/t3/dist-tags | jq -r '.nightly // empty')"
-          pinned="$(gh api "repos/$GITHUB_REPOSITORY/contents/apps/desktop/package.json?ref=main" --jq .content | base64 -d | jq -r '.version // empty')"
-          marker="$(gh api "repos/$GITHUB_REPOSITORY/branches/needs-merge-help" --jq .name 2>/dev/null || true)"
-
-          echo "nightly=$nightly" >> "$GITHUB_OUTPUT"
-          echo "npm nightly: ${nightly:-unknown} | pinned: ${pinned:-unknown} | conflict marker: ${marker:-none}"
-
-          if [[ -n "$nightly" && -n "$pinned" && "$nightly" != "$pinned" ]] || [[ -n "$marker" ]]; then
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            echo "Nothing to do."
-          fi
+        run: node scripts/fork-sync.ts check
 
   sync:
-    name: Merge upstream and pin
+    name: Integrate the published official nightly
     needs: gate
-    if: needs.gate.outputs.proceed == 'true'
+    if: needs.gate.outputs.sync == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      ref: ${{ steps.push.outputs.ref }}
+      ref: ${{ steps.merge.outputs.ref }}
     steps:
-      - name: Checkout main
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
-
-      - name: Merge upstream/main
-        id: merge
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - id: merge
+        env:
+          NIGHTLY_TAG: ${{ needs.gate.outputs.tag }}
         run: |
-          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add upstream https://github.com/pingdotgg/t3code.git
-          git fetch upstream main
-
-          # Raise the marker branch the in-app updater watches, and say so
-          # loudly when we cannot. Two candidates, in order: our own HEAD, which
-          # points at the work that needs help; then the commit origin/main
-          # already holds, whose workflow files GitHub has accepted by
-          # definition — needed because a HEAD carrying a workflow change is
-          # exactly what GITHUB_TOKEN may not push. The updater only tests that
-          # the branch exists, so either one raises the pill. Never let a failed
-          # marker push end the step through set -e: the diagnostic below is the
-          # only notice anyone gets.
-          raise_marker() {
-            if git push origin HEAD:refs/heads/needs-merge-help --force; then
-              return 0
-            fi
-            if git push origin "$(git rev-parse origin/main)":refs/heads/needs-merge-help --force; then
-              return 0
-            fi
-            echo "::error::Could not raise the needs-merge-help marker, so no in-app pill will appear; this red run is the only notice."
-            return 1
-          }
-
-          # Every way this step can die must still leave a pill. `set -e` over a
-          # long run of git commands means one unanticipated failure — a tree
-          # shape we did not foresee, a transient git error — would otherwise
-          # end the run with main unpushed, no marker, and nothing but a red
-          # check nobody is watching: precisely the silence this pipeline
-          # exists to remove. Found by review, with a submodule gitlink at
-          # .github/workflows/<name>.yml: `git rm --cached` staged it, `rm -f`
-          # then failed with "Is a directory", and the step died right there,
-          # before the guard and before any marker logic. That specific shape is
-          # handled below, but the class is what this trap closes.
-          # Handled exits set `handled=true` first, so their own more specific
-          # diagnostic is the one that shows.
-          handled=false
-          on_unexpected_exit() {
-            status=$?
-            if [ "$status" -ne 0 ] && [ "$handled" != true ]; then
-              git merge --abort 2>/dev/null || true
-              raise_marker || true
-              echo "::error::The sync stopped on an unexpected error (exit $status). Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
-            fi
-            exit "$status"
-          }
-          trap on_unexpected_exit EXIT
-
-          # The fork's own workflows. Everything else under .github/workflows is
-          # upstream-only and must not exist on this fork (see the header).
-          # `case` rather than `grep -qxF -- "$path"`: a path is data, and grep
-          # would read one containing a newline as several alternative patterns.
-          is_fork_workflow() {
-            case "$1" in
-              .github/workflows/fork-sync.yml) return 0 ;;
-              .github/workflows/fork-release.yml) return 0 ;;
-              .github/workflows/fork-mobile-preview.yml) return 0 ;;
-              *) return 1 ;;
-            esac
-          }
-          # The four manifests whose version line the fork pins.
-          is_pin_file() {
-            case "$1" in
-              apps/desktop/package.json) return 0 ;;
-              apps/server/package.json) return 0 ;;
-              apps/web/package.json) return 0 ;;
-              packages/contracts/package.json) return 0 ;;
-              *) return 1 ;;
-            esac
-          }
-
-          # --no-commit so the workflow cleanup below lands INSIDE the merge
-          # commit: the commit this job creates then never adds a file
-          # GITHUB_TOKEN may not push, rather than adding one and deleting it in
-          # a follow-up. --no-ff keeps that commit existing even in the
-          # degenerate no-fork-commits case.
-          if ! git merge --no-commit --no-ff --no-edit upstream/main; then
-            # Two conflict classes resolve themselves:
-            #   * the four version-pinned manifests, which conflict on every sync
-            #     by construction (upstream bumps the line the fork pins) and are
-            #     rewritten by the pin step below anyway — take upstream's side;
-            #   * a non-allowlisted .github/workflows file, which this fork does
-            #     not keep at all — delete it, whatever the conflict shape
-            #     (modify/delete and add/add both land here).
-            # Anything else — including a conflict in one of the fork's OWN
-            # workflows — is a genuine conflict and takes the marker path. Any
-            # hiccup in the auto-resolution (e.g. a modify/delete conflict where
-            # no "theirs" blob exists) also falls through to the marker instead
-            # of killing the job silently.
-            resolved=false
-            conflicts_file="$(mktemp)"
-            theirs_file="$(mktemp)"
-            drop_file="$(mktemp)"
-            # -z everywhere a path is carried. Without it git C-quotes any path
-            # that is not plain ASCII, or that holds a tab, newline, quote or
-            # backslash, and that quoted display string is not a path `git rm`
-            # or `git checkout` can find — which would abort the job under
-            # set -e without ever raising the marker.
-            git diff -z --name-only --diff-filter=U > "$conflicts_file"
-            auto=true
-            while IFS= read -r -d '' f; do
-              [ -n "$f" ] || continue
-              if is_pin_file "$f"; then
-                printf '%s\0' "$f" >> "$theirs_file"
-              elif { case "$f" in .github/workflows/*) true ;; *) false ;; esac; } &&
-                ! is_fork_workflow "$f"; then
-                printf '%s\0' "$f" >> "$drop_file"
-              else
-                auto=false
-                break
-              fi
-            done < "$conflicts_file"
-
-            if [ -s "$conflicts_file" ] && [ "$auto" = true ]; then
-              echo "Only auto-resolvable conflicts; taking upstream's side on the pins and dropping upstream-only workflows."
-              step_failed=false
-              while IFS= read -r -d '' f; do
-                git checkout --theirs -- "$f" && git add -- "$f" || { step_failed=true; break; }
-              done < "$theirs_file"
-              if [ "$step_failed" = false ]; then
-                while IFS= read -r -d '' f; do
-                  git rm -q --cached -f -- "$f" || { step_failed=true; break; }
-                  # -r: a mode-160000 gitlink checks out as a directory, and
-                  # plain `rm -f` fails on one with "Is a directory".
-                  rm -rf -- "$f"
-                done < "$drop_file"
-              fi
-              if [ "$step_failed" = false ]; then
-                resolved=true
-              fi
-            fi
-            if [ "$resolved" != true ]; then
-              git merge --abort || true
-              # Leave a marker branch the in-app updater can see; the pill then
-              # asks Alex to have Claude Code resolve the merge from any machine.
-              handled=true
-              raise_marker || true
-              echo "::error::The sync stopped on a merge conflict. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge. Once the resolved merge is pushed to main, this workflow cleans up on its next run."
-              exit 1
-            fi
-          fi
-
-          # A brand-new upstream workflow does not conflict — it just appears in
-          # the merged tree. Drop every non-allowlisted workflow before the merge
-          # is committed, so the commit that gets pushed never adds one. -z and
-          # a read loop rather than xargs: xargs would split a path on its
-          # spaces, and a newline-delimited read would hand us git's C-quoted
-          # display form for any unusual name.
-          tracked_workflows="$(mktemp)"
-          git ls-files -z .github/workflows > "$tracked_workflows"
-          while IFS= read -r -d '' f; do
-            [ -n "$f" ] || continue
-            if is_fork_workflow "$f"; then
-              continue
-            fi
-            git rm -q --cached -f -- "$f"
-            # -r: see above — an upstream-only "workflow" can be a gitlink.
-            rm -rf -- "$f"
-            echo "Dropped upstream-only workflow: $f"
-          done < "$tracked_workflows"
-
-          # Only when a merge is actually pending. `git merge` on an upstream
-          # that is already an ancestor says "Already up to date", exits 0 and
-          # leaves no MERGE_HEAD — which is exactly the state of the run that
-          # follows a by-hand marker resolution, and of a nightly-only re-pin.
-          # An unconditional commit would fail there with "nothing to commit"
-          # and, under set -e, take the marker cleanup and the re-pin down with
-          # it.
-          if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
-            git commit --no-edit
-          elif ! git diff --cached --quiet; then
-            # No merge to make, but the cleanup above still staged something.
-            git commit -q -m "chore(fork): drop upstream-only workflows"
-          fi
-
-          # Last line of defence, before anything is pushed. GITHUB_TOKEN has no
-          # `workflows` permission, so a push that changes any
-          # .github/workflows file is rejected — the fork's own three included.
-          # A correct run leaves this diff empty: upstream-only workflows are
-          # already absent on both sides, and anything else (say upstream
-          # cleanly editing a file that shares a name with one of ours) is
-          # exactly what must stop here rather than fail at the push.
-          changed_workflows="$(git diff --name-only origin/main..HEAD -- .github/workflows)"
-          if [ -n "$changed_workflows" ]; then
-            printf '%s\n' "$changed_workflows"
-            # This is a human-intervention case, not a transient one: upstream
-            # has touched a workflow this fork keeps, and every subsequent run
-            # will stop here too. Raise the pill, or the sync fails on a two-hour
-            # loop that nobody is watching — the exact silence this pipeline
-            # exists to remove. Note HEAD carries the workflow change that cannot
-            # be pushed, so raise_marker's origin/main fallback is what usually
-            # lands here.
-            handled=true
-            raise_marker || true
-            echo "::error::The sync would push workflow changes, which GITHUB_TOKEN cannot. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
-            exit 1
-          fi
-
-      - name: Pin package versions to the official nightly
+          node scripts/fork-sync.ts merge
+          git push origin HEAD:main
+      - name: Clear the retired source-updater marker
         env:
-          NIGHTLY: ${{ needs.gate.outputs.nightly }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          # This step sits BETWEEN the merge and the push, so a failure here
-          # aborts the job with the merge made but main unpushed and no marker
-          # raised — the same silence the merge and push steps trap against.
-          #
-          # Unlike the gitlink the merge step's trap was added for, no NATURAL
-          # trigger for that is known here. The obvious candidate does not work:
-          # the manifest list below is hard-coded and `readFileSync` does throw
-          # ENOENT on a missing one, but upstream deleting a pinned manifest is
-          # a modify/delete conflict against the fork's own pin, so the merge
-          # step stops and raises the marker one step earlier (scenario e6).
-          # This trap is therefore defence in depth for the unanticipated — a
-          # clean merge that yields malformed JSON, a future edit to that list —
-          # not a fix for a demonstrated reachable bug. It is tested with an
-          # injected failure (scenario e7).
-          #
-          # Three inline copies of the helper rather than a shared script: a
-          # GitHub step is its own shell, and a helper file under
-          # .github/workflows/ would be deleted by this very workflow and could
-          # not be pushed by GITHUB_TOKEN anyway.
-          raise_marker() {
-            if git push origin HEAD:refs/heads/needs-merge-help --force; then
-              return 0
-            fi
-            if git push origin "$(git rev-parse origin/main)":refs/heads/needs-merge-help --force; then
-              return 0
-            fi
-            echo "::error::Could not raise the needs-merge-help marker, so no in-app pill will appear; this red run is the only notice."
-            return 1
-          }
-          # No `handled` flag here, unlike the other two steps: this one has no
-          # explicit non-zero exit whose own diagnostic would need to win.
-          on_unexpected_exit() {
-            status=$?
-            if [ "$status" -ne 0 ]; then
-              raise_marker || true
-              # Deliberately not worded as a merge conflict: the merge itself
-              # succeeded, and what needs a human here is the version pin.
-              echo "::error::The sync merged upstream but could not re-pin the nightly version, so main was not pushed. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
-            fi
-            exit "$status"
-          }
-          trap on_unexpected_exit EXIT
-          if [[ -z "$NIGHTLY" ]]; then
-            echo "No nightly version resolved; skipping pin."
-            exit 0
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/needs-merge-help" >/dev/null 2>&1; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/needs-merge-help"
           fi
-          node -e '
-            const fs = require("fs");
-            const version = process.env.NIGHTLY;
-            for (const file of [
-              "apps/desktop/package.json",
-              "apps/server/package.json",
-              "apps/web/package.json",
-              "packages/contracts/package.json",
-            ]) {
-              const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
-              if (manifest.version === version) continue;
-              manifest.version = version;
-              fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n");
-            }
-          '
-          if ! git diff --quiet; then
-            git commit -am "chore(fork): pin nightly $NIGHTLY"
-          fi
-
-      - id: push
-        name: Push main and clear the conflict marker
+      - name: Explain a stopped sync
+        if: failure()
         run: |
-          set -euo pipefail
-          # Raise the marker branch the in-app updater watches, and say so
-          # loudly when we cannot. Two candidates, in order: our own HEAD, which
-          # points at the work that needs help; then the commit origin/main
-          # already holds, whose workflow files GitHub has accepted by
-          # definition — needed because a HEAD carrying a workflow change is
-          # exactly what GITHUB_TOKEN may not push. The updater only tests that
-          # the branch exists, so either one raises the pill. Never let a failed
-          # marker push end the step through set -e: the diagnostic below is the
-          # only notice anyone gets.
-          raise_marker() {
-            if git push origin HEAD:refs/heads/needs-merge-help --force; then
-              return 0
-            fi
-            if git push origin "$(git rev-parse origin/main)":refs/heads/needs-merge-help --force; then
-              return 0
-            fi
-            echo "::error::Could not raise the needs-merge-help marker, so no in-app pill will appear; this red run is the only notice."
-            return 1
-          }
-
-          # Every way this step can die must still leave a pill. `set -e` over a
-          # long run of git commands means one unanticipated failure — a tree
-          # shape we did not foresee, a transient git error — would otherwise
-          # end the run with main unpushed, no marker, and nothing but a red
-          # check nobody is watching: precisely the silence this pipeline
-          # exists to remove. The sibling trap on the merge step was added
-          # after review found one such death there (a submodule gitlink under
-          # .github/workflows that `rm -f` could not remove); this one covers
-          # the same class here, where the only handled exit below is a refused
-          # push.
-          # Handled exits set `handled=true` first, so their own more specific
-          # diagnostic is the one that shows.
-          handled=false
-          on_unexpected_exit() {
-            status=$?
-            if [ "$status" -ne 0 ] && [ "$handled" != true ]; then
-              git merge --abort 2>/dev/null || true
-              raise_marker || true
-              echo "::error::The sync stopped on an unexpected error (exit $status). Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
-            fi
-            exit "$status"
-          }
-          trap on_unexpected_exit EXIT
-
-          # A refused push must raise the in-app pill, not just redden a run
-          # nobody is watching — that silence is the failure mode this whole
-          # pipeline exists to remove. The guards above catch the workflow case
-          # they can see; this covers whatever they cannot, including a
-          # server-side rejection of a workflow-touching commit somewhere in the
-          # range if GitHub judges pushes that way.
-          if ! git push origin main; then
-            handled=true
-            raise_marker || true
-            # Deliberately not worded as a conflict: a refused push is also how
-            # a non-fast-forward race, branch protection or a transport failure
-            # arrives here, and the marker cannot tell them apart.
-            echo "::error::The sync could not push main. Open Claude Code in the T3 Code folder on any computer and say: finish the upstream merge."
-            exit 1
-          fi
-          git push origin :refs/heads/needs-merge-help 2>/dev/null || true
-          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo 'The official nightly could not be integrated. Review this run before publishing; the installed app keeps its last successful build.' >> "$GITHUB_STEP_SUMMARY"
 
   release:
-    name: Publish the synced personal Windows app
-    needs: sync
+    name: Publish the personal Windows update
+    needs: [gate, sync]
+    # Also retries a failed publish when the nightly was already integrated.
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.gate.outputs.release == 'true' && (needs.sync.result == 'success' || needs.sync.result == 'skipped') }}
     uses: ./.github/workflows/fork-release.yml
     with:
-      ref: ${{ needs.sync.outputs.ref }}
+      ref: ${{ needs.sync.outputs.ref || needs.gate.outputs.ref }}
     permissions:
       contents: write
 
-  # Same reason the desktop release is called rather than left to a push
-  # trigger: this job's push used GITHUB_TOKEN, and GitHub does not fire `push`
-  # workflows for those, so the iPhone OTA would otherwise never see a merge
-  # the robot made.
   mobile:
     name: Publish the synced iPhone update
     needs: sync
+    # GITHUB_TOKEN pushes do not start push workflows, so call this explicitly.
     uses: ./.github/workflows/fork-mobile-preview.yml
     with:
       ref: ${{ needs.sync.outputs.ref }}

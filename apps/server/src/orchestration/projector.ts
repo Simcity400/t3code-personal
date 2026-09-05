@@ -57,36 +57,20 @@ export function retainThreadActivities(activities: OrchestrationThread["activiti
     }
   }
   const pendingActivities = new Set(pending.values());
-  // Keep the same bounded agent lifecycle anchors as database snapshots.
-  // Identity and the last explicit state must outlive the work-log window.
-  const agentIds = new Map<string, true>();
   for (const activity of activities) {
-    if (!activity.kind.startsWith("task.") || !Predicate.isObject(activity.payload)) continue;
-    const { taskId, agentKind } = activity.payload;
-    if (typeof taskId !== "string" || agentKind !== "agent") continue;
-    agentIds.delete(taskId);
-    agentIds.set(taskId, true);
-  }
-  const retainedAgentIds = new Set(Array.from(agentIds.keys()).slice(-100));
-  const firstByAgent = new Map<string, OrchestrationThread["activities"][number]>();
-  const latestByKind = new Map<string, OrchestrationThread["activities"][number]>();
-  const latestByField = new Map<string, OrchestrationThread["activities"][number]>();
-  for (const activity of activities) {
-    if (!activity.kind.startsWith("task.") || !Predicate.isObject(activity.payload)) continue;
-    const taskId = activity.payload.taskId;
-    if (typeof taskId !== "string" || !retainedAgentIds.has(taskId)) continue;
-    if (!firstByAgent.has(taskId)) firstByAgent.set(taskId, activity);
-    latestByKind.set(JSON.stringify([taskId, activity.kind]), activity);
-    // Independent patches must survive each other: progress need not carry
-    // usage, a model update need not carry status, and prompts arrive alone.
-    for (const [field, value] of Object.entries(activity.payload)) {
-      if (field !== "taskId" && field !== "agentKind" && value != null)
-        latestByField.set(JSON.stringify([taskId, field]), activity);
+    if (activity.kind === "task.state") pendingActivities.add(activity);
+    // Instructions are conversation history, not disposable work-log progress.
+    if (!Predicate.isObject(activity.payload)) continue;
+    const payload = activity.payload;
+    if (
+      (activity.kind.startsWith("task.") && typeof payload.prompt === "string") ||
+      (activity.kind.startsWith("tool.") &&
+        (payload.itemType === "collab_agent_tool_call" ||
+          (payload.itemType === "user_message" && typeof payload.agentId === "string")))
+    ) {
+      pendingActivities.add(activity);
     }
   }
-  for (const activity of firstByAgent.values()) pendingActivities.add(activity);
-  for (const activity of latestByKind.values()) pendingActivities.add(activity);
-  for (const activity of latestByField.values()) pendingActivities.add(activity);
   return activities.filter(
     (activity, index) => index >= recentStart || pendingActivities.has(activity),
   );

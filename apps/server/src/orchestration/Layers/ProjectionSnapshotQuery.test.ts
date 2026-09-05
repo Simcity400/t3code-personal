@@ -1,3 +1,5 @@
+import { selectSubagentTranscriptMessages } from "../../../../../packages/client-runtime/src/state/subagentRuntime.ts";
+import { updateTaskState } from "../taskState.ts";
 import {
   CheckpointRef,
   EventId,
@@ -2773,55 +2775,33 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
             '{"taskId":"reviewer","agentKind":"agent","model":"gpt-5-codex"}',
             3, '2026-03-02T00:00:03.000Z')
       `;
-      const independentPatches = [
-        {
-          id: "usage",
-          kind: "task.progress",
+      const state = updateTaskState(undefined, {
+        id: asEventId("state-source"),
+        kind: "task.updated",
+        tone: "info",
+        summary: "Reviewer",
+        turnId: null,
+        createdAt: "2026-03-02T00:00:04.000Z",
+        payload: {
           taskId: "reviewer",
-          usageSnapshot: true,
+          toolUseId: "launch-reviewer",
+          taskType: "subagent",
+          title: "Reviewer",
+          status: "idle",
+          model: "gpt-5-codex",
           typedUsage: { totalTokens: 1234 },
         },
-        {
-          id: "progress",
-          kind: "task.progress",
-          taskId: "reviewer",
-          summary: "Checking the latest change",
-        },
-        {
-          id: "prompt",
-          kind: "task.updated",
-          taskId: "reviewer",
-          prompt: "Review implementation",
-          promptId: "prompt-1",
-        },
-        { id: "title", kind: "task.updated", taskId: "reviewer", title: "Updated reviewer" },
-        { id: "second-start", kind: "task.started", taskId: "second", title: "Second reviewer" },
-        {
-          id: "second-progress",
-          kind: "task.progress",
-          taskId: "second",
-          summary: "Checking another change",
-        },
-        {
-          id: "second-usage",
-          kind: "task.progress",
-          taskId: "second",
-          usageSnapshot: true,
-          typedUsage: { totalTokens: 4321 },
-        },
-      ];
-      for (const [index, { id, kind, ...payload }] of independentPatches.entries()) {
-        // @effect-diagnostics-next-line preferSchemaOverJson:off
-        const payloadJson = JSON.stringify({ ...payload, agentKind: "agent" });
-        yield* sql`
-          INSERT INTO projection_thread_activities (
-            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
-          ) VALUES (
-            ${id}, ${threadId}, NULL, 'info', ${kind}, ${id},
-            ${payloadJson}, ${index + 4}, '2026-03-02T00:00:04.000Z'
-          )
-        `;
-      }
+      });
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      const stateJson = JSON.stringify(state);
+      yield* sql`INSERT INTO projection_thread_activities (
+        activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+      ) VALUES ('agent-state', ${threadId}, NULL, 'info', 'task.state', 'Reviewer', ${stateJson}, 4, '2026-03-02T00:00:04.000Z')`;
+      yield* sql`INSERT INTO projection_thread_activities (
+        activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+      ) VALUES
+        ('launch-reviewer', ${threadId}, NULL, 'info', 'tool.completed', 'Agent', '{"itemId":"launch-reviewer","itemType":"collab_agent_tool_call","data":{"toolName":"Agent","input":{"name":"security-reviewer","prompt":"Review security."}}}', 5, '2026-03-02T00:00:04.000Z'),
+        ('follow-reviewer', ${threadId}, NULL, 'info', 'tool.completed', 'SendMessage', '{"itemId":"follow-reviewer","itemType":"collab_agent_tool_call","data":{"toolName":"SendMessage","input":{"to":"security-reviewer","message":"Check recovery too."}}}', 6, '2026-03-02T00:00:05.000Z')`;
       yield* sql`
         WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 510)
         INSERT INTO projection_thread_activities (
@@ -2836,15 +2816,14 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
       assert.equal(snapshot._tag, "Some");
       if (raw._tag !== "Some" || snapshot._tag !== "Some") return;
       for (const activities of [raw.value.activities, snapshot.value.thread.activities]) {
-        assert.equal(activities.filter((row) => row.kind === "tool.completed").length, 500);
+        assert.deepEqual(
+          selectSubagentTranscriptMessages([], activities, "reviewer").map((row) => row.text),
+          ["Review security.", "Check recovery too."],
+        );
+        assert.equal(activities.filter((row) => row.kind === "tool.completed").length, 502);
         assert.deepEqual(
           activities.filter((row) => row.kind.startsWith("task.")).map((row) => row.id),
-          [
-            "agent-retention-start",
-            "agent-retention-idle",
-            "agent-retention-metadata",
-            ...independentPatches.map((row) => row.id),
-          ],
+          ["agent-state"],
         );
       }
     }),

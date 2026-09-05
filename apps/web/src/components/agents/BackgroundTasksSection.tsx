@@ -1,3 +1,4 @@
+import { TaskStopButton } from "./TaskControls";
 /**
  * The Agents panel's background-task surface: a "Waiting on" strip and a
  * "Tasks" section, both derived from the same durable activity stream as the
@@ -183,8 +184,9 @@ function TaskRow({ task, ownerLabel }: { task: RuntimeBackgroundTask; ownerLabel
       <span className="col-start-3 row-start-1 min-w-0 truncate font-mono text-xs">
         {task.label}
       </span>
-      <span className="col-start-4 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
+      <span className="col-start-4 row-start-1 flex min-w-14 items-center text-right font-mono text-[.7rem] text-muted-foreground/80">
         <TaskElapsed startedAt={task.startedAt} endedAt={frozenAt} live={live} />
+        <TaskStopButton taskId={task.id} label={task.label} active={live} />
       </span>
       <span
         className={cn(
@@ -320,10 +322,7 @@ export function BackgroundTasksSection({ model }: { model: BackgroundTasksPanelM
   // one that only appears under Finished. Deriving this from the visible
   // groups alone dropped the owner from finished rows whenever main happened
   // to own all the live work.
-  const showOwners =
-    model.groups.length > 1 ||
-    model.groups.some((group) => group.ownerId !== null) ||
-    model.finished.some((entry) => entry.task.ownerAgentId !== null);
+  const showOwners = true;
   const visibleCount = model.groups.reduce((total, group) => total + group.tasks.length, 0);
 
   return (

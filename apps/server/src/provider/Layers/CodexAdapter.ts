@@ -2546,6 +2546,15 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     startSession,
     sendTurn,
     interruptTurn,
+    stopTask: (threadId, taskId) =>
+      requireSession(threadId).pipe(
+        Effect.flatMap((session) => session.runtime.interruptTurn(undefined, taskId)),
+        Effect.mapError((cause) =>
+          cause._tag === "ProviderAdapterSessionNotFoundError"
+            ? cause
+            : mapCodexRuntimeError(threadId, "task/stop", cause),
+        ),
+      ),
     readThread,
     rollbackThread,
     uploadFeedback,

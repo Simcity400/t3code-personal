@@ -1,5 +1,6 @@
+import { TaskControls, TaskStopButton } from "./agents/TaskControls";
 /**
- * Agents right-panel surface: the fleet view over the native subagent fold,
+ * Agents right-panel surface: the fleet view over server-owned task state,
  * and the ONLY place the roster renders (the chat carries one CTA row per
  * spawn batch).
  *
@@ -51,15 +52,7 @@ import type {
   TimestampFormat,
 } from "@t3tools/contracts";
 import { ArrowLeft, Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
-import {
-  createContext,
-  use,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type MutableRefObject,
-} from "react";
+import { createContext, use, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   BackgroundTasksSection,
@@ -81,6 +74,7 @@ import type { TurnDiffSummary } from "~/types";
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import type { ExpandedImagePreview } from "~/components/chat/ExpandedImagePreview";
 import { MessagesTimeline } from "~/components/chat/MessagesTimeline";
 import { Button } from "~/components/ui/button";
 
@@ -245,44 +239,51 @@ function AgentRow({ agent, onOpen }: { agent: RuntimeSubagent; onOpen: () => voi
   ].filter((value): value is string => value !== null);
 
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="grid h-[3.875rem] w-full grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/40"
-      aria-label={`Open ${title} transcript`}
-    >
-      <span className="col-start-1 row-start-1 flex items-center">
-        <StatusDot status={agent.status} />
-      </span>
-      <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
-        <span className="min-w-0 truncate text-sm font-medium">{title}</span>
-        {role ? (
-          <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
-            {role}
-          </span>
-        ) : null}
-      </span>
-      <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
-        <span className="inline-flex items-center gap-1">
-          <AgentElapsed agent={agent} />
-          {agent.status === "completed" ? (
-            <Check aria-hidden className="size-3 text-success" />
+    <div className="flex min-w-0 items-center">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="grid h-[3.875rem] min-w-0 flex-1 grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/40"
+        aria-label={`Open ${title} transcript`}
+      >
+        <span className="col-start-1 row-start-1 flex items-center">
+          <StatusDot status={agent.status} />
+        </span>
+        <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
+          <span className="min-w-0 truncate text-sm font-medium">{title}</span>
+          {role ? (
+            <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
+              {role}
+            </span>
           ) : null}
         </span>
-      </span>
-      <span
-        className={cn(
-          "col-start-2 col-end-4 row-start-2 block truncate text-xs",
-          agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
-        )}
-      >
-        {activity ?? visuals.label}
-      </span>
-      <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
-        {metadata.join(" · ")}
-      </span>
-      <span className="sr-only">{visuals.label}</span>
-    </button>
+        <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
+          <span className="inline-flex items-center gap-1">
+            <AgentElapsed agent={agent} />
+            {agent.status === "completed" ? (
+              <Check aria-hidden className="size-3 text-success" />
+            ) : null}
+          </span>
+        </span>
+        <span
+          className={cn(
+            "col-start-2 col-end-4 row-start-2 block truncate text-xs",
+            agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
+          )}
+        >
+          {activity ?? visuals.label}
+        </span>
+        <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
+          {metadata.join(" · ")}
+        </span>
+        <span className="sr-only">{visuals.label}</span>
+      </button>
+      <TaskStopButton
+        taskId={agent.id}
+        label={title}
+        active={isActiveSubagentStatus(agent.status)}
+      />
+    </div>
   );
 }
 
@@ -790,6 +791,8 @@ function AgentTranscript({
   onFileDownload,
   onUseArtifactTemplate,
   onCiteAssistantText,
+  onImageExpand,
+  loadEarlier,
 }: {
   agent: RuntimeSubagent;
   /** The whole roster: nested-agent rows read their live state from it, the
@@ -802,6 +805,10 @@ function AgentTranscript({
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
+  loadEarlier?:
+    | { loading: boolean; onLoadEarlier: () => void; cursor?: string | null }
+    | null
+    | undefined;
   onBack: () => void;
   /** Opens another agent's transcript (a nested spawn row, or a reply header). */
   onOpenAgent: (agentId: string) => void;
@@ -811,6 +818,7 @@ function AgentTranscript({
    * produced is drawn but dead on click, and its text cannot be cited —
    * identical-looking rows that quietly do less.
    */
+  onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
   onFileOpen?: ((attachment: ChatFileAttachment) => void) | undefined;
   onFileDownload?: ((attachment: ChatFileAttachment) => void) | undefined;
   onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
@@ -920,6 +928,7 @@ function AgentTranscript({
         <span className="text-[.65rem] text-muted-foreground">
           {STATUS_VISUALS[agent.status].label}
         </span>
+        <TaskStopButton taskId={agent.id} label={title} active={isWorking} />
         {/* The same meter the main chat shows, on this agent's own window. */}
         {contextWindow ? (
           <ContextWindowMeter usage={contextWindow} modelDisplayName={agent.model} />
@@ -928,6 +937,7 @@ function AgentTranscript({
       <div className="relative min-h-0 flex-1">
         <MessagesTimeline
           key={agent.id}
+          loadEarlier={loadEarlier ?? null}
           isWorking={isWorking}
           activeTurnStartedAt={isWorking ? (agent.startedAt ?? agent.firstSeenAt) : null}
           listRef={listRef}
@@ -951,7 +961,7 @@ function AgentTranscript({
           revertTurnCountByUserMessageId={EMPTY_REVERT_COUNTS}
           onRevertUserMessage={NOOP_REVERT}
           isRevertingCheckpoint={false}
-          onImageExpand={NOOP_IMAGE_EXPAND}
+          onImageExpand={onImageExpand ?? NOOP_IMAGE_EXPAND}
           activeThreadEnvironmentId={threadRef.environmentId}
           markdownCwd={cwd}
           resolvedTheme={resolvedTheme}
@@ -988,7 +998,7 @@ function AgentTranscript({
   );
 }
 
-export function AgentsPanel({
+function AgentsPanelContent({
   model,
   environmentId = null,
   threadId = null,
@@ -999,13 +1009,14 @@ export function AgentsPanel({
   skills = [],
   resolvedTheme = "light",
   timestampFormat = "locale",
-  selectedAgentIdRef,
   requestedAgentId = null,
   onRequestedAgentHandled,
   onFileOpen,
   onFileDownload,
   onUseArtifactTemplate,
   onCiteAssistantText,
+  onImageExpand,
+  loadEarlier,
   tasksModel = emptyBackgroundTasksPanelModel(),
   waits = EMPTY_AGENT_WAITS,
 }: {
@@ -1019,8 +1030,10 @@ export function AgentsPanel({
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   resolvedTheme?: "light" | "dark";
   timestampFormat?: TimestampFormat;
-  /** Reported to the owner's fold so the open transcript survives roster-cap eviction. */
-  selectedAgentIdRef?: MutableRefObject<string | null>;
+  loadEarlier?:
+    | { loading: boolean; onLoadEarlier: () => void; cursor?: string | null }
+    | null
+    | undefined;
   /**
    * Agent to open directly, set when the chat asks for one (clicking a
    * "From <agent>" reply). Cleared through `onRequestedAgentHandled` so the
@@ -1034,6 +1047,7 @@ export function AgentsPanel({
    * produced is drawn but dead on click, and its text cannot be cited —
    * identical-looking rows that quietly do less.
    */
+  onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
   onFileOpen?: ((attachment: ChatFileAttachment) => void) | undefined;
   onFileDownload?: ((attachment: ChatFileAttachment) => void) | undefined;
   onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
@@ -1051,16 +1065,7 @@ export function AgentsPanel({
     setSelectedAgentId(requestedAgentId);
     onRequestedAgentHandled?.();
   }, [onRequestedAgentHandled, requestedAgentId]);
-  useEffect(() => {
-    if (selectedAgentIdRef) {
-      selectedAgentIdRef.current = selectedAgentId;
-    }
-    return () => {
-      if (selectedAgentIdRef) {
-        selectedAgentIdRef.current = null;
-      }
-    };
-  }, [selectedAgentId, selectedAgentIdRef]);
+
   const [idleOpen, setIdleOpen] = useState(true);
   const [workflowOpenById, setWorkflowOpenById] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(model.workflows.map((group) => [group.workflow.id, workflowIsLive(group)])),
@@ -1158,6 +1163,8 @@ export function AgentsPanel({
         skills={skills}
         resolvedTheme={resolvedTheme}
         timestampFormat={timestampFormat}
+        loadEarlier={loadEarlier}
+        onImageExpand={onImageExpand}
         onBack={() => setSelectedAgentId(null)}
         onOpenAgent={setSelectedAgentId}
         {...(onFileOpen ? { onFileOpen } : {})}
@@ -1248,5 +1255,13 @@ export function AgentsPanel({
         </footer>
       </div>
     </AgentContextWindowCtx>
+  );
+}
+
+export function AgentsPanel(props: Parameters<typeof AgentsPanelContent>[0]) {
+  return (
+    <TaskControls activities={props.activities ?? []} threadRef={props.threadRef}>
+      <AgentsPanelContent {...props} />
+    </TaskControls>
   );
 }

@@ -1,3 +1,4 @@
+import { projectTaskActivity } from "./taskState.ts";
 import {
   CommandId,
   EventId,
@@ -1017,12 +1018,20 @@ it.each([true, false])(
       prompt,
       identity,
     ];
-    let activities: Parameters<typeof retainThreadActivities>[0] = anchors;
+    let snapshots: Parameters<typeof retainThreadActivities>[0] = [];
+    for (const activity of anchors) {
+      const updates = projectTaskActivity(ThreadId.make("test"), snapshots, activity);
+      snapshots = [
+        ...snapshots.filter((row) => !updates.some((update) => update.id === row.id)),
+        ...updates,
+      ];
+    }
+    let activities: Parameters<typeof retainThreadActivities>[0] = [...anchors, ...snapshots];
     for (let index = 0; index < 1000; index++)
       activities = retainThreadActivities(
         activities.concat(row("work-" + index, "tool.completed", {})),
       );
-    expect(activities.slice(0, anchors.length)).toEqual(anchors);
-    expect(activities.length).toBe(500 + anchors.length);
+    expect(activities.slice(0, 2)).toEqual([prompt, ...snapshots]);
+    expect(activities.length).toBe(502);
   },
 );

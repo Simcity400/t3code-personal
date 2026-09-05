@@ -2522,24 +2522,15 @@ function ChatViewContent(props: ChatViewProps) {
     [threadActivities],
   );
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
-  // Native subagent fold: memoized by activity-list identity, shared by the
-  // Agents surface, live strip, and workflow cards. v2Projection is null
-  // until orchestration-v2 lands (source precedence lives in the derive).
-  // sessionLive derives interruption for agents orphaned by session death.
+  // Both clients select the same server-maintained roster.
   const agentSessionLive = phase !== "disconnected";
-  const agentsPanelSelectedIdRef = useRef<string | null>(null);
-  const agentPanelModel = useMemo(() => {
-    const openAgentId = agentsPanelSelectedIdRef.current;
-    return deriveAgentPanelModel({
-      agents: foldSubagentActivities(threadActivities, {
-        sessionLive: agentSessionLive,
-        // Read at fold time: the panel reports its open transcript id
-        // through this ref so a roster-cap eviction can never slam the
-        // transcript shut mid-read.
-        ...(openAgentId ? { protectedAgentIds: [openAgentId] } : {}),
+  const agentPanelModel = useMemo(
+    () =>
+      deriveAgentPanelModel({
+        agents: foldSubagentActivities(threadActivities, { sessionLive: agentSessionLive }),
       }),
-    });
-  }, [agentSessionLive, threadActivities]);
+    [agentSessionLive, threadActivities],
+  );
   // The panel's own flatten, reused rather than repeated: the roster must be
   // the same set here, in the title map, and in the Agents panel.
   const rosterAgents = useMemo(() => flattenAgentPanelRoster(agentPanelModel), [agentPanelModel]);
@@ -7963,6 +7954,8 @@ function ChatViewContent(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
+        onImageExpand={onExpandTimelineImage}
+        loadEarlier={loadEarlierTurns}
         model={agentPanelModel}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
@@ -7973,7 +7966,6 @@ function ChatViewContent(props: ChatViewProps) {
         skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
         resolvedTheme={resolvedTheme}
         timestampFormat={timestampFormat}
-        selectedAgentIdRef={agentsPanelSelectedIdRef}
         requestedAgentId={requestedAgentId}
         onRequestedAgentHandled={clearRequestedAgent}
         onFileOpen={openFileAttachment}

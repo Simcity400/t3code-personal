@@ -11,6 +11,7 @@ const { autoUpdaterMock } = vi.hoisted(() => ({
     channel: "latest",
     disableDifferentialDownload: false,
     fullChangelog: false,
+    isUpdateSupported: () => true,
     checkForUpdates: vi.fn(() => Promise.resolve(null)),
     downloadUpdate: vi.fn(() => Promise.resolve([])),
     on: vi.fn(),
