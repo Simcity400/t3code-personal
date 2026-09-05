@@ -49,6 +49,22 @@ const model = (slug: string, isCustom = false, isDefault = false) => ({
 });
 
 describe("isProviderInstancePickerReady", () => {
+  it("keeps models selectable with verified authentication and a health-check warning", () => {
+    const snapshot = provider({
+      provider: ProviderDriverKind.make("codex"),
+      instanceId: "codex",
+      status: "warning",
+    });
+    const [entry] = deriveProviderInstanceEntries([snapshot]);
+    expect(entry && isProviderInstancePickerReady(entry)).toBe(true);
+    const [unknown] = deriveProviderInstanceEntries([{ ...snapshot, auth: { status: "unknown" } }]);
+    expect(unknown && isProviderInstancePickerReady(unknown)).toBe(false);
+    const [signedOut] = deriveProviderInstanceEntries([
+      { ...snapshot, auth: { status: "unauthenticated" } },
+    ]);
+    expect(signedOut && isProviderInstancePickerReady(signedOut)).toBe(false);
+  });
+
   it("rejects a disabled instance even while its last probe status is ready", () => {
     const [entry] = deriveProviderInstanceEntries([
       provider({
