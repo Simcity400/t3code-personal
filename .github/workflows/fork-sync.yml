@@ -49,14 +49,14 @@ jobs:
     outputs:
       ref: ${{ steps.merge.outputs.ref }}
     steps:
+      # A full clone on purpose: sparse-checkout makes this a blob-less partial
+      # clone whose promisor is origin, and merging the official tag then fails
+      # to lazily fetch upstream-only blobs ("not our ref"). The gate job can
+      # stay sparse because it never merges.
       - uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
