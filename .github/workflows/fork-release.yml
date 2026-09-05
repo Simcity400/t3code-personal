@@ -4,7 +4,7 @@ name: Fork Release
 # publishes them as one GitHub prerelease on this repository. Packaged apps
 # point their electron-updater feed here (GITHUB_REPOSITORY at build time), so
 # the in-app update button picks these releases up; the merged update manifest
-# lists both installers; the desktop adapter selects the installed CPU
+# lists both installers; the desktop adapter selects the native host CPU
 # architecture before electron-updater caches or downloads the update. Kept separate from upstream's release.yml to avoid merge
 # conflicts; that workflow needs T3's own secrets and runners and cannot run
 # on this fork.
@@ -157,6 +157,7 @@ jobs:
             scripts/fork-sync.test.ts \
             scripts/merge-update-manifests.test.ts \
             apps/desktop/src/updates/windowsUpdateSelection.test.ts \
+            apps/desktop/src/electron/ElectronUpdater.windows.test.ts \
             apps/server/src/provider/Layers/CodexSessionRuntime.test.ts \
             packages/client-runtime/src/state/subagentRuntime.test.ts
 
