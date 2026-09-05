@@ -12,7 +12,7 @@ The Agents roster survives reloading long conversations. Selecting a resumed age
 
 The **Idle** section remembers whether you collapsed or expanded it when you switch threads or reopen Agents during the same app session. Each thread and connected environment keeps its own choice.
 
-Agents use the name supplied by their provider. If the provider only supplies an ID, the opening line of the agent's assignment becomes its label when those instructions are available. The roster leaves out role badges to make more room for names.
+Agents use the name supplied by their provider. If the provider only supplies an ID, the opening line of the agent's assignment becomes its label when those instructions are available. The roster leaves out role badges and context percentages to make more room for names and activity. Select an agent to inspect its context usage in the transcript header.
 
 Transcripts are persisted with the thread. Agent work recorded before this feature was available may only show the existing status and summary information.
 

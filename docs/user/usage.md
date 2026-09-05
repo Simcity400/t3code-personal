@@ -5,6 +5,16 @@ environments. It reads the providers' local session history and shows API-equiva
 processed tokens, cache savings, provider shares, and model breakdowns. Subscription billing is
 separate from the raw token cost shown here.
 
+On web and desktop, click the circular context indicator beside the input controls to see the
+conversation's context usage and the selected account's plan limits, including percentages and
+reset dates and times in your local time zone, plus a countdown that updates each minute while
+the popover is open. Only windows reported by that account appear, including five-hour, weekly,
+model-specific weekly, or monthly limits. The indicator stays available when the input is
+collapsed or idle. Context usage shows **Not reported yet** until the provider supplies it;
+accounts without limit data show an
+explanation. **See detailed breakdown** opens the Usage page's Limits view. Manual context
+compaction remains available in this popover when supported.
+
 Grok Build totals come from persisted session updates. Interactive turns that never wrote a
 completed-turn record will not appear.
 
@@ -17,6 +27,26 @@ are ahead of, on, or under that pace. Hover a bar for the exact reset time. Limi
 provider health-check interval and update live while a turn runs. API-key accounts have no
 subscription windows and say so; that includes a Claude Code that reaches Anthropic through a proxy
 via `ANTHROPIC_AUTH_TOKEN`, since the CLI then treats itself as an API-key client.
+
+A Claude OAuth token can run conversations while lacking the profile access needed to read
+subscription usage. In that case, Limits explains that the current sign-in cannot read usage;
+it does not mean the account has no subscription. Previously reported limits remain visible
+through failed reads, and supported live updates can still refresh them.
+
+For a saved Claude login, run `/login` in the affected account's Claude configuration to renew
+its permissions. If that provider has `CLAUDE_CODE_OAUTH_TOKEN` configured, the token overrides
+the saved login. Current Claude versions assume that an environment token has only inference
+access unless `CLAUDE_CODE_OAUTH_SCOPES` supplies its scopes. A token that already has profile
+access needs its actual granted scopes supplied there, including `user:profile`; setting a
+scope does not grant permission to a token that lacks it. Alternatively, remove the token
+override and use a saved login with profile access. Keep separate Claude configurations for
+separate accounts so signing in to one does not switch the others. See Claude's
+[OAuth scope troubleshooting](https://code.claude.com/docs/en/errors#oauth-scope-requirement).
+T3 Code does not change account credentials automatically.
+
+The usage endpoint can also throttle reads independently of conversation usage. If it returns
+HTTP 429, wait for the indicated retry period before checking again; that response alone does
+not establish whether a token has profile access or whether a conversation limit is exhausted.
 
 When a provider refuses a turn because a limit was reached, the transcript shows the reason the
 provider returned. If you have another compatible account configured for that provider, select it

@@ -1,4 +1,4 @@
-import type { ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@t3tools/contracts";
 import {
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
   isClaudeResumeCompactionQuestion,
@@ -7,7 +7,6 @@ import {
   resolveSelectableProviderInstanceEntry,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
-import { getTriggerDisplayModelName, type ModelEsque } from "./providerIconUtils";
 
 export const CLAUDE_RESUME_COMPACTION_MINUTES = 70;
 export const CLAUDE_RESUME_COMPACTION_TOKENS = 100_000;
@@ -74,31 +73,4 @@ export function shouldOfferResumeCompaction(input: {
     Number.isFinite(now) &&
     now - updatedAt >= CLAUDE_RESUME_COMPACTION_MINUTES * 60_000
   );
-}
-
-export function resolveContextWindowModelDisplayName(
-  selection: ModelSelection | null | undefined,
-  modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>,
-): string | null {
-  if (!selection) {
-    return null;
-  }
-
-  const selectedModel = modelOptionsByInstance
-    .get(selection.instanceId)
-    ?.find((model) => model.slug === selection.model);
-
-  return selectedModel ? getTriggerDisplayModelName(selectedModel) : selection.model;
-}
-
-export function formatContextWindowCompactionMessage(
-  modelDisplayName: string | null | undefined,
-  autoCompactThreshold?: number | null,
-): string {
-  if (typeof autoCompactThreshold === "number" && autoCompactThreshold > 0) {
-    return `Compacts automatically at ${autoCompactThreshold.toLocaleString("en-US")} tokens.`;
-  }
-  return modelDisplayName
-    ? `Context for ${modelDisplayName} compacts automatically when needed.`
-    : "Context compacts automatically when needed.";
 }
