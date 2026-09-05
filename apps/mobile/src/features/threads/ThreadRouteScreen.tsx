@@ -11,6 +11,10 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
 import {
+  deriveAgentPanelModel,
+  foldSubagentActivities,
+} from "@t3tools/client-runtime/state/subagentRuntime";
+import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
@@ -200,6 +204,19 @@ function ThreadRouteContent(
     useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
+  const agentActivities = selectedThreadDetail?.activities;
+  const agentSessionStatus = selectedThreadDetail?.session?.status;
+  const liveAgentCount = useMemo(() => {
+    if (!agentActivities) return 0;
+    const sessionLive =
+      agentSessionStatus !== undefined &&
+      agentSessionStatus !== "stopped" &&
+      agentSessionStatus !== "interrupted" &&
+      agentSessionStatus !== "error";
+    return deriveAgentPanelModel({
+      agents: foldSubagentActivities(agentActivities, { sessionLive }),
+    }).liveCount;
+  }, [agentActivities, agentSessionStatus]);
   // "Load earlier turns" header state for windowed (paginated) thread loads.
   const loadEarlierTurns = useMemo(() => {
     if (selectedThread === null || !threadHasOlderTurns(selectedThreadDetailState)) {
@@ -901,6 +918,8 @@ function ThreadRouteContent(
           environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
           selectedThreadFeed={composer.selectedThreadFeed}
           activeWorkStartedAt={composer.activeWorkStartedAt}
+          liveAgentCount={liveAgentCount}
+          onOpenAgents={handleOpenAgents}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
           activePendingUserInput={requests.activePendingUserInput}

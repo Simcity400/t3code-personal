@@ -3,11 +3,10 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   deriveBackgroundTasksPanelModel,
   emptyBackgroundTasksPanelModel,
-  type AgentWaitState,
   type RuntimeBackgroundTask,
 } from "@t3tools/client-runtime/state/backgroundTasks";
 
-import { BackgroundTasksSection, WaitingOnStrip } from "./BackgroundTasksSection";
+import { BackgroundTasksSection } from "./BackgroundTasksSection";
 
 function task(overrides: Partial<RuntimeBackgroundTask> & { id: string }): RuntimeBackgroundTask {
   return {
@@ -31,17 +30,6 @@ function task(overrides: Partial<RuntimeBackgroundTask> & { id: string }): Runti
     ...overrides,
   };
 }
-
-const wait = (overrides: Partial<AgentWaitState>): AgentWaitState => ({
-  ownerId: null,
-  ownerLabel: "Main",
-  kind: "agents",
-  label: "Reviewer",
-  since: "2026-09-03T10:00:00.000Z",
-  blockingIds: [],
-  needsUser: false,
-  ...overrides,
-});
 
 describe("BackgroundTasksSection", () => {
   it("renders nothing when the thread has no background work", () => {
@@ -213,54 +201,5 @@ describe("BackgroundTasksSection", () => {
       />,
     );
     expect(markup).toContain("pnpm test --watch");
-  });
-});
-
-describe("WaitingOnStrip", () => {
-  it("renders nothing when nothing is blocked", () => {
-    expect(renderToStaticMarkup(<WaitingOnStrip waits={[]} />)).toBe("");
-  });
-
-  it("renders one arrow line per blocked owner", () => {
-    const markup = renderToStaticMarkup(
-      <WaitingOnStrip
-        waits={[
-          wait({ label: "Reviewer + 1 more agent" }),
-          wait({ ownerId: "ag-1", ownerLabel: "Reviewer", kind: "tasks", label: "cargo build" }),
-        ]}
-      />,
-    );
-    expect(markup).toContain("←");
-    expect(markup).toContain("Reviewer + 1 more agent");
-    expect(markup).toContain("cargo build");
-    // The row reads "Main -> is waiting on -> <blocker>" once. It previously
-    // repeated the whole sentence in sr-only text, so screen readers
-    // announced every row twice.
-    expect(markup).toContain('<span class="sr-only">is waiting on</span>');
-    expect(markup).not.toContain("Main is waiting on Reviewer + 1 more agent");
-  });
-
-  it("tints the strip only when the user is the one holding it up", () => {
-    const machine = renderToStaticMarkup(<WaitingOnStrip waits={[wait({})]} />);
-    expect(machine).not.toContain("border-warning/40");
-
-    const user = renderToStaticMarkup(
-      <WaitingOnStrip
-        waits={[wait({ kind: "approval", label: "Command approval", needsUser: true })]}
-      />,
-    );
-    expect(user).toContain("border-warning/40");
-    expect(user).toContain("Command approval");
-  });
-  it("prints the compacting wait as a machine wait", () => {
-    const markup = renderToStaticMarkup(
-      <WaitingOnStrip
-        waits={[wait({ kind: "compacting", label: "Compacting context", needsUser: false })]}
-      />,
-    );
-    expect(markup).toContain("Main");
-    expect(markup).toContain("Compacting context");
-    // No user action shortens a compaction, so the strip stays untinted.
-    expect(markup).not.toContain("border-warning/40");
   });
 });

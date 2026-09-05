@@ -3745,8 +3745,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         content: activityStackContent,
       }
     : null;
+  // Keep the working status and its agent controls ahead of task progress.
+  // Message sync still leads while the conversation is loading.
   const bannerStackItems = activityStackItem
-    ? [activityStackItem, ...props.bannerItems]
+    ? props.threadSyncPhase
+      ? [activityStackItem, ...props.bannerItems]
+      : [...props.bannerItems, activityStackItem]
     : props.bannerItems;
   useEffect(() => {
     if (activeTasksProgress === null || activeTaskSteps === null) {

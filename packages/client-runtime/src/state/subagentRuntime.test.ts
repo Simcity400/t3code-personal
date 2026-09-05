@@ -1,7 +1,11 @@
 import { projectedTaskActivities } from "./taskState.test-fixtures.ts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { AtomRegistry } from "effect/unstable/reactivity";
+import { scopedThreadKey } from "../environment/index.ts";
 import {
   classifyTaskAgentKind,
+  EnvironmentId,
+  ThreadId,
   type OrchestrationMessage,
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
@@ -14,6 +18,7 @@ import {
   formatSubagentModelLabel,
   formatSubagentTitle,
   formatSubagentTokenCount,
+  idleAgentsOpenAtom,
   isAgentAttributedToolActivity,
   isParentScopedActivity,
   isSubagentActivityKind,
@@ -79,6 +84,51 @@ function legacyActivity(
 function fold(rows: ReadonlyArray<OrchestrationThreadActivity>) {
   return foldSubagentActivities(rows);
 }
+
+describe("Idle agents disclosure", () => {
+  it("restores collapse and reopen choices across unmounts without affecting other threads or environments", () => {
+    vi.useFakeTimers();
+    const registry = AtomRegistry.make();
+    const firstKey = scopedThreadKey({
+      environmentId: EnvironmentId.make("local"),
+      threadId: ThreadId.make("first"),
+    });
+    const secondKey = scopedThreadKey({
+      environmentId: EnvironmentId.make("local"),
+      threadId: ThreadId.make("second"),
+    });
+    const remoteKey = scopedThreadKey({
+      environmentId: EnvironmentId.make("remote"),
+      threadId: ThreadId.make("first"),
+    });
+    try {
+      const leaveFirst = registry.mount(idleAgentsOpenAtom(firstKey));
+      expect(registry.get(idleAgentsOpenAtom(firstKey))).toBe(true);
+      registry.set(idleAgentsOpenAtom(firstKey), false);
+      leaveFirst();
+      vi.runAllTimers();
+
+      const leaveSecond = registry.mount(idleAgentsOpenAtom(secondKey));
+      expect(registry.get(idleAgentsOpenAtom(secondKey))).toBe(true);
+      registry.set(idleAgentsOpenAtom(secondKey), false);
+      leaveSecond();
+      vi.runAllTimers();
+
+      const leaveReopenedFirst = registry.mount(idleAgentsOpenAtom(firstKey));
+      expect(registry.get(idleAgentsOpenAtom(firstKey))).toBe(false);
+      registry.set(idleAgentsOpenAtom(firstKey), true);
+      leaveReopenedFirst();
+      vi.runAllTimers();
+
+      expect(registry.get(idleAgentsOpenAtom(firstKey))).toBe(true);
+      expect(registry.get(idleAgentsOpenAtom(secondKey))).toBe(false);
+      expect(registry.get(idleAgentsOpenAtom(remoteKey))).toBe(true);
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("formatSubagentTitle", () => {
   it("humanizes provider task keys and preserves familiar product casing", () => {
