@@ -1,4 +1,5 @@
 import { autoAnimate } from "@formkit/auto-animate";
+import { isListedThread } from "@t3tools/client-runtime/state/threads";
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
@@ -2178,7 +2179,7 @@ export default function Sidebar() {
     const visible = threads.filter(
       (thread) =>
         thread.archivedAt === null &&
-        (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null) &&
+        isListedThread(thread) &&
         (scopedProjectKeys === null ||
           scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
     );

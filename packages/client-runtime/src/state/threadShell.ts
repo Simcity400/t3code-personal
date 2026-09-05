@@ -11,6 +11,7 @@ import { Atom } from "effect/unstable/reactivity";
 
 import type { EnvironmentThreadShell } from "./models.ts";
 import { scopeThreadShell } from "./models.ts";
+import { isSideChatOf } from "./sideChat.ts";
 import type { EnvironmentCatalogState } from "./connections.ts";
 import {
   arrayElementsEqual,
@@ -182,9 +183,7 @@ export function createEnvironmentThreadShellAtoms(input: {
     return Atom.make((get) => {
       const next = get(threadShellsAtom).filter(
         (thread) =>
-          thread.environmentId === ref.environmentId &&
-          thread.forkedFromThreadId === ref.threadId &&
-          thread.sideChatPromotedAt == null,
+          thread.environmentId === ref.environmentId && isSideChatOf(thread, ref.threadId),
       );
       if (arrayElementsEqual(previous, next)) {
         return previous;

@@ -1221,6 +1221,8 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }, intent?: ComposerSubmissionIntent) => void;
   onInterrupt: () => void;
+  /** `/side` chosen from the slash menu: the command text is cleared, then this opens the side chat. */
+  onOpenSideChat: () => void;
   onImplementPlanInNewThread: () => void;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
@@ -1319,6 +1321,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPageScrollRelease,
     onSend,
     onInterrupt,
+    onOpenSideChat,
     onImplementPlanInNewThread,
     onRespondToApproval,
     onSelectActivePendingUserInputOption,
@@ -1841,7 +1844,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           type: "slash-command",
           command: "side",
           label: "/side",
-          description: "Fork this conversation into a private side chat",
+          description: "Open a side chat in the panel, with this thread's context",
         },
         {
           id: "slash:model",
@@ -2623,6 +2626,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           }
           return;
         }
+        if (item.command === "side") {
+          // A bare `/side` + Enter lands here (the menu owns Enter while it is
+          // open). Clear the command and open the side chat directly instead of
+          // falling through to the plan/default mode switch below.
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+            focusEditorAfterReplace: false,
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
+            onOpenSideChat();
+          }
+          return;
+        }
         if (!planModeUiEnabled) return;
         void handleInteractionModeChange(item.command === "plan" ? "plan" : "default");
         const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
@@ -2673,6 +2690,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [
       applyPromptReplacement,
       handleInteractionModeChange,
+      onOpenSideChat,
       planModeUiEnabled,
       resolveActiveComposerTrigger,
     ],

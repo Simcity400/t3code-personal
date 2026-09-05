@@ -43,6 +43,10 @@ A single user-to-assistant work cycle inside a thread. It starts with user input
 
 A user-visible log item attached to a thread. In [the contracts][1], activities cover important non-message events like approvals, tool actions, and failures. They are projected into thread state in [projector.ts][4].
 
+#### Side chat
+
+A thread created with `forkedFromThreadId` set, whose provider session is a native fork of the parent's (Codex `thread/fork`, Claude `forkSession`). While `sideChatPromotedAt` is null it is hidden from thread lists and shown beside its parent as a right-panel surface on web; promotion stamps `sideChatPromotedAt` and turns it into an ordinary listed thread. The predicates live in `packages/client-runtime/src/state/sideChat.ts`; the fork itself is validated in `ProviderService.startSession`.
+
 ### Orchestration
 
 Orchestration is the server-side domain layer that turns runtime activity into stable app state. The main entry point is [OrchestrationEngine.ts][7], with core logic in [decider.ts][8] and [projector.ts][4].

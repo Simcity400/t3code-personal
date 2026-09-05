@@ -15,6 +15,7 @@ import {
   Files,
   GitPullRequest,
   Globe2,
+  MessagesSquare,
   Plus,
   TerminalSquare,
   Volume2,
@@ -111,6 +112,11 @@ interface RightPanelTabsProps {
   filesAvailable: boolean;
   pullRequestAvailable: boolean;
   agentsAvailable: boolean;
+  /** Creates a fresh side chat forked from this thread and opens it as a tab. */
+  onAddSideChat: () => void;
+  sideChatAvailable: boolean;
+  /** Tab labels for open side chats; a missing entry falls back to "Side chat". */
+  sideChatTitlesById?: ReadonlyMap<string, string>;
   pullRequestStatusSeeds?: Readonly<Record<string, PullRequestTabStatusSeed>>;
   /** Running + waiting subagents; badges the Agents card in the empty state. */
   liveAgentCount: number;
@@ -140,6 +146,7 @@ const SURFACE_DISABLED_REASONS = {
   diff: "Diff is only available for server threads in Git repositories.",
   pullRequest: "This thread's branch has no pull request yet.",
   agents: "Agents are only available from a thread.",
+  sideChat: "Send the first message before forking a side chat.",
 } as const;
 
 /** Overlays that must win over the launcher's letter shortcuts. */
@@ -162,6 +169,7 @@ const SURFACE_UNAVAILABLE_HINTS = {
   diff: "Available for Git repositories.",
   pullRequest: "No pull request on this branch yet.",
   agents: "Available from a thread.",
+  sideChat: "Available once the thread has started.",
 } as const;
 
 type TabContextMenuAction =
@@ -305,6 +313,8 @@ function RightPanelEmptyState(props: {
   filesAvailable: boolean;
   pullRequestAvailable: boolean;
   agentsAvailable: boolean;
+  onAddSideChat: () => void;
+  sideChatAvailable: boolean;
   liveAgentCount: number;
 }) {
   // -1 means no highlight: it only appears on hover or arrow use.
@@ -370,6 +380,16 @@ function RightPanelEmptyState(props: {
       disabledReason: SURFACE_UNAVAILABLE_HINTS.agents,
       onClick: props.onAddAgents,
       badgeCount: props.liveAgentCount,
+    },
+    {
+      label: "Side chat",
+      description: "Ask something aside, with this thread's context.",
+      icon: MessagesSquare,
+      shortcut: "S",
+      available: props.sideChatAvailable,
+      disabledReason: SURFACE_UNAVAILABLE_HINTS.sideChat,
+      onClick: props.onAddSideChat,
+      badgeCount: 0,
     },
   ] as const;
 
@@ -585,8 +605,11 @@ function surfaceTitle(
   surface: RightPanelSurface,
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>,
   terminalLabelsById: ReadonlyMap<string, string>,
+  sideChatTitlesById?: ReadonlyMap<string, string>,
 ): string {
   switch (surface.kind) {
+    case "side-chat":
+      return sideChatTitlesById?.get(surface.threadId) ?? "Side chat";
     case "diff":
       return "Diff";
     case "files":
@@ -685,6 +708,8 @@ function SurfaceIcon({
       );
     case "agents":
       return <Bot className="size-3 shrink-0" />;
+    case "side-chat":
+      return <MessagesSquare className="size-3 shrink-0" />;
   }
 }
 
@@ -813,6 +838,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       available: props.agentsAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.agents,
       onClick: props.onAddAgents,
+    },
+    {
+      label: "Side chat",
+      icon: MessagesSquare,
+      shortcut: "S",
+      available: props.sideChatAvailable,
+      disabledReason: SURFACE_DISABLED_REASONS.sideChat,
+      onClick: props.onAddSideChat,
     },
   ] as const;
 
@@ -1012,7 +1045,12 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             {props.surfaces.map((surface) => {
               const active = surface.id === props.activeSurfaceId;
               const pending = props.pendingSurfaceIds.has(surface.id);
-              const title = surfaceTitle(surface, props.previewSessions, props.terminalLabelsById);
+              const title = surfaceTitle(
+                surface,
+                props.previewSessions,
+                props.terminalLabelsById,
+                props.sideChatTitlesById,
+              );
               const previewTabId = previewTabIdOf(surface, props.previewSessions);
               // Desktop state is keyed by the session id, but desktop actions
               // must be addressed with the runtime id.
@@ -1247,6 +1285,8 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddFiles={props.onAddFiles}
             onAddPullRequest={props.onAddPullRequest}
             onAddAgents={props.onAddAgents}
+            onAddSideChat={props.onAddSideChat}
+            sideChatAvailable={props.sideChatAvailable}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}

@@ -2903,3 +2903,122 @@ describe("agent browser access", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
+
+const sideChatForks = makeProviderServiceLayer();
+sideChatForks.layer("ProviderServiceLive side-chat forks", (it) => {
+  const cursorInstanceId = ProviderInstanceId.make("cursor");
+
+  it.effect("forks a side chat from the parent's persisted continuation", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const parentId = asThreadId("thread-fork-parent");
+      const sideId = asThreadId("thread-fork-side");
+      yield* provider.startSession(parentId, {
+        providerInstanceId: codexInstanceId,
+        threadId: parentId,
+        cwd: "/tmp/project",
+        runtimeMode: "approval-required",
+      });
+      sideChatForks.codex.startSession.mockClear();
+
+      const session = yield* provider.startSession(sideId, {
+        providerInstanceId: codexInstanceId,
+        threadId: sideId,
+        cwd: "/tmp/project",
+        runtimeMode: "approval-required",
+        forkFromThreadId: parentId,
+      });
+
+      assert.equal(session.threadId, sideId);
+      const adapterInput = sideChatForks.codex.startSession.mock.calls[0]?.[0];
+      assert.equal(adapterInput?.forkFromThreadId, parentId);
+      assert.deepEqual(adapterInput?.resumeCursor, { opaque: `resume-${String(parentId)}` });
+    }),
+  );
+
+  it.effect("resumes a side chat's own continuation instead of forking twice", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const parentId = asThreadId("thread-refork-parent");
+      const sideId = asThreadId("thread-refork-side");
+      yield* provider.startSession(parentId, {
+        providerInstanceId: codexInstanceId,
+        threadId: parentId,
+        cwd: "/tmp/project",
+        runtimeMode: "approval-required",
+      });
+      yield* provider.startSession(sideId, {
+        providerInstanceId: codexInstanceId,
+        threadId: sideId,
+        cwd: "/tmp/project",
+        runtimeMode: "approval-required",
+        forkFromThreadId: parentId,
+      });
+      yield* sideChatForks.codex.stopSession(sideId);
+      sideChatForks.codex.startSession.mockClear();
+
+      yield* provider.startSession(sideId, {
+        providerInstanceId: codexInstanceId,
+        threadId: sideId,
+        cwd: "/tmp/project",
+        runtimeMode: "approval-required",
+        forkFromThreadId: parentId,
+      });
+
+      const adapterInput = sideChatForks.codex.startSession.mock.calls[0]?.[0];
+      assert.equal(adapterInput?.forkFromThreadId, undefined);
+      assert.deepEqual(adapterInput?.resumeCursor, { opaque: `resume-${String(parentId)}` });
+    }),
+  );
+
+  it.effect("rejects forks on providers without native fork support", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const parentId = asThreadId("thread-cursor-parent");
+      const sideId = asThreadId("thread-cursor-side");
+      yield* provider.startSession(parentId, {
+        providerInstanceId: cursorInstanceId,
+        threadId: parentId,
+        cwd: "/tmp/project",
+        runtimeMode: "approval-required",
+      });
+      sideChatForks.cursor.startSession.mockClear();
+
+      const error = yield* Effect.flip(
+        provider.startSession(sideId, {
+          providerInstanceId: cursorInstanceId,
+          threadId: sideId,
+          cwd: "/tmp/project",
+          runtimeMode: "approval-required",
+          forkFromThreadId: parentId,
+        }),
+      );
+
+      assert.instanceOf(error, ProviderValidationError);
+      assert.include(error.message, "does not support side-chat forks");
+      assert.equal(sideChatForks.cursor.startSession.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("rejects a fork whose parent has no provider continuation", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const sideId = asThreadId("thread-orphan-side");
+      sideChatForks.codex.startSession.mockClear();
+
+      const error = yield* Effect.flip(
+        provider.startSession(sideId, {
+          providerInstanceId: codexInstanceId,
+          threadId: sideId,
+          cwd: "/tmp/project",
+          runtimeMode: "approval-required",
+          forkFromThreadId: asThreadId("thread-never-started"),
+        }),
+      );
+
+      assert.instanceOf(error, ProviderValidationError);
+      assert.include(error.message, "provider continuation is unavailable");
+      assert.equal(sideChatForks.codex.startSession.mock.calls.length, 0);
+    }),
+  );
+});

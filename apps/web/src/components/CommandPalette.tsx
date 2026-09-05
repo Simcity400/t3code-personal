@@ -14,6 +14,7 @@ import {
   normalizePastedCloneUrl,
 } from "@t3tools/client-runtime/operations/projects";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
+import { isListedThread } from "@t3tools/client-runtime/state/threads";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/shared/threadReference";
 import {
@@ -1055,16 +1056,14 @@ function OpenCommandPaletteDialog(props: {
             threads.filter(
               (thread) =>
                 thread.archivedAt === null &&
-                (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null) &&
+                isListedThread(thread) &&
                 groupedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`),
             ),
             clientSettings.sidebarThreadSortOrder,
           )[0] ?? null)
         : getLatestThreadForProject(
             threads.filter(
-              (thread) =>
-                thread.environmentId === project.environmentId &&
-                (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+              (thread) => thread.environmentId === project.environmentId && isListedThread(thread),
             ),
             project.id,
             clientSettings.sidebarThreadSortOrder,
@@ -1866,9 +1865,7 @@ function OpenCommandPaletteDialog(props: {
       if (existing) {
         const latestThread = getLatestThreadForProject(
           threads.filter(
-            (thread) =>
-              thread.environmentId === existing.environmentId &&
-              (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+            (thread) => thread.environmentId === existing.environmentId && isListedThread(thread),
           ),
           existing.id,
           clientSettings.sidebarThreadSortOrder,

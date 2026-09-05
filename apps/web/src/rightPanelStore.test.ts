@@ -712,3 +712,76 @@ describe("rightPanelStore", () => {
     ).toEqual(["terminal:term-1", "browser:tab-b", "browser:tab-c"]);
   });
 });
+
+describe("side-chat surfaces", () => {
+  it("opens a side chat as its own tab and reactivates it on reopen", () => {
+    useRightPanelStore.getState().open(refA, "files");
+    useRightPanelStore.getState().openSideChat(refA, "side-1");
+    useRightPanelStore.getState().openSideChat(refA, "side-2");
+    useRightPanelStore.getState().openSideChat(refA, "side-1");
+
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.isOpen).toBe(true);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual([
+      "files",
+      "side-chat:side-1",
+      "side-chat:side-2",
+    ]);
+    expect(state.activeSurfaceId).toBe("side-chat:side-1");
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe(
+      "side-chat",
+    );
+  });
+
+  it("drops side-chat tabs whose thread is gone and keeps everything else", () => {
+    useRightPanelStore.getState().openSideChat(refA, "side-1");
+    useRightPanelStore.getState().openSideChat(refA, "side-2");
+    useRightPanelStore.getState().open(refA, "agents");
+    useRightPanelStore.getState().activateSurface(refA, "side-chat:side-2");
+
+    const before = useRightPanelStore.getState().byThreadKey;
+    useRightPanelStore.getState().reconcileSideChatSurfaces(refA, ["side-1", "side-2"]);
+    expect(useRightPanelStore.getState().byThreadKey).toBe(before);
+
+    useRightPanelStore.getState().reconcileSideChatSurfaces(refA, ["side-1"]);
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual(["side-chat:side-1", "agents"]);
+    expect(state.activeSurfaceId).toBe("agents");
+    expect(state.isOpen).toBe(true);
+  });
+
+  it("closes the panel when the last side chat is reconciled away", () => {
+    useRightPanelStore.getState().openSideChat(refB, "side-1");
+    useRightPanelStore.getState().reconcileSideChatSurfaces(refB, []);
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB)).toEqual({
+      isOpen: false,
+      activeSurfaceId: null,
+      surfaces: [],
+    });
+  });
+
+  it("drops malformed persisted side-chat surfaces during migration", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          "env-1:thread-A": {
+            isOpen: true,
+            activeSurfaceId: "side-chat:side-1",
+            surfaces: [
+              { id: "side-chat:side-1", kind: "side-chat", threadId: "side-1" },
+              { id: "side-chat:bogus", kind: "side-chat" },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "side-chat:side-1",
+          surfaces: [{ id: "side-chat:side-1", kind: "side-chat", threadId: "side-1" }],
+        },
+      },
+    });
+  });
+});

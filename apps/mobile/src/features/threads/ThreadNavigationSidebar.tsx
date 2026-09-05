@@ -7,6 +7,7 @@ import {
   type EnvironmentThreadSearchMatch,
 } from "@t3tools/client-runtime/state/thread-search";
 import { LegendList } from "@legendapp/list/react-native";
+import { isListedThread } from "@t3tools/client-runtime/state/threads";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
 import { type EnvironmentId, resolveEnvironmentMachineKind } from "@t3tools/contracts";
@@ -277,9 +278,7 @@ function ThreadNavigationSidebarPane(
     [projects, selectedProjectRefs],
   );
   const scopedThreads = useMemo(() => {
-    const visibleThreads = threads.filter(
-      (thread) => thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null,
-    );
+    const visibleThreads = threads.filter((thread) => isListedThread(thread));
     return selectedProjectRefs === null
       ? visibleThreads
       : visibleThreads.filter((thread) =>
@@ -460,7 +459,7 @@ function ThreadNavigationSidebarPane(
         (thread) =>
           thread.pinnedAt != null &&
           thread.archivedAt === null &&
-          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null) &&
+          isListedThread(thread) &&
           pinReorderEnvironmentIds.has(thread.environmentId),
       ),
     );
@@ -478,11 +477,7 @@ function ThreadNavigationSidebarPane(
         nextSnoozeWakeAt: null,
       };
     return buildThreadListV2Items({
-      threads: threads.filter(
-        (thread) =>
-          thread.archivedAt === null &&
-          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
-      ),
+      threads: threads.filter((thread) => thread.archivedAt === null && isListedThread(thread)),
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,

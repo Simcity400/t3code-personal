@@ -12,6 +12,7 @@ import {
   type EnvironmentThreadSearchMatch,
 } from "@t3tools/client-runtime/state/thread-search";
 import { sortPinnedThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
+import { isListedThread } from "@t3tools/client-runtime/state/threads";
 import {
   type EnvironmentId,
   resolveEnvironmentMachineKind,
@@ -347,9 +348,7 @@ export function HomeScreen(props: HomeScreenProps) {
     [props.projects, selectedProjectRefKeys],
   );
   const scopedThreads = useMemo(() => {
-    const visibleThreads = props.threads.filter(
-      (thread) => thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null,
-    );
+    const visibleThreads = props.threads.filter((thread) => isListedThread(thread));
     return selectedProjectRefKeys === null
       ? visibleThreads
       : visibleThreads.filter((thread) =>
@@ -633,7 +632,7 @@ export function HomeScreen(props: HomeScreenProps) {
         (thread) =>
           thread.pinnedAt != null &&
           thread.archivedAt === null &&
-          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null) &&
+          isListedThread(thread) &&
           pinReorderEnvironmentIds.has(thread.environmentId),
       ),
     );
@@ -654,9 +653,7 @@ export function HomeScreen(props: HomeScreenProps) {
     // "hidden from lists" meaning.
     return buildThreadListV2Items({
       threads: props.threads.filter(
-        (thread) =>
-          thread.archivedAt === null &&
-          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+        (thread) => thread.archivedAt === null && isListedThread(thread),
       ),
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,

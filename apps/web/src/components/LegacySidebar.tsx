@@ -23,6 +23,7 @@ import {
   useLinkedThreadPullRequest,
 } from "./ThreadStatusIndicators";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
+import { isListedThread } from "@t3tools/client-runtime/state/threads";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { useAtomValue } from "@effect/atom-react";
 import { autoAnimate } from "@formkit/auto-animate";
@@ -1309,11 +1310,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       });
     };
     const visibleProjectThreads = sortThreads(
-      projectThreads.filter(
-        (thread) =>
-          thread.archivedAt === null &&
-          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
-      ),
+      projectThreads.filter((thread) => thread.archivedAt === null && isListedThread(thread)),
       threadSortOrder,
     );
     const projectStatus = resolveProjectStatusIndicator(
@@ -3370,7 +3367,7 @@ export default function LegacySidebar() {
           thread.archivedAt === null &&
           // Unpromoted side chats stay out of the sidebar everywhere else
           // (sorting recency, jump slots); mirror that here.
-          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+          isListedThread(thread),
       ),
     [sidebarThreads],
   );
@@ -3411,9 +3408,7 @@ export default function LegacySidebar() {
       sortedProjects.flatMap((project) => {
         const projectThreads = sortThreads(
           (threadsByProjectKey.get(project.projectKey) ?? []).filter(
-            (thread) =>
-              thread.archivedAt === null &&
-              (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+            (thread) => thread.archivedAt === null && isListedThread(thread),
           ),
           sidebarThreadSortOrder,
         );

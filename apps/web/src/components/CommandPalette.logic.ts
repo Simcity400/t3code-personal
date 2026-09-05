@@ -4,6 +4,7 @@ import {
   THREAD_JUMP_KEYBINDING_COMMANDS,
 } from "@t3tools/contracts";
 import { filterFilesystemBrowseEntries } from "@t3tools/client-runtime/state/filesystem";
+import { isListedThread } from "@t3tools/client-runtime/state/threads";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
@@ -200,11 +201,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   limit?: number;
 }): CommandPaletteActionItem[] {
   const sortedThreads = sortThreads(
-    input.threads.filter(
-      (thread) =>
-        thread.archivedAt === null &&
-        (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
-    ),
+    input.threads.filter((thread) => thread.archivedAt === null && isListedThread(thread)),
     input.sortOrder,
   );
   const visibleThreads =
