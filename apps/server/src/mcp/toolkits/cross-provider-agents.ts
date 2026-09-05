@@ -64,7 +64,7 @@ export const CrossProviderAgentToolkit = Toolkit.make(
   Tool.make("t3_agent_send_input", {
     ...defaults,
     description:
-      "Send a prompt to an agent you own, or to 'parent'. Set interrupt to redirect it. Reuse requestKey on retry.",
+      "Send a prompt to an agent you own, or to 'parent'. Set interrupt to redirect an agent you own. Reuse requestKey on retry.",
     parameters: CrossAgentSendInput,
   })
     .annotate(Tool.OpenWorld, true)
