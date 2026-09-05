@@ -188,7 +188,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
     }),
   connectToOpenCodeServer: ({ serverUrl, serverPassword }) =>
     Effect.gen(function* () {
-      const url = serverUrl ?? "http://127.0.0.1:4301";
+      const url = serverUrl?.trim() || "http://127.0.0.1:4301";
       // Always register a finalizer so the closeCalls/closeError probes fire;
       // production attaches none for external servers.
       yield* Effect.addFinalizer(() =>
@@ -204,7 +204,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         version: "1.15.13",
         ...(serverPassword ? { serverPassword } : {}),
         exitCode: null,
-        external: Boolean(serverUrl),
+        external: Boolean(serverUrl?.trim()),
       };
     }),
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
@@ -441,7 +441,8 @@ const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory
 // the layer graph reach for it — but the routing values the assertions
 // probe (serverUrl, serverPassword) must be threaded directly through the
 // decoded `OpenCodeSettings`.
-const openCodeAdapterTestSettings = Schema.decodeSync(OpenCodeSettings)({
+const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
+const openCodeAdapterTestSettings = decodeOpenCodeSettings({
   binaryPath: "fake-opencode",
   serverUrl: "http://127.0.0.1:9999",
   serverPassword: "secret-password",
@@ -3244,6 +3245,28 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("cross-provider capability follows resolved OpenCode server ownership", () =>
+    Effect.gen(function* () {
+      for (const serverUrl of [undefined, "http://127.0.0.1:9999"] as const) {
+        const adapter = yield* makeOpenCodeAdapter(
+          decodeOpenCodeSettings({
+            binaryPath: "fake-opencode",
+            ...(serverUrl ? { serverUrl } : {}),
+          }),
+        );
+        NodeAssert.equal(adapter.capabilities.crossProviderAgents, serverUrl === undefined);
+        yield* adapter.startSession({
+          threadId: asThreadId(serverUrl ? "external-cap" : "local-cap"),
+          runtimeMode: "full-access",
+        });
+        NodeAssert.equal(
+          runtimeMock.state.sessionCreateUrls.at(-1),
+          serverUrl ?? "http://127.0.0.1:4301",
+        );
+      }
+    }),
+  );
+
   it.effect("stops the full OpenCode child tree before it completes the interrupt", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
@@ -4406,15 +4429,6 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const idleEvent = promiseWithResolvers<unknown>();
       const failuresObserved = promiseWithResolvers<void>();
       runtimeMock.state.subscribedEvents = [busyEvent.promise, idleEvent.promise];
-      runtimeMock.state.sessionStatusImplementation = async () => {
-        if (runtimeMock.state.sessionStatusCalls <= 2) {
-          if (runtimeMock.state.sessionStatusCalls === 2) {
-            failuresObserved.resolve(undefined);
-          }
-          throw new Error("status failed");
-        }
-        return { data: {} };
-      };
 
       const completedFiber = yield* adapter.streamEvents.pipe(
         Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
@@ -4435,6 +4449,17 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         ),
       });
       yield* adapter.interruptTurn(threadId, firstTurn.turnId);
+      const statusCallsBeforeRetry = runtimeMock.state.sessionStatusCalls;
+      runtimeMock.state.sessionStatusImplementation = async () => {
+        if (runtimeMock.state.sessionStatusCalls - statusCallsBeforeRetry <= 2) {
+          if (runtimeMock.state.sessionStatusCalls - statusCallsBeforeRetry === 2) {
+            failuresObserved.resolve(undefined);
+          }
+          throw new Error("status failed");
+        }
+        return { data: {} };
+      };
+
       const secondTurn = yield* adapter.sendTurn({
         threadId,
         input: "Second turn",
@@ -4466,7 +4491,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
       );
       NodeAssert.equal(completed?.turnId, secondTurn.turnId);
-      NodeAssert.equal(runtimeMock.state.sessionStatusCalls, 3);
+      NodeAssert.equal(runtimeMock.state.sessionStatusCalls - statusCallsBeforeRetry, 3);
     }),
   );
 

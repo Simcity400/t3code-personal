@@ -186,6 +186,7 @@ import {
   flattenAgentPanelRoster,
   foldSubagentActivities,
   formatSubagentTitle,
+  hasLiveCrossProviderTasks,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   deriveBackgroundTasksPanelModel,
@@ -367,6 +368,7 @@ import {
   buildLoadingThreadFromShell,
   buildRevertTurnCountByUserMessageId,
   buildThreadTurnInterruptInput,
+  getLatestRootInterruptFailureId,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
@@ -2520,6 +2522,12 @@ function ChatViewContent(props: ChatViewProps) {
     [threadActivities],
   );
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
+  // Stop all only appears once a cross-provider child is running: until then
+  // the plain Stop already ends everything this thread owns.
+  const hasLiveCrossProviderChildren = useMemo(
+    () => hasLiveCrossProviderTasks(threadActivities),
+    [threadActivities],
+  );
   // Both clients select the same server-maintained roster.
   const agentSessionLive = phase !== "disconnected";
   const agentPanelModel = useMemo(
@@ -5426,9 +5434,9 @@ function ChatViewContent(props: ChatViewProps) {
   ]);
   // Background work (subagent fleets, workflow runs, watch loops) can outlive
   // the turn; once it settles, the composer stop button is gone, so this
-  // banner is the only visible stop affordance. Stop routes through the
-  // stop-everything interrupt: it kills every live background task before
-  // interrupting, and works by session, so no active turn is needed.
+  // banner is the only stop affordance. It always uses tree scope so it
+  // reaches the root's background tasks and any cross-provider children;
+  // the label only says "Stop all" while such a child is live.
   const activeBackgroundWait =
     !isWorking && activeThread ? (activeThreadShell?.backgroundWait ?? null) : null;
   // Compaction reports itself as a running session, so it never reaches the
@@ -5441,6 +5449,15 @@ function ChatViewContent(props: ChatViewProps) {
     compactingSince: activeCompactingSince,
   }).label;
   const [isStoppingBackgroundWork, setIsStoppingBackgroundWork] = useState(false);
+  const latestRootInterruptFailureId = useMemo(
+    () => getLatestRootInterruptFailureId(threadActivities),
+    [threadActivities],
+  );
+  useEffect(() => {
+    // Dispatch acceptance precedes provider execution. A later failure must
+    // allow retry even when some background work is still alive.
+    if (latestRootInterruptFailureId !== null) setIsStoppingBackgroundWork(false);
+  }, [latestRootInterruptFailureId]);
   useEffect(() => {
     // "Stopping..." holds until the liveness clears; the interrupt command
     // returning only means the request was accepted.
@@ -5455,10 +5472,10 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activeThreadId]);
   const handleStopBackgroundWork = useCallback(async () => {
     if (!activeThread) return;
-    setIsStoppingBackgroundWork(true);
+    setIsStoppingBackgroundWork(activeBackgroundWait !== null);
     const result = await interruptThreadTurn({
       environmentId,
-      input: buildThreadTurnInterruptInput(activeThread),
+      input: buildThreadTurnInterruptInput(activeThread, "tree"),
     });
     if (result._tag === "Failure") {
       // Every failure clears the pending state — an interrupted command
@@ -5473,7 +5490,7 @@ function ChatViewContent(props: ChatViewProps) {
         );
       }
     }
-  }, [activeThread, environmentId, interruptThreadTurn, setThreadError]);
+  }, [activeBackgroundWait, activeThread, environmentId, interruptThreadTurn, setThreadError]);
   const backgroundWaitBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     if (activeWaitLabel === null || !activeThread) {
       return null;
@@ -5519,7 +5536,11 @@ function ChatViewContent(props: ChatViewProps) {
                 disabled={isStoppingBackgroundWork}
                 onClick={() => void handleStopBackgroundWork()}
               >
-                {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
+                {isStoppingBackgroundWork
+                  ? "Stopping..."
+                  : hasLiveCrossProviderChildren
+                    ? "Stop all"
+                    : "Stop"}
               </Button>
             ),
           }),
@@ -8399,6 +8420,9 @@ function ChatViewContent(props: ChatViewProps) {
                             onSend={onSend}
                             onInterrupt={onInterrupt}
                             onOpenSideChat={addSideChatSurface}
+                            onStopAll={
+                              hasLiveCrossProviderChildren ? handleStopBackgroundWork : undefined
+                            }
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             onRespondToApproval={onRespondToApproval}
                             onSelectActivePendingUserInputOption={

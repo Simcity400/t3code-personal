@@ -34,6 +34,7 @@ interface ComposerPrimaryActionsProps {
   showSendWhileRunning?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
+  onStopAll?: (() => void) | undefined;
   onImplementPlanInNewThread: () => void;
 }
 
@@ -75,6 +76,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   showSendWhileRunning = false,
   onPreviousPendingQuestion,
   onInterrupt,
+  onStopAll,
   onImplementPlanInNewThread,
 }: ComposerPrimaryActionsProps) {
   const pointerFocusProps = preserveComposerFocusOnPointerDown
@@ -87,24 +89,49 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   );
 
   const renderStopGenerationButton = (insidePendingAction: boolean) => (
-    <button
-      type="button"
-      className={cn(
-        "flex cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none",
-        insidePendingAction
-          ? "size-8 sm:size-7"
-          : showSendWhileRunning && hasSendableContent
-            ? "size-9 sm:size-8"
-            : "size-8 sm:h-8 sm:w-8",
-      )}
-      {...pointerFocusProps}
-      onClick={onInterrupt}
-      aria-label="Stop generation"
-    >
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-        <rect x="2" y="2" width="8" height="8" rx="1.5" />
-      </svg>
-    </button>
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        className={cn(
+          "flex cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none",
+          insidePendingAction
+            ? "size-8 sm:size-7"
+            : showSendWhileRunning && hasSendableContent
+              ? "size-9 sm:size-8"
+              : "size-8 sm:h-8 sm:w-8",
+        )}
+        {...pointerFocusProps}
+        onClick={onInterrupt}
+        disabled={isEnvironmentUnavailable}
+        aria-label="Stop generation"
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+          <rect x="2" y="2" width="8" height="8" rx="1.5" />
+        </svg>
+      </button>
+      {onStopAll ? (
+        <Menu>
+          <MenuTrigger
+            render={
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Stop actions"
+                disabled={isEnvironmentUnavailable}
+                {...pointerFocusProps}
+              />
+            }
+          >
+            <ChevronDownIcon className="size-3.5" />
+          </MenuTrigger>
+          <MenuPopup align="end" side="top" {...composerFloatingLayerProps}>
+            <MenuItem disabled={isEnvironmentUnavailable} onClick={onStopAll}>
+              Stop all
+            </MenuItem>
+          </MenuPopup>
+        </Menu>
+      ) : null}
+    </div>
   );
 
   if (pendingAction) {

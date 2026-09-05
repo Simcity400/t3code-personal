@@ -298,6 +298,7 @@ export type TimelineLatestTurn = Pick<
 const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
 
 export type MessagesTimelineRow =
+  | Extract<TimelineEntry, { kind: "reasoning" }>
   | {
       kind: "work";
       id: string;
@@ -504,6 +505,7 @@ function lastUserMessageIndex(timelineEntries: ReadonlyArray<TimelineEntry>): nu
 }
 
 function timelineEntryTurnId(entry: TimelineEntry): TurnId | null {
+  if (entry.kind === "reasoning") return entry.content.turnId;
   if (entry.kind === "message") {
     return entry.message.role === "assistant" ? (entry.message.turnId ?? null) : null;
   }
@@ -1053,6 +1055,10 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
+    if (timelineEntry.kind === "reasoning") {
+      nextRows.push(timelineEntry);
+      continue;
+    }
     if (timelineEntry.kind === "proposed-plan") {
       nextRows.push({
         kind: "proposed-plan",
@@ -1159,6 +1165,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
+    case "reasoning":
+      return a.content === (b as typeof a).content;
 
     case "work": {
       const bw = b as typeof a;

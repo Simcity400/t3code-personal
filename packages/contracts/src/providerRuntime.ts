@@ -267,6 +267,8 @@ const ProviderRuntimeEventBase = Schema.Struct({
   // populates it (post-slice-4), routing flips to instance-id-only.
   providerInstanceId: Schema.optional(ProviderInstanceId),
   threadId: ThreadId,
+  /** Hidden execution owner when this event is projected onto its visible root. */
+  bridgeAgentId: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
   turnId: Schema.optional(TurnId),
   itemId: Schema.optional(RuntimeItemId),
@@ -428,11 +430,13 @@ export type TurnPlanUpdatedPayload = typeof TurnPlanUpdatedPayload.Type;
 
 const TurnProposedDeltaPayload = Schema.Struct({
   delta: Schema.String,
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TurnProposedDeltaPayload = typeof TurnProposedDeltaPayload.Type;
 
 const TurnProposedCompletedPayload = Schema.Struct({
   planMarkdown: TrimmedNonEmptyStringSchema,
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TurnProposedCompletedPayload = typeof TurnProposedCompletedPayload.Type;
 
@@ -560,11 +564,14 @@ export const UserInputRequestedPayload = Schema.Struct({
   /** Owning subagent when a child asked the question; routed and attributed as above. */
   agentId: Schema.optional(TrimmedNonEmptyStringSchema),
   responseMode: Schema.optional(Schema.Literal("message")),
+  delivery: Schema.optional(Schema.Literal("agent")),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
 const UserInputResolvedPayload = Schema.Struct({
   answers: UnknownRecordSchema,
+  cancelled: Schema.optional(Schema.Boolean),
+  reason: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Owning subagent, mirroring the question that was asked. */
   agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
@@ -657,6 +664,11 @@ export function classifyTaskAgentKind(input: {
  * All fields optional: old emitters and old rows decode unchanged.
  */
 const taskAgentLinkageFields = {
+  executionOwner: Schema.optional(Schema.Literal("cross-provider")),
+  /** Verified selected-execution stop capability, supplied by the bridge. */
+  canStop: Schema.optional(Schema.Boolean),
+  /** Whether this still-live execution can accept an explicit user resume. */
+  canResume: Schema.optional(Schema.Boolean),
   /** SDK task_type (subagent/shell/monitor/local_workflow/…), repeated on
    * every row so folds can classify without the start row. */
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -917,12 +929,14 @@ export type ToolDeniedPayload = typeof ToolDeniedPayload.Type;
 
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
   detail: Schema.optional(Schema.Unknown),
 });
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
 
 const RuntimeErrorPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
   class: Schema.optional(RuntimeErrorClass),
   detail: Schema.optional(Schema.Unknown),
 });
