@@ -28,30 +28,8 @@ Closing a child releases its process resources, not its identity. You can resume
 
 Working credentials and an available local provider configuration are still required. Authentication errors, usage limits, unavailable providers, or a full execution capacity are reported without deleting the agent ID. Fix the underlying condition and resume that same ID again. Native-history fallback is attempted once per activation, not in an unlimited retry loop. Deleting the thread or its environment data deliberately removes recovery; keep database backups if you need protection from data loss.
 
-## Reusable agent instructions
+## No project instructions needed
 
-Copy this block into your project's agent instructions:
-
-```md
-### Cross-provider delegation in T3 Code
-
-- Use native subagent tools for the same provider. For another provider, call
-  `t3_agent_targets`, then `t3_agent_spawn` with its `providerInstanceId`, a
-  self-contained `prompt`, and a unique `requestKey`. Use only available targets.
-- Assign non-overlapping files for concurrent edits. Children share this workspace
-  and inherit its permission and interaction modes; they do not clone your context.
-- Keep the returned `agentId`. Use `t3_agent_wait` to read progress/results; a wait
-  timeout or cancellation does not stop the child.
-- Use `t3_agent_send_input` for follow-ups. Delivery may be queued. Set
-  `interrupt: true` only to interrupt and redirect an owned descendant. A child may send to
-  `agentId: "parent"`, but may not interrupt it. Do not message or stop siblings.
-- Use `t3_agent_interrupt` to interrupt one child, or `t3_agent_close` when its
-  session is no longer needed. Independent descendants continue. Never override
-  a manual user Stop; wait for explicit user Resume. Never broaden a failed Stop.
-- Reuse the same requestKey and arguments when retrying a write after a transport
-  failure. Report unavailable providers, limits, and errors; do not silently fall
-  back to raw CLI launches. Keep the same T3 agent ID across restarts and recovery;
-  inspect prior tool outcomes before repeating work after an interruption.
-```
+Agents learn the delegation rules from the tools themselves. Each tool's description carries the rule that applies to it, and the target listing an agent must fetch before its first launch returns the full checklist: use native subagents for the same provider, give children self-contained prompts and non-overlapping files, never restart an agent the user stopped, never widen a failed stop, and check prior tool outcomes after an interruption. This works the same on every provider, so there is nothing to paste into your project's agent instructions. You can still add project-specific rules there, such as which provider to prefer for which kind of work.
 
 Native children sometimes share their parent's tool credential. If the provider does not identify the actual caller, T3 attaches a cross-provider launch to the nearest identifiable session owner.

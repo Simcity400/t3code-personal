@@ -30,4 +30,4 @@ Limits are eight open children per root, 32 per environment, three bridge levels
 
 The stable T3 ID survives process replacement and server restart, but external availability, credentials, and execution capacity still apply. Reconstructed context is not exact native-session restoration, tool rollback, or exactly-once external execution. Closing releases execution resources while retaining recovery; thread deletion writes permanent recovery tombstones, including unloaded children. A provider may lack native child transcript attribution, individual cancellation, or steering. Capability checks must remain truthful. Native children sharing one MCP credential cannot be distinguished from their nearest identifiable owner; this affects hierarchy and control authorization.
 
-User-facing behavior and the reusable instruction block live in [cross-provider agents](../user/cross-provider-agents.md).
+Delegation guidance ships in the tool descriptions and in the `t3_agent_targets` result (`CROSS_PROVIDER_AGENT_GUIDANCE`), so no project instruction block is required. User-facing behavior lives in [cross-provider agents](../user/cross-provider-agents.md).

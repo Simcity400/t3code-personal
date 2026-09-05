@@ -8,7 +8,10 @@ import type { CrossProviderAgentBridge } from "../../provider/CrossProviderAgent
 import { ProviderValidationError } from "../../provider/Errors.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { McpInvocationContext, type McpInvocationScope } from "../McpInvocationContext.ts";
-import { CrossProviderAgentToolkitRegistrationLive } from "./cross-provider-agents.ts";
+import {
+  CROSS_PROVIDER_AGENT_GUIDANCE,
+  CrossProviderAgentToolkitRegistrationLive,
+} from "./cross-provider-agents.ts";
 
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("environment"),
@@ -98,7 +101,9 @@ it.effect(
         const result = yield* call(server, request);
         expect(result.isError).toBe(false);
         expect(result.structuredContent).toEqual(
-          request.name === "t3_agent_targets" ? { targets: [] } : { accepted: true },
+          request.name === "t3_agent_targets"
+            ? { targets: [], guidance: CROSS_PROVIDER_AGENT_GUIDANCE }
+            : { accepted: true },
         );
       }
       expect(received).toEqual(
