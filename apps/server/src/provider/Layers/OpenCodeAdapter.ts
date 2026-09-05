@@ -3597,6 +3597,8 @@ export function makeOpenCodeAdapter(
     return {
       provider: PROVIDER,
       capabilities: {
+        // connectToOpenCodeServer treats only a nonempty trimmed serverUrl as external.
+        crossProviderAgents: !openCodeSettings.serverUrl?.trim(),
         sessionModelSwitch: "in-session",
       },
       startSession,

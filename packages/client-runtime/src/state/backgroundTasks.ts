@@ -300,6 +300,7 @@ export function deriveCompactingSince(
     if (activity.kind !== "session.compacting") continue;
     if (typeof activity.payload !== "object" || activity.payload === null) continue;
     const payload = activity.payload as Record<string, unknown>;
+    if (typeof payload.agentId === "string") continue;
     // Latest edge wins. Rows are scanned in order rather than filtered-and-
     // sorted because the caller already hands them over ordered, and a
     // rewritten row keeps one position.

@@ -327,14 +327,36 @@ export function shouldWriteThreadErrorToCurrentServerThread(input: {
   );
 }
 
-export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "session">): {
+export function getLatestRootInterruptFailureId(
+  activities: ReadonlyArray<{ id: string; kind: string; payload: unknown }>,
+): string | null {
+  return (
+    activities.findLast(
+      (activity) =>
+        activity.kind === "provider.turn.interrupt.failed" &&
+        !(
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          "taskId" in activity.payload &&
+          activity.payload.taskId !== undefined
+        ),
+    )?.id ?? null
+  );
+}
+
+export function buildThreadTurnInterruptInput(
+  thread: Pick<Thread, "id" | "session">,
+  scope: "self" | "tree" = "self",
+): {
   threadId: ThreadId;
   turnId?: TurnId;
+  scope: "self" | "tree";
 } {
   const runningTurnId = thread.session?.status === "running" ? thread.session.activeTurnId : null;
   return {
     threadId: thread.id,
-    ...(runningTurnId !== null ? { turnId: runningTurnId } : {}),
+    scope,
+    ...(scope === "self" && runningTurnId !== null ? { turnId: runningTurnId } : {}),
   };
 }
 

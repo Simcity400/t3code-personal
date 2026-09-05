@@ -42,6 +42,11 @@ export function updateTaskState(
   const id = text(payload.taskId);
   if (!id || (activity.kind === "tool.progress" && !previous)) return;
   const at = activity.createdAt;
+  const authoritativeBridgeUpdate =
+    activity.kind === "task.updated" &&
+    (payload.executionOwner ?? previous?.executionOwner) === "cross-provider" &&
+    (text(payload.taskType) ?? previous?.taskType) === "cross_provider";
+  if (authoritativeBridgeUpdate && previous && at < previous.updatedAt) return previous;
   const state: { -readonly [K in keyof TaskState]: TaskState[K] } = previous
     ? { ...previous }
     : {
@@ -104,6 +109,7 @@ export function updateTaskState(
   )
     state.agentKind = "agent";
   if (taskType) state.taskType = taskType;
+  if (payload.executionOwner === "cross-provider") state.executionOwner = payload.executionOwner;
   for (const key of [
     "toolUseId",
     "agentPath",
@@ -148,6 +154,7 @@ export function updateTaskState(
   }
   if (payload.timelineBypass === true && text(payload.agentPath)) state.asynchronous = true;
   if (typeof payload.canStop === "boolean") state.canStop = payload.canStop;
+  if (typeof payload.canResume === "boolean") state.canResume = payload.canResume;
   if (typeof payload.isBackgrounded === "boolean") state.backgrounded = payload.isBackgrounded;
   if (typeof payload.skipTranscript === "boolean") state.ambient = payload.skipTranscript;
 
@@ -163,8 +170,21 @@ export function updateTaskState(
           : undefined));
   if (nextStatus !== undefined) {
     const lateStart = activity.kind === "task.started" && terminal(state.status);
-    const duplicateEnd = terminal(state.status) && (terminal(nextStatus) || nextStatus === "idle");
+    // Wrapper updates are bridge-owned current state, including a confirmed
+    // stop that supersedes an initialization failure in the same activation.
+    const correctedEnd =
+      authoritativeBridgeUpdate &&
+      terminal(state.status) &&
+      terminal(nextStatus) &&
+      state.status !== nextStatus;
+    const duplicateEnd =
+      !correctedEnd && terminal(state.status) && (terminal(nextStatus) || nextStatus === "idle");
     if (!lateStart && !duplicateEnd) {
+      if (correctedEnd) {
+        state.completedAt = text(payload.endedAt) ?? at;
+        state.error = null;
+        state.result = null;
+      }
       if ((terminal(state.status) || state.status === "idle") && isActiveTask(nextStatus)) {
         state.activationCount += 1;
         state.startedAt = at;
@@ -229,12 +249,15 @@ export function updateTaskState(
   return state;
 }
 
+export const taskStateActivityId = (threadId: ThreadId, taskId: string): EventId =>
+  EventId.make(`task-state:${JSON.stringify([threadId, taskId])}`);
+
 export function taskStateActivity(
   threadId: ThreadId,
   state: TaskState,
 ): OrchestrationThreadActivity {
   return {
-    id: EventId.make(`task-state:${JSON.stringify([threadId, state.id])}`),
+    id: taskStateActivityId(threadId, state.id),
     kind: "task.state",
     tone: "info",
     summary: state.title,

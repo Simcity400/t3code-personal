@@ -114,6 +114,100 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("resolves durable task commands after restart without a parent active turn", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-task-resume-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    let system = await createOrchestrationSystem(databasePath);
+    const root = ThreadId.make("resume-root");
+    const foreign = ThreadId.make("other-root");
+    const taskId = "cross-provider:a9152816-af99-45a4-ac16-1cf4a6475a66";
+    const projectId = ProjectId.make("resume-project");
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("resume-project"),
+          projectId,
+          title: "Resume",
+          workspaceRoot: directory,
+          createdAt: now(),
+        }),
+      );
+      for (const threadId of [root, foreign]) {
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create:${threadId}`),
+            threadId,
+            projectId,
+            title: "Resume",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now(),
+          }),
+        );
+      }
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make("durable-task"),
+          threadId: root,
+          createdAt: now(),
+          activity: {
+            id: EventId.make("durable-task"),
+            kind: "task.updated",
+            tone: "info",
+            summary: "Completed child",
+            turnId: null,
+            createdAt: now(),
+            payload: {
+              taskId,
+              taskType: "cross_provider",
+              executionOwner: "cross-provider",
+              status: "completed",
+              canResume: true,
+              canStop: false,
+            },
+          },
+        }),
+      );
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+      const command = {
+        type: "thread.turn.interrupt" as const,
+        commandId: CommandId.make("resume-after-restart"),
+        threadId: root,
+        taskId,
+        scope: "self" as const,
+        resume: true,
+        createdAt: now(),
+      };
+      await expect(
+        system.run(
+          system.engine.dispatch({
+            ...command,
+            commandId: CommandId.make("foreign-task"),
+            threadId: foreign,
+          }),
+        ),
+      ).rejects.toThrow("This task does not belong to the selected thread.");
+      await system.run(system.engine.dispatch(command));
+      const events = Array.from(await system.run(Stream.runCollect(system.engine.readEvents(0))));
+      expect(events.filter((event) => event.commandId === command.commandId)).toMatchObject([
+        {
+          type: "thread.turn-interrupt-requested",
+          payload: { threadId: root, taskId, resume: true, scope: "self" },
+        },
+      ]);
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["running", "stopped"] as const)(
     "sends async answers with a %s session and rejects old duplicate replies",
     async (status) => {
@@ -389,6 +483,8 @@ describe("OrchestrationEngine", () => {
       Layer.provide(
         Layer.succeed(ProjectionSnapshotQuery, {
           getUserInputActivity: () => Effect.die("unused"),
+          getTaskState: () => Effect.die("unused"),
+          getCrossProviderRecovery: () => Effect.succeed({ tasks: [], requests: [] }),
           getCommandReadModel: () => Effect.succeed(commandReadModel),
           getSnapshot: () =>
             Effect.sync(() => {

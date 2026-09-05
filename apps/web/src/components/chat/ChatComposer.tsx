@@ -1025,6 +1025,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   provider: ServerProvider | null;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
+  onStopAll?: (() => void) | undefined;
   onImplementPlanInNewThread: () => void;
   onCompactContext?: (() => void) | undefined;
   compactDisabled: boolean;
@@ -1056,6 +1057,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         showSendWhileRunning={props.showSendWhileRunning ?? false}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
+        onStopAll={props.onStopAll}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
       />
     </>
@@ -1221,6 +1223,7 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }, intent?: ComposerSubmissionIntent) => void;
   onInterrupt: () => void;
+  onStopAll?: (() => void) | undefined;
   onImplementPlanInNewThread: () => void;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
@@ -1319,6 +1322,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPageScrollRelease,
     onSend,
     onInterrupt,
+    onStopAll,
     onImplementPlanInNewThread,
     onRespondToApproval,
     onSelectActivePendingUserInputOption,
@@ -4592,6 +4596,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                               preserveComposerFocusOnPointerDown
                               onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                               onInterrupt={handleInterruptPrimaryAction}
+                              onStopAll={onStopAll}
                               onImplementPlanInNewThread={
                                 handleImplementPlanInNewThreadPrimaryAction
                               }
@@ -5152,6 +5157,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       preserveComposerFocusOnPointerDown
                       onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                       onInterrupt={handleInterruptPrimaryAction}
+                      onStopAll={onStopAll}
                       onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                     />
                   </div>
@@ -5256,6 +5262,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     provider={selectedProviderStatus}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}
+                    onStopAll={onStopAll}
                     onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                     compactDisabled={
                       compactDisabled || noProviderAvailable || isSendBusy || isConnecting

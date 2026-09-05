@@ -166,6 +166,10 @@ rl.on("line", (line) => {
     // test reads) so Stop coverage can assert every live child was reached.
     // failInterruptFor simulates a dead child whose interrupt errors.
     const target = message.params?.threadId;
+    const notifications = script.interruptNotifications?.[target]?.shift() ?? [];
+    for (const notification of notifications) {
+      write({ jsonrpc: "2.0", method: notification.method, params: notification.params });
+    }
     NodeFS.appendFileSync(
       `${process.env.T3_CODEX_COLLAB_SCRIPT}.interrupts`,
       `${JSON.stringify({ threadId: target, turnId: message.params?.turnId })}\n`,

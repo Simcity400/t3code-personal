@@ -16,6 +16,28 @@ import {
 } from "./MessagesTimeline.logic";
 
 describe("expanded tool group scrolling", () => {
+  it("keeps child reasoning as its own readable row", () => {
+    const content = {
+      id: "reasoning",
+      kind: "reasoning" as const,
+      text: "Inspect **code**.",
+      createdAt: "2026-09-05T00:00:00.000Z",
+      turnId: null,
+      streaming: false,
+    };
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        { id: content.id, kind: "reasoning", createdAt: content.createdAt, content },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+    expect(rows).toEqual([
+      { id: content.id, kind: "reasoning", createdAt: content.createdAt, content },
+    ]);
+  });
   const entries = [{ id: "first" }, { id: "second" }];
 
   it("follows appended calls only at the hard end", () => {

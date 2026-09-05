@@ -1,4 +1,5 @@
 import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { buildThreadTurnInterruptInput } from "./threadTurnInterrupt";
 import {
   StackActions,
   useFocusEffect,
@@ -13,6 +14,7 @@ import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts"
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
+  hasLiveCrossProviderTasks,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   requestOlderThreadTurns,
@@ -521,12 +523,21 @@ function ThreadRouteContent(
     }
     return interruptThreadTurn({
       environmentId: selectedThread.environmentId,
-      input: {
-        threadId: selectedThread.id,
-        ...(selectedThread.session.activeTurnId
-          ? { turnId: selectedThread.session.activeTurnId }
-          : {}),
-      },
+      input: buildThreadTurnInterruptInput(selectedThread),
+    });
+  }, [interruptThreadTurn, selectedThread]);
+
+  // Stop all only appears once a cross-provider child is running: until then
+  // the plain Stop already ends everything this thread owns.
+  const hasLiveCrossProviderChildren = useMemo(
+    () => (agentActivities ? hasLiveCrossProviderTasks(agentActivities) : false),
+    [agentActivities],
+  );
+  const handleStopAll = useCallback(() => {
+    if (!selectedThread) return;
+    return interruptThreadTurn({
+      environmentId: selectedThread.environmentId,
+      input: buildThreadTurnInterruptInput(selectedThread, "tree"),
     });
   }, [interruptThreadTurn, selectedThread]);
 
@@ -945,6 +956,8 @@ function ThreadRouteContent(
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
+          onStopAll={hasLiveCrossProviderChildren ? handleStopAll : undefined}
+          onStopBackgroundWork={handleStopAll}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
