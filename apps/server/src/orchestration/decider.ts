@@ -8,6 +8,7 @@ import {
   type OrchestrationReadModel,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
+  type TaskState,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
@@ -191,10 +192,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   command,
   readModel,
   userInputActivity,
+  taskState,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
   readonly userInputActivity?: OrchestrationThreadActivity;
+  /** null means the thread-scoped durable lookup found no task; do not fall back to cached activities. */
+  readonly taskState?: TaskState | null;
 }): Effect.fn.Return<
   DecideOrchestrationCommandResult,
   OrchestrationCommandRejection | PlatformError.PlatformError,
@@ -1073,13 +1077,38 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      if (
-        command.taskId !== undefined &&
-        !readTaskStates(thread.activities).some((task) => task.id === command.taskId)
-      ) {
+      const task =
+        command.taskId === undefined
+          ? undefined
+          : taskState !== undefined
+            ? taskState?.id === command.taskId
+              ? taskState
+              : undefined
+            : readTaskStates(thread.activities).find((task) => task.id === command.taskId);
+      if (command.scope === "tree" && (command.taskId !== undefined || command.resume === true)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Stop all requires the root thread and cannot resume agents.",
+        });
+      }
+      if (command.taskId !== undefined && !task) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "This task does not belong to the selected thread.",
+        });
+      }
+      if (
+        command.resume === true &&
+        (!task ||
+          task.executionOwner !== "cross-provider" ||
+          task.taskType !== "cross_provider" ||
+          task.canResume !== true ||
+          !["interrupted", "failed", "completed", "idle"].includes(task.status))
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "Resume requires a resumable inactive cross-provider wrapper agent in this thread.",
         });
       }
       return {
@@ -1094,6 +1123,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           ...(command.turnId !== undefined ? { turnId: command.turnId } : {}),
           ...(command.taskId !== undefined ? { taskId: command.taskId } : {}),
+          scope: command.scope ?? "self",
+          ...(command.resume !== undefined ? { resume: command.resume } : {}),
           createdAt: command.createdAt,
         },
       };
@@ -1154,6 +1185,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             });
           }
           replies.push(`${question.question}\n${answer.trim()}`);
+        }
+        if (request.payload.delivery === "agent") {
+          return {
+            ...(yield* withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+              metadata: { requestId: command.requestId },
+            })),
+            type: "thread.user-input-response-requested",
+            payload: {
+              threadId: command.threadId,
+              requestId: command.requestId,
+              answers: command.answers,
+              createdAt: command.createdAt,
+            },
+          };
         }
         // Commit the answer and its message together. The normal turn path
         // steers a running agent or resumes an idle session.
@@ -1303,7 +1352,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (["stopped", "interrupted", "error"].includes(command.session.status)) {
         const events = [sessionSetEvent];
         for (const task of readTaskStates(thread.activities)) {
-          if (!isActiveTask(task.status)) continue;
+          if (!isActiveTask(task.status) || task.executionOwner === "cross-provider") continue;
           events.push({
             ...(yield* withEventBase({
               aggregateKind: "thread",

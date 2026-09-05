@@ -1,4 +1,5 @@
 import { ProviderSetupError, type ProviderInstanceId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -7,6 +8,7 @@ import { ProviderAuthService } from "../Services/ProviderAuthService.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
+import { isCrossProviderSessionId } from "../CrossProviderAgentBridge.ts";
 
 export const makeProviderAuthService = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry;
@@ -33,6 +35,19 @@ export const makeProviderAuthService = Effect.gen(function* () {
   const stopSessions = Effect.fn("ProviderAuthService.stopSessions")(function* (
     instanceId: ProviderInstanceId,
   ) {
+    // Best effort: an unconfirmed child shutdown must not lock the user out of
+    // signing out or switching accounts. The bridge keeps the child tracked
+    // and reports the failure on its task row.
+    yield* (providers.stopCrossProviderSessions?.(instanceId) ?? Effect.void).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("provider auth could not stop every cross-provider agent", {
+              instanceId,
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    );
     const bindings = yield* directory.listBindings().pipe(
       Effect.mapError(
         () =>
@@ -47,7 +62,10 @@ export const makeProviderAuthService = Effect.gen(function* () {
     const threadIds = new Set(
       bindings
         .filter(
-          (binding) => binding.providerInstanceId === instanceId && binding.status !== "stopped",
+          (binding) =>
+            binding.providerInstanceId === instanceId &&
+            binding.status !== "stopped" &&
+            !isCrossProviderSessionId(binding.threadId),
         )
         .map((binding) => binding.threadId),
     );

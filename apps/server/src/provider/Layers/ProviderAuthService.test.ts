@@ -112,12 +112,17 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
     directoryError?: ProviderSessionDirectoryPersistenceError;
     stopError?: ProviderServiceError;
     logoutError?: ProviderSetupError;
+    crossProviderSessions?: ReadonlyArray<ProviderSession>;
+    crossProviderStopError?: ProviderServiceError;
   } = {},
 ) {
   const actions: string[] = [];
   const registryChanges = yield* PubSub.unbounded<void>();
   const sessions = new Map(input.sessions?.map((session) => [session.threadId, session]));
   const bindings = new Map(input.bindings?.map((binding) => [binding.threadId, binding]));
+  const hiddenSessions = new Map(
+    input.crossProviderSessions?.map((session) => [session.threadId, session]),
+  );
   const idle = idleAuthState;
   let state = idle;
   let flowOwner: string | undefined;
@@ -201,6 +206,17 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
             }),
         }),
         Layer.mock(ProviderService)({
+          stopCrossProviderSessions: (requestedInstanceId) =>
+            Effect.suspend(() => {
+              assert.isTrue(gateClosed);
+              if (input.crossProviderSessions === undefined) return Effect.void;
+              actions.push(`stop-agents:${requestedInstanceId}`);
+              if (input.crossProviderStopError) return Effect.fail(input.crossProviderStopError);
+              for (const [id, session] of hiddenSessions) {
+                if (session.providerInstanceId === requestedInstanceId) hiddenSessions.delete(id);
+              }
+              return Effect.void;
+            }),
           listSessions: () =>
             Effect.sync(() => {
               assert.isTrue(gateClosed);
@@ -221,7 +237,7 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
       ),
     ),
   );
-  return { service, actions, sessions, bindings };
+  return { service, actions, sessions, bindings, hiddenSessions };
 });
 
 const makeStreamingController = Effect.fn("ProviderAuthService.test.makeStreamingController")(
@@ -471,6 +487,66 @@ describe("ProviderAuthService", () => {
         assert.include(error.detail, detail);
       }
       assert.deepStrictEqual(actions, []);
+    }),
+  );
+
+  it.effect.each(["start", "logout", "command"] as const)(
+    "%s cleans up bridge runtimes by account without routing synthetic recovery IDs",
+    (operation) =>
+      Effect.gen(function* () {
+        const rotated = "cross-provider-session:stable:rotated-runtime";
+        const unrelated = "cross-provider-session:other:rotated-runtime";
+        const { service, actions, hiddenSessions } = yield* makeHarness({
+          bindings: [
+            makeBinding("cross-provider-session:stable", "running"),
+            makeBinding("cross-provider-session:other", "running", otherInstanceId),
+            makeBinding("visible", "running"),
+          ],
+          sessions: [makeSession("visible")],
+          crossProviderSessions: [makeSession(rotated), makeSession(unrelated, otherInstanceId)],
+        });
+        if (operation === "start") yield* service.start({ instanceId }, owner);
+        else if (operation === "logout") yield* service.logout({ instanceId });
+        else
+          assert.isTrue(
+            yield* service.tryHandlePromptCommand({
+              instanceId,
+              text: "/logout",
+              hasAttachments: false,
+            }),
+          );
+        assert.deepStrictEqual([...hiddenSessions.keys()], [ThreadId.make(unrelated)]);
+        assert.deepStrictEqual(actions, [
+          "close-gate",
+          `stop-agents:${instanceId}`,
+          "list-bindings",
+          "list-sessions",
+          "stop:visible",
+          operation === "start" ? "start-sign-in" : "native-logout",
+        ]);
+      }),
+  );
+
+  it.effect("still replaces credentials when bridge cleanup is unconfirmed", () =>
+    Effect.gen(function* () {
+      const { service, actions, hiddenSessions } = yield* makeHarness({
+        crossProviderSessions: [makeSession("cross-provider-session:stable:rotated")],
+        crossProviderStopError: new ProviderValidationError({
+          operation: "stopInstance",
+          issue: "private native stop failure",
+        }),
+      });
+      const state = yield* service.logout({ instanceId });
+      assert.strictEqual(state.phase, "idle");
+      // The child stays tracked for a later retry; signing out is not blocked on it.
+      assert.equal(hiddenSessions.size, 1);
+      assert.deepStrictEqual(actions, [
+        "close-gate",
+        `stop-agents:${instanceId}`,
+        "list-bindings",
+        "list-sessions",
+        "native-logout",
+      ]);
     }),
   );
 

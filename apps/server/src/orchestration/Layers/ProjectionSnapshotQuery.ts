@@ -29,6 +29,7 @@ import {
   ThreadLinkedPullRequest,
   ThreadId,
   TrimmedNonEmptyString,
+  TaskState,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -62,6 +63,7 @@ import {
 } from "../threadDetailCursor.ts";
 import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import { taskStateActivityId } from "../taskState.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
   ProjectionSnapshotQuery,
@@ -1133,6 +1135,30 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const getTaskStateRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: ThreadId, taskId: Schema.String }),
+    Result: Schema.Struct({ state: Schema.fromJsonString(TaskState) }),
+    execute: ({ threadId, taskId }) => sql`
+      SELECT activity.payload_json AS state
+      FROM projection_thread_activities AS activity
+      JOIN projection_threads AS thread ON thread.thread_id = activity.thread_id
+      WHERE activity.activity_id = ${taskStateActivityId(ThreadId.make(threadId), taskId)}
+        AND activity.thread_id = ${threadId}
+        AND activity.kind = 'task.state'
+        AND thread.deleted_at IS NULL
+    `,
+  });
+  const getTaskState: ProjectionSnapshotQueryShape["getTaskState"] = (input) =>
+    getTaskStateRow(input).pipe(
+      Effect.map(Option.map((row) => row.state)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getTaskState:query",
+          "ProjectionSnapshotQuery.getTaskState:decodeRow",
+        ),
+      ),
+    );
+
   const getUserInputActivityRow = SqlSchema.findOneOption({
     Request: Schema.Struct({ threadId: ThreadId, requestId: ApprovalRequestId }),
     Result: ProjectionThreadActivityDbRowSchema,
@@ -1155,6 +1181,62 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       LIMIT 1
     `,
   });
+
+  const listCrossProviderTaskRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({ threadId: ThreadId, state: Schema.fromJsonString(TaskState) }),
+    execute: () => sql`
+      SELECT activity.thread_id AS "threadId", activity.payload_json AS state
+      FROM projection_thread_activities AS activity
+      JOIN projection_threads AS thread ON thread.thread_id = activity.thread_id
+      WHERE activity.kind = 'task.state'
+        AND json_extract(activity.payload_json, '$.executionOwner') = 'cross-provider'
+        AND thread.deleted_at IS NULL
+    `,
+  });
+  const listCrossProviderRequestRows = SqlSchema.findAll({
+    Request: Schema.Struct({ threadId: ThreadId }),
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId }) => sql`
+      WITH requests AS (
+        SELECT *, ROW_NUMBER() OVER (
+          PARTITION BY json_extract(payload_json, '$.requestId'),
+            CASE WHEN kind LIKE 'approval.%' THEN 'approval' ELSE 'user-input' END
+          ORDER BY sequence DESC, created_at DESC, activity_id DESC
+        ) AS position
+        FROM projection_thread_activities INDEXED BY idx_projection_bridge_requests
+        WHERE thread_id = ${threadId}
+          AND kind IN ('approval.requested', 'approval.resolved', 'user-input.requested', 'user-input.resolved')
+          AND json_extract(payload_json, '$.bridgeAgentId') IS NOT NULL
+          AND json_extract(payload_json, '$.requestId') IS NOT NULL
+      )
+      SELECT activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
+        tone, kind, summary, payload_json AS payload, sequence, created_at AS "createdAt"
+      FROM requests WHERE position = 1 AND kind IN ('approval.requested', 'user-input.requested')
+    `,
+  });
+  const getCrossProviderRecovery = Effect.fn("ProjectionSnapshotQuery.getCrossProviderRecovery")(
+    function* () {
+      const tasks = yield* listCrossProviderTaskRows(undefined);
+      const requests = yield* Effect.forEach(
+        [...new Set(tasks.map((task) => task.threadId))],
+        (threadId) =>
+          listCrossProviderRequestRows({ threadId }).pipe(
+            Effect.map((rows) =>
+              rows.map((row) => ({ threadId, activity: mapThreadActivityRow(row) })),
+            ),
+          ),
+        { concurrency: 1 },
+      );
+      return { tasks, requests: requests.flat() };
+    },
+    Effect.mapError(
+      toPersistenceSqlOrDecodeError(
+        "ProjectionSnapshotQuery.getCrossProviderRecovery:query",
+        "ProjectionSnapshotQuery.getCrossProviderRecovery:decodeRow",
+      ),
+    ),
+  );
 
   const getUserInputActivity: ProjectionSnapshotQueryShape["getUserInputActivity"] = (input) =>
     getUserInputActivityRow(input).pipe(
@@ -3253,6 +3335,8 @@ pending_approval_requests AS (
       );
 
   return {
+    getCrossProviderRecovery,
+    getTaskState,
     getCommandReadModel,
     getUserInputActivity,
     getSnapshot,

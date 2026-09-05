@@ -11,6 +11,7 @@ import type { PendingApproval } from "../../lib/threadActivity";
 export interface PendingApprovalCardProps {
   readonly approval: PendingApproval;
   readonly respondingApprovalId: ApprovalRequestId | null;
+  readonly onStopAll?: () => void;
   readonly onRespond: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
@@ -74,6 +75,16 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
             </Text>
           </Pressable>
         ))}
+        {props.onStopAll ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Stop all"
+            className="min-h-11 justify-center px-3.5"
+            onPress={props.onStopAll}
+          >
+            <Text className="text-sm text-danger-foreground">Stop all</Text>
+          </Pressable>
+        ) : null}
       </View>
     </View>
   );

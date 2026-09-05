@@ -1162,6 +1162,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       ) : null}
       {row.kind === "assistant-meta" ? <AssistantMetaTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
+      {row.kind === "reasoning" ? <ReasoningTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "thinking" ? <ThinkingTimelineRow /> : null}
     </div>
@@ -1600,6 +1601,26 @@ function AssistantCopyButton({
   }
 
   return <MessageCopyButton text={assistantCopyState.text ?? ""} variant="ghost" />;
+}
+
+function ReasoningTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "reasoning" }> }) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <details className="min-w-0 rounded-md border border-border/60 px-3 py-2">
+      <summary className="cursor-pointer text-sm text-muted-foreground">Reasoning</summary>
+      <div className="mt-2 min-w-0">
+        <ChatMarkdown
+          text={row.content.text}
+          cwd={ctx.markdownCwd}
+          threadRef={ctx.threadRef ?? undefined}
+          isStreaming={row.content.streaming}
+          skills={ctx.skills}
+          onImageExpand={ctx.onImageExpand}
+        />
+        <MessageCopyButton text={row.content.text} variant="ghost" />
+      </div>
+    </details>
+  );
 }
 
 function ProposedPlanTimelineRow({

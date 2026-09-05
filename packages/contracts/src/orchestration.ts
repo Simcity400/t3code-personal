@@ -1048,14 +1048,27 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ProviderInterruptScope = Schema.Literals(["self", "tree"]);
+export type ProviderInterruptScope = typeof ProviderInterruptScope.Type;
+
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
   taskId: Schema.optional(TrimmedNonEmptyString),
+  scope: Schema.optional(ProviderInterruptScope),
+  resume: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
-});
+}).check(
+  Schema.makeFilter(
+    (input) => input.scope !== "tree" || (input.taskId === undefined && input.resume !== true),
+    { message: "Stop all requires the root thread and cannot resume agents." },
+  ),
+  Schema.makeFilter((input) => input.resume !== true || input.taskId !== undefined, {
+    message: "Resume requires a selected task.",
+  }),
+);
 
 const ThreadApprovalRespondCommand = Schema.Struct({
   type: Schema.Literal("thread.approval.respond"),
@@ -1459,6 +1472,8 @@ export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
   taskId: Schema.optional(TrimmedNonEmptyString),
+  scope: Schema.optional(ProviderInterruptScope),
+  resume: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 

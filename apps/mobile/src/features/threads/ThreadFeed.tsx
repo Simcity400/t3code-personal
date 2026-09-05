@@ -1559,6 +1559,43 @@ function renderFeedEntry(
     );
   }
 
+  if (entry.type === "transcript-content") {
+    const toggled = props.expandedWorkRows[entry.id] ?? false;
+    const expanded = entry.content.kind === "plan" ? !toggled : toggled;
+    const label = entry.content.kind === "plan" ? "Proposed plan" : "Reasoning";
+    return (
+      <View className="mb-4 min-w-0 rounded-xl border border-border px-3 py-2">
+        <View className="flex-row items-center justify-between gap-2">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${label.toLowerCase()}`}
+            accessibilityState={{ expanded }}
+            onPress={() => props.onToggleWorkRow(entry.id, entry.id)}
+            className="min-h-10 flex-1 justify-center"
+          >
+            <Text className="text-sm font-t3-medium text-foreground-muted">{label}</Text>
+          </Pressable>
+          <CopyTextButton
+            accessibilityLabel={`Copy ${label.toLowerCase()}`}
+            text={entry.content.text}
+            tintColor={iconSubtleColor}
+            buttonSize={28}
+            iconSize={13}
+          />
+        </View>
+        {expanded ? (
+          <AssistantMarkdownContent
+            markdown={entry.content.text}
+            markdownStyles={markdownStyles.assistant}
+            linkHandlers={props.markdownLinkHandlers}
+            renderImage={props.renderMarkdownImage}
+            skills={props.skills}
+          />
+        ) : null}
+      </View>
+    );
+  }
+
   if (entry.type === "message") {
     const { message } = entry;
     const isUser = message.role === "user";
