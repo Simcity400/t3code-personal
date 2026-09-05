@@ -6972,6 +6972,218 @@ describe("ClaudeAdapterLive", () => {
       );
     });
 
+    /**
+     * What the CLI actually forwards for a subagent: full assistant and user
+     * snapshots tagged with parent_tool_use_id, never stream_event frames.
+     */
+    const childSnapshot = (
+      harness: ReturnType<typeof makeHarness>,
+      parentToolUseId: string,
+      uuid: string,
+      content: ReadonlyArray<unknown>,
+    ) =>
+      harness.query.emit({
+        type: "assistant",
+        parent_tool_use_id: parentToolUseId,
+        message: { model: "claude-sonnet-5", id: `msg_${uuid}`, content },
+        uuid,
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+    const childToolResult = (
+      harness: ReturnType<typeof makeHarness>,
+      parentToolUseId: string,
+      toolUseId: string,
+      text: string,
+    ) =>
+      harness.query.emit({
+        type: "user",
+        parent_tool_use_id: parentToolUseId,
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: toolUseId, content: text }],
+        },
+        uuid: `${toolUseId}-result`,
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+    it.effect("opens a subagent's snapshot tools and completes them from its results", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              (event.type === "item.started" ||
+                event.type === "item.updated" ||
+                event.type === "item.completed") &&
+              String(event.itemId) === "toolu_child_bash",
+          ),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "spawn an agent",
+          attachments: [],
+        });
+        startAgent(harness, "task-snapshot", "toolu_snapshot");
+
+        childSnapshot(harness, "toolu_snapshot", "child-1", [
+          { type: "text", text: "Checking the tree." },
+          {
+            type: "tool_use",
+            id: "toolu_child_bash",
+            name: "Bash",
+            input: { command: "git status --short" },
+          },
+        ]);
+        childToolResult(harness, "toolu_snapshot", "toolu_child_bash", " M parser.ts");
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        assert.deepEqual(
+          events.map((event) => event.type),
+          ["item.started", "item.updated", "item.completed"],
+        );
+        for (const event of events) {
+          if (
+            event.type !== "item.started" &&
+            event.type !== "item.updated" &&
+            event.type !== "item.completed"
+          ) {
+            continue;
+          }
+          // Attributed to the child, so the row lands in its transcript and
+          // stays out of the parent chat.
+          assert.equal(event.payload.agentId, "task-snapshot");
+          assert.equal(event.payload.parentToolUseId, "toolu_snapshot");
+          assert.equal(event.payload.itemType, "command_execution");
+        }
+        const started = events[0];
+        if (started?.type === "item.started") {
+          assert.deepEqual(started.payload.data, {
+            toolName: "Bash",
+            input: { command: "git status --short" },
+          });
+        }
+        const completed = events[2];
+        if (completed?.type === "item.completed") {
+          assert.equal(completed.payload.status, "completed");
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("holds snapshot tools that beat task_started until the agent is named", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              (event.type === "item.started" || event.type === "task.started") &&
+              (event.type === "task.started" || String(event.itemId) === "toolu_child_read"),
+          ),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "spawn an agent",
+          attachments: [],
+        });
+        childSnapshot(harness, "toolu_early", "child-early", [
+          {
+            type: "tool_use",
+            id: "toolu_child_read",
+            name: "Read",
+            input: { file_path: "/repo/parser.ts" },
+          },
+        ]);
+        startAgent(harness, "task-early", "toolu_early");
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        // The tool row was held, then released stamped once its agent existed:
+        // it follows task.started rather than leaking into the parent first.
+        assert.deepEqual(
+          events.map((event) => event.type),
+          ["task.started", "item.started"],
+        );
+        const started = events[1];
+        if (started?.type === "item.started") {
+          assert.equal(started.payload.agentId, "task-early");
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("reads a subagent's snapshotted TodoWrite as that agent's plan", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const planFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.plan.updated"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "spawn an agent",
+          attachments: [],
+        });
+        startAgent(harness, "task-plan-snapshot", "toolu_plan_snapshot");
+        childSnapshot(harness, "toolu_plan_snapshot", "child-plan", [
+          {
+            type: "tool_use",
+            id: "toolu_child_todo",
+            name: "TodoWrite",
+            input: {
+              todos: [{ content: "Read parser", status: "in_progress", activeForm: "Reading" }],
+            },
+          },
+        ]);
+
+        const events = Array.from(yield* Fiber.join(planFiber));
+        const plan = events[0];
+        assert.equal(plan?.type, "turn.plan.updated");
+        if (plan?.type === "turn.plan.updated") {
+          assert.equal(plan.payload.agentId, "task-plan-snapshot");
+          assert.equal(plan.payload.plan.length, 1);
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
     it.effect("gives a subagent its own context-window snapshot", () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
