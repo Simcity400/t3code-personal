@@ -1,6 +1,7 @@
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { createContext, use, useMemo, useState, type ReactNode } from "react";
+import { Square } from "lucide-react";
 import {
   readTaskStates,
   type OrchestrationThreadActivity,
@@ -88,9 +89,10 @@ export function TaskStopButton({
   const button = (
     <button
       type="button"
-      aria-label={`Stop ${label}`}
+      aria-label={busy ? `Stopping ${label}` : `Stop ${label}`}
+      aria-busy={busy}
       disabled={busy || !task.canStop}
-      className="shrink-0 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
+      className="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent disabled:opacity-50"
       onClick={async (event) => {
         event.stopPropagation();
         if (busy || !task.canStop) return;
@@ -112,14 +114,18 @@ export function TaskStopButton({
         }
       }}
     >
-      {busy ? "Stopping…" : "Stop"}
+      <Square aria-hidden className="size-3 fill-current" />
     </button>
   );
   return (
     <Tooltip>
       <TooltipTrigger render={<span className="inline-flex">{button}</span>} />
       <TooltipPopup>
-        {task.canStop ? `Stop ${label}` : "This provider does not expose individual task stopping."}
+        {busy
+          ? `Stopping ${label}…`
+          : task.canStop
+            ? `Stop ${label}`
+            : "This provider does not expose individual task stopping."}
       </TooltipPopup>
     </Tooltip>
   );

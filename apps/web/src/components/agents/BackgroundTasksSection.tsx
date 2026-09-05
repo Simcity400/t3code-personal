@@ -1,7 +1,6 @@
 import { TaskStopButton } from "./TaskControls";
 /**
- * The Agents panel's background-task surface: a "Waiting on" strip and a
- * "Tasks" section, both derived from the same durable activity stream as the
+ * The Agents panel's Tasks section, derived from the same durable activity stream as the
  * subagent roster they sit beside.
  *
  * Visualization rules follow the roster's:
@@ -17,25 +16,13 @@ import {
   backgroundTaskSourceLabel,
   isActiveBackgroundTaskStatus,
   formatElapsedBetween,
-  type AgentWaitState,
   type BackgroundTaskGroup,
   type BackgroundTaskKind,
   type BackgroundTasksPanelModel,
   type BackgroundTaskStatus,
   type RuntimeBackgroundTask,
 } from "@t3tools/client-runtime/state/backgroundTasks";
-import {
-  Box,
-  ChevronDown,
-  ChevronRight,
-  ClipboardList,
-  Layers,
-  MessageSquare,
-  Radar,
-  ShieldAlert,
-  Terminal,
-  Users,
-} from "lucide-react";
+import { Box, ChevronDown, ChevronRight, ClipboardList, Radar, Terminal } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -222,87 +209,6 @@ function TaskOwnerGroup({ group, showOwner }: { group: BackgroundTaskGroup; show
         <TaskRow key={task.id} task={task} />
       ))}
     </div>
-  );
-}
-
-const WAIT_ICON = {
-  approval: ShieldAlert,
-  "user-input": MessageSquare,
-  compacting: Layers,
-  agents: Users,
-  tasks: Terminal,
-} as const;
-
-/**
- * One line per blocked owner: `Main ← Command approval · 2m 14s`.
- *
- * The arrow is the point of the strip — it makes the dependency legible at a
- * glance, which is what "what are we waiting on" actually asks. Waits only
- * the user can clear are tinted; everything else is machine progress and
- * stays quiet.
- */
-function WaitRow({ wait }: { wait: AgentWaitState }) {
-  const Icon = WAIT_ICON[wait.kind];
-  return (
-    // The visible text already reads "Owner <- blocker"; an extra sr-only
-    // sentence made screen readers announce the row twice. The arrow is
-    // decorative, so it is the only thing hidden from the accessibility tree.
-    <div className="flex h-6 items-center gap-1.5 px-1.5 text-xs">
-      <Icon
-        aria-hidden
-        className={cn(
-          "size-3.5 shrink-0",
-          wait.needsUser ? "text-warning-foreground" : "text-muted-foreground/70",
-        )}
-      />
-      <span className="shrink-0 truncate font-medium">{wait.ownerLabel}</span>
-      <span className="shrink-0 text-muted-foreground/50">
-        <span aria-hidden>←</span>
-        <span className="sr-only">is waiting on</span>
-      </span>
-      <span
-        className={cn(
-          "min-w-0 flex-1 truncate",
-          wait.needsUser ? "text-warning-foreground" : "text-muted-foreground",
-        )}
-      >
-        {wait.label}
-      </span>
-      {wait.since ? (
-        <span className="shrink-0 font-mono text-[.7rem] text-muted-foreground/70">
-          <TaskElapsed startedAt={wait.since} endedAt={null} live />
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-export function WaitingOnStrip({ waits }: { waits: ReadonlyArray<AgentWaitState> }) {
-  if (waits.length === 0) return null;
-  const needsUser = waits.some((wait) => wait.needsUser);
-  return (
-    <section
-      aria-label="Waiting on"
-      className={cn(
-        "rounded-lg border p-1.5",
-        needsUser ? "border-warning/40 bg-warning/5" : "border-border/60 bg-card/20",
-      )}
-    >
-      <div
-        className={cn(
-          "flex items-center gap-1.5 px-1.5 py-1 text-[.65rem] font-medium uppercase tracking-wider",
-          needsUser ? "text-warning-foreground" : "text-muted-foreground",
-        )}
-      >
-        <span>Waiting on</span>
-        <span className="font-mono font-normal text-muted-foreground/70">{waits.length}</span>
-      </div>
-      <div className="flex flex-col">
-        {waits.map((wait) => (
-          <WaitRow key={`${wait.ownerId ?? "main"}:${wait.kind}`} wait={wait} />
-        ))}
-      </div>
-    </section>
   );
 }
 

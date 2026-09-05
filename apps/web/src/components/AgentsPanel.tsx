@@ -12,7 +12,7 @@ import { TaskControls, TaskStopButton } from "./agents/TaskControls";
  *   it settles; older collapsed runs can still be opened at run granularity.
  * - Static status dots, DOM-write elapsed timers, plain token counters.
  */
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { LegendListRef } from "@legendapp/list/react";
 import type {
   AgentPanelModel,
@@ -23,6 +23,7 @@ import {
   formatSubagentModelLabel,
   formatSubagentTitle,
   formatSubagentTokenCount,
+  idleAgentsOpenAtom,
   filterWorkflowForPanelSection,
   flattenAgentPanelRoster,
   isActiveSubagentStatus,
@@ -31,10 +32,7 @@ import {
   selectSubagentTranscriptMessages,
   subagentPanelSection,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import type {
-  AgentWaitState,
-  BackgroundTasksPanelModel,
-} from "@t3tools/client-runtime/state/backgroundTasks";
+import type { BackgroundTasksPanelModel } from "@t3tools/client-runtime/state/backgroundTasks";
 import { emptyBackgroundTasksPanelModel } from "@t3tools/client-runtime/state/backgroundTasks";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
@@ -56,7 +54,6 @@ import { createContext, use, useEffect, useMemo, useRef, useState } from "react"
 
 import {
   BackgroundTasksSection,
-  WaitingOnStrip,
   subscribeElapsedTick,
 } from "~/components/agents/BackgroundTasksSection";
 import {
@@ -96,9 +93,6 @@ const STATUS_VISUALS: Record<RuntimeSubagent["status"], { dotClass: string; labe
   cancelled: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
   interrupted: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
 };
-
-/** Stable identity so the default prop never remounts the strip. */
-const EMPTY_AGENT_WAITS: ReadonlyArray<AgentWaitState> = [];
 
 function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
   return (
@@ -221,10 +215,6 @@ function AgentRow({ agent, onOpen }: { agent: RuntimeSubagent; onOpen: () => voi
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const title = formatSubagentTitle(agent.title);
-  const role =
-    agent.role?.trim().toLocaleLowerCase() === agent.title.trim().toLocaleLowerCase()
-      ? null
-      : agent.role;
   // Two different numbers that read alike unless they are labelled apart:
   // "Σ … tok" is everything this agent has ever processed (a running total,
   // summed into the panel footer the same way), while "… ctx" is how full its
@@ -239,11 +229,11 @@ function AgentRow({ agent, onOpen }: { agent: RuntimeSubagent; onOpen: () => voi
   ].filter((value): value is string => value !== null);
 
   return (
-    <div className="flex min-w-0 items-center">
+    <div className="flex w-full min-w-0 items-center rounded-md pr-1.5 hover:bg-accent/40 focus-within:bg-accent/40">
       <button
         type="button"
         onClick={onOpen}
-        className="grid h-[3.875rem] min-w-0 flex-1 grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/40"
+        className="grid h-[3.875rem] min-w-0 flex-1 grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left"
         aria-label={`Open ${title} transcript`}
       >
         <span className="col-start-1 row-start-1 flex items-center">
@@ -251,11 +241,6 @@ function AgentRow({ agent, onOpen }: { agent: RuntimeSubagent; onOpen: () => voi
         </span>
         <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
           <span className="min-w-0 truncate text-sm font-medium">{title}</span>
-          {role ? (
-            <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
-              {role}
-            </span>
-          ) : null}
         </span>
         <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
           <span className="inline-flex items-center gap-1">
@@ -1018,7 +1003,6 @@ function AgentsPanelContent({
   onImageExpand,
   loadEarlier,
   tasksModel = emptyBackgroundTasksPanelModel(),
-  waits = EMPTY_AGENT_WAITS,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
@@ -1056,8 +1040,6 @@ function AgentsPanelContent({
     | undefined;
   /** Background work running beside the roster (shells, monitors, watch loops). */
   tasksModel?: BackgroundTasksPanelModel;
-  /** One line per blocked agent, main first. */
-  waits?: ReadonlyArray<AgentWaitState>;
 }) {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   useEffect(() => {
@@ -1066,7 +1048,15 @@ function AgentsPanelContent({
     onRequestedAgentHandled?.();
   }, [onRequestedAgentHandled, requestedAgentId]);
 
-  const [idleOpen, setIdleOpen] = useState(true);
+  const idleOpenAtom = idleAgentsOpenAtom(
+    threadRef
+      ? scopedThreadKey(threadRef)
+      : environmentId && threadId
+        ? scopedThreadKey({ environmentId, threadId })
+        : null,
+  );
+  const idleOpen = useAtomValue(idleOpenAtom);
+  const setIdleOpen = useAtomSet(idleOpenAtom);
   const [workflowOpenById, setWorkflowOpenById] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(model.workflows.map((group) => [group.workflow.id, workflowIsLive(group)])),
   );
@@ -1178,7 +1168,7 @@ function AgentsPanelContent({
   // A thread can have background work and no subagents at all (a backgrounded
   // shell, a Monitor watch loop), and that is exactly when this panel earns
   // its keep — so the empty state only applies when there is nothing of either.
-  if (!model.hasAgents && !tasksModel.hasTasks && waits.length === 0) {
+  if (!model.hasAgents && !tasksModel.hasTasks) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <Bot aria-hidden className="size-6 text-muted-foreground/60" />
@@ -1196,7 +1186,6 @@ function AgentsPanelContent({
       <div className="flex h-full min-h-0 flex-col">
         <ScrollArea className="min-h-0 flex-1">
           <div className="flex flex-col gap-2 p-2">
-            <WaitingOnStrip waits={waits} />
             <AgentRosterSection
               title="Active"
               workflows={sections.activeWorkflows}

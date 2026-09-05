@@ -9,6 +9,7 @@ import {
   type TaskState,
 } from "@t3tools/contracts";
 import { AppText as Text } from "../../components/AppText";
+import { SymbolView } from "../../components/AppSymbol";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 
@@ -95,13 +96,13 @@ export function TaskStopButton({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Stop ${label}`}
+      accessibilityLabel={busy ? `Stopping ${label}` : `Stop ${label}`}
       accessibilityHint={
         task.canStop ? undefined : "This provider does not expose individual task stopping."
       }
-      accessibilityState={{ disabled: busy || !task.canStop }}
+      accessibilityState={{ disabled: busy || !task.canStop, busy }}
       disabled={busy || !task.canStop}
-      className="min-h-11 justify-center px-3"
+      className="min-h-11 min-w-11 items-center justify-center disabled:opacity-50"
       onPress={async (event) => {
         event.stopPropagation();
         if (busy || !task.canStop) return;
@@ -123,7 +124,7 @@ export function TaskStopButton({
         }
       }}
     >
-      <Text className="text-xs text-foreground-muted">{busy ? "Stopping…" : "Stop"}</Text>
+      <SymbolView name="stop.fill" size={14} tintColorClassName="accent-foreground-muted" />
     </Pressable>
   );
 }
