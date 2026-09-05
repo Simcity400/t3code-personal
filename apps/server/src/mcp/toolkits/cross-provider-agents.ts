@@ -29,26 +29,26 @@ const defaults = {
 };
 
 /**
- * The delegation rules an agent needs before its first spawn. Returned from
- * `t3_agent_targets`, which every launch has to call first for an instance ID,
- * so the guidance reaches exactly the agent that is about to delegate, on any
- * provider, with nothing for users to paste into project instructions.
+ * The delegation rules, returned once from `t3_agent_targets` (which every
+ * launch must call first for an instance ID). Tool descriptions stay terse
+ * because they sit in the agent's context on every turn; this list is paid
+ * for only when an agent is about to delegate.
  */
 export const CROSS_PROVIDER_AGENT_GUIDANCE: ReadonlyArray<string> = [
-  "Use your provider's native subagent tools for same-provider work. Spawn a cross-provider agent only for a target listed as available here.",
-  "Children share this workspace and inherit its permission and interaction modes; they do not see your context. Give a self-contained prompt and assign non-overlapping files for concurrent edits.",
-  "Keep the returned agentId. Read progress and results with t3_agent_wait; a wait timeout does not stop the child.",
-  "Send follow-ups with t3_agent_send_input; delivery may be queued. Set interrupt only to redirect an agent you own. Children may message agentId 'parent' but may not interrupt it. Never message, interrupt, or close siblings or ancestors.",
-  "Never override a manual user Stop; only the user can Resume. Never broaden a failed individual stop into a wider one.",
-  "Reuse the same requestKey and arguments when retrying a write after a transport failure. Report unavailable providers, limits, and errors instead of falling back to raw CLI launches.",
-  "The T3 agentId survives restarts and recovery. After an interruption, inspect prior tool outcomes before repeating work.",
+  "Same provider: use native subagent tools. Cross-provider: spawn only targets listed as available.",
+  "Children share the workspace and permission mode but not your context: give a self-contained prompt and non-overlapping files.",
+  "Keep the agentId and poll with t3_agent_wait; a wait timeout does not stop the agent.",
+  "Follow-ups go through t3_agent_send_input and may queue. Only agents you own; children may message 'parent' but not interrupt it. Never touch siblings or ancestors.",
+  "Never restart an agent the user stopped; only the user can Resume. Never widen a failed stop.",
+  "Retry writes with the same requestKey and arguments. Report unavailable providers and limits; do not fall back to raw CLI launches.",
+  "The agentId survives restarts. After an interruption, check prior tool outcomes before repeating work.",
 ];
 
 export const CrossProviderAgentToolkit = Toolkit.make(
   Tool.make("t3_agent_targets", {
     ...defaults,
     description:
-      "List configured cross-provider agent targets, their instance IDs, and availability, plus the delegation guidance to follow. Call this before your first t3_agent_spawn. Requires Agent Browser access.",
+      "List cross-provider agent targets and the delegation rules. Call before the first t3_agent_spawn.",
     parameters: Schema.Struct({}),
   })
     .annotate(Tool.Readonly, true)
@@ -56,7 +56,7 @@ export const CrossProviderAgentToolkit = Toolkit.make(
   Tool.make("t3_agent_spawn", {
     ...defaults,
     description:
-      "Launch an agent on another provider in this workspace and promptly return its stable agentId, retained across server restarts for user Resume. Use your provider's native subagent tools for same-provider delegation. The child shares the workspace but not your context: give a self-contained prompt and assign disjoint files for concurrent edits. Reuse requestKey when retrying the same launch.",
+      "Launch an agent on another provider in this workspace; returns a stable agentId. Use native subagent tools for your own provider. Reuse requestKey on retry.",
     parameters: CrossAgentSpawnInput,
   })
     .annotate(Tool.OpenWorld, true)
@@ -64,7 +64,7 @@ export const CrossProviderAgentToolkit = Toolkit.make(
   Tool.make("t3_agent_send_input", {
     ...defaults,
     description:
-      "Send a prompt to an agent you own, or use agentId 'parent' to message your authenticated owner. Delivery may be queued. Set interrupt to redirect only an owned descendant; never siblings or ancestors. Manually stopped agents require user Resume and must not be restarted by agents. Reuse requestKey for retries.",
+      "Send a prompt to an agent you own, or to 'parent'. Set interrupt to redirect it. Reuse requestKey on retry.",
     parameters: CrossAgentSendInput,
   })
     .annotate(Tool.OpenWorld, true)
@@ -72,7 +72,7 @@ export const CrossProviderAgentToolkit = Toolkit.make(
   Tool.make("t3_agent_wait", {
     ...defaults,
     description:
-      "Read an owned agent's status, reply, error, and pending requests, optionally waiting up to 60000ms for a change. A timeout or interrupted wait leaves the agent running. After an interruption, inspect prior tool outcomes before repeating work.",
+      "Read an owned agent's status, reply, error and pending requests; optionally wait up to 60000ms for a change. Never stops the agent.",
     parameters: CrossAgentWaitInput,
   })
     .annotate(Tool.Readonly, true)
@@ -80,7 +80,7 @@ export const CrossProviderAgentToolkit = Toolkit.make(
   Tool.make("t3_agent_interrupt", {
     ...defaults,
     description:
-      "Interrupt only the selected agent you own without sending a new prompt. Independent descendants continue running. Unsupported individual interruption fails without broadening the stop; never widen a failed stop yourself. Reuse requestKey for retries.",
+      "Interrupt one agent you own; its cross-provider children keep running. Reuse requestKey on retry.",
     parameters: CrossAgentTargetInput,
   })
     .annotate(Tool.OpenWorld, true)
@@ -88,7 +88,7 @@ export const CrossProviderAgentToolkit = Toolkit.make(
   Tool.make("t3_agent_close", {
     ...defaults,
     description:
-      "Release only the selected owned agent's session resources while retaining its transcript and stable agentId for user Resume. Closing does not delete the agent. Independent descendants continue running. Close finished agents when no follow-up is needed. Reuse requestKey for retries.",
+      "Release an owned agent's session; its transcript and agentId stay resumable. Reuse requestKey on retry.",
     parameters: CrossAgentTargetInput,
   })
     .annotate(Tool.OpenWorld, true)
