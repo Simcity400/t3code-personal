@@ -62,7 +62,10 @@ export function FloatingWorkingControl(props: {
   readonly onOpenAgents?: (() => void) | undefined;
   readonly showScrollToEnd: boolean;
   readonly onScrollToEnd: () => void;
-  readonly onStopAll?: (() => void) | undefined;
+  /** Stops the background work holding the thread; labelled by whether a
+   * cross-provider child is live, since a plain Stop already covers the rest. */
+  readonly onStopBackgroundWork?: (() => void) | undefined;
+  readonly stopBackgroundWorkLabel?: "Stop" | "Stop all";
 }) {
   const separationProgress = useSharedValue(props.showScrollToEnd ? 1 : 0);
 
@@ -98,7 +101,12 @@ export function FloatingWorkingControl(props: {
           <Text className="text-xs tabular-nums text-foreground">{props.liveAgentCount}</Text>
         </Pressable>
       ) : null}
-      {props.onStopAll ? <StopAllButton onPress={props.onStopAll} /> : null}
+      {props.onStopBackgroundWork ? (
+        <StopBackgroundWorkButton
+          label={props.stopBackgroundWorkLabel ?? "Stop"}
+          onPress={props.onStopBackgroundWork}
+        />
+      ) : null}
     </View>
   ) : null;
 
@@ -120,7 +128,7 @@ export function FloatingWorkingControl(props: {
             colorScheme={props.colorScheme}
             glassEffectStyle="regular"
             isInteractive={
-              Boolean(props.onStopAll) ||
+              Boolean(props.onStopBackgroundWork) ||
               (props.liveAgentCount > 0 && props.onOpenAgents !== undefined)
             }
             pointerEvents="box-none"
@@ -193,15 +201,18 @@ export function FloatingWorkingControl(props: {
   );
 }
 
-function StopAllButton(props: { readonly onPress: () => void }) {
+function StopBackgroundWorkButton(props: {
+  readonly label: "Stop" | "Stop all";
+  readonly onPress: () => void;
+}) {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Stop all"
+      accessibilityLabel={props.label}
       className="min-h-11 justify-center px-3"
       onPress={props.onPress}
     >
-      <Text className="text-xs text-danger-foreground">Stop all</Text>
+      <Text className="text-xs text-danger-foreground">{props.label}</Text>
     </Pressable>
   );
 }

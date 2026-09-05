@@ -5408,8 +5408,9 @@ function ChatViewContent(props: ChatViewProps) {
   ]);
   // Background work (subagent fleets, workflow runs, watch loops) can outlive
   // the turn; once it settles, the composer stop button is gone, so this
-  // banner offers Stop all for the root and its background tasks even when
-  // there is no active turn.
+  // banner is the only stop affordance. It always uses tree scope so it
+  // reaches the root's background tasks and any cross-provider children;
+  // the label only says "Stop all" while such a child is live.
   const activeBackgroundWait =
     !isWorking && activeThread ? (activeThreadShell?.backgroundWait ?? null) : null;
   // Compaction reports itself as a running session, so it never reaches the
