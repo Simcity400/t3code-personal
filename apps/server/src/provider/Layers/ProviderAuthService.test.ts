@@ -527,7 +527,7 @@ describe("ProviderAuthService", () => {
       }),
   );
 
-  it.effect("does not replace credentials when bridge cleanup is unconfirmed", () =>
+  it.effect("still replaces credentials when bridge cleanup is unconfirmed", () =>
     Effect.gen(function* () {
       const { service, actions, hiddenSessions } = yield* makeHarness({
         crossProviderSessions: [makeSession("cross-provider-session:stable:rotated")],
@@ -536,11 +536,17 @@ describe("ProviderAuthService", () => {
           issue: "private native stop failure",
         }),
       });
-      const error = yield* service.logout({ instanceId }).pipe(Effect.flip);
-      assert.instanceOf(error, ProviderSetupError);
-      assert.notInclude(error.detail, "private native stop failure");
+      const state = yield* service.logout({ instanceId });
+      assert.strictEqual(state.phase, "idle");
+      // The child stays tracked for a later retry; signing out is not blocked on it.
       assert.equal(hiddenSessions.size, 1);
-      assert.deepStrictEqual(actions, ["close-gate", `stop-agents:${instanceId}`]);
+      assert.deepStrictEqual(actions, [
+        "close-gate",
+        `stop-agents:${instanceId}`,
+        "list-bindings",
+        "list-sessions",
+        "native-logout",
+      ]);
     }),
   );
 

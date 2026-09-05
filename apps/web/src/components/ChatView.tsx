@@ -185,6 +185,7 @@ import {
   flattenAgentPanelRoster,
   foldSubagentActivities,
   formatSubagentTitle,
+  hasLiveCrossProviderTasks,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   deriveBackgroundTasksPanelModel,
@@ -2519,6 +2520,12 @@ function ChatViewContent(props: ChatViewProps) {
     [threadActivities],
   );
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
+  // Stop all only appears once a cross-provider child is running: until then
+  // the plain Stop already ends everything this thread owns.
+  const hasLiveCrossProviderChildren = useMemo(
+    () => hasLiveCrossProviderTasks(threadActivities),
+    [threadActivities],
+  );
   // Both clients select the same server-maintained roster.
   const agentSessionLive = phase !== "disconnected";
   const agentPanelModel = useMemo(
@@ -5502,7 +5509,11 @@ function ChatViewContent(props: ChatViewProps) {
                 disabled={isStoppingBackgroundWork}
                 onClick={() => void handleStopBackgroundWork()}
               >
-                {isStoppingBackgroundWork ? "Stopping..." : "Stop all"}
+                {isStoppingBackgroundWork
+                  ? "Stopping..."
+                  : hasLiveCrossProviderChildren
+                    ? "Stop all"
+                    : "Stop"}
               </Button>
             ),
           }),
@@ -8380,7 +8391,9 @@ function ChatViewContent(props: ChatViewProps) {
                             onPageScrollRelease={onComposerPageScrollRelease}
                             onSend={onSend}
                             onInterrupt={onInterrupt}
-                            onStopAll={handleStopBackgroundWork}
+                            onStopAll={
+                              hasLiveCrossProviderChildren ? handleStopBackgroundWork : undefined
+                            }
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             onRespondToApproval={onRespondToApproval}
                             onSelectActivePendingUserInputOption={

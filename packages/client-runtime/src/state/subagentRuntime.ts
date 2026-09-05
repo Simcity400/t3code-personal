@@ -1385,6 +1385,19 @@ export function deriveSubagentReplies(
   );
 }
 
+/**
+ * Whether Stop all has anything beyond the main agent to reach: a plain Stop
+ * already ends the main agent and its native subagents, so the broader control
+ * is only offered while an independently owned cross-provider child is live.
+ */
+export function hasLiveCrossProviderTasks(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): boolean {
+  return readTaskStates(activities).some(
+    (task) => task.executionOwner === "cross-provider" && isActiveSubagentStatus(task.status),
+  );
+}
+
 /** Explicit Resume is offered only when the server confirms durable wrapper recovery. */
 export function canResumeCrossProviderTask(
   task: Pick<TaskState, "executionOwner" | "taskType" | "canResume" | "status"> | undefined,

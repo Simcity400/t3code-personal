@@ -1,4 +1,5 @@
 import { ProviderSetupError, type ProviderInstanceId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -34,14 +35,15 @@ export const makeProviderAuthService = Effect.gen(function* () {
   const stopSessions = Effect.fn("ProviderAuthService.stopSessions")(function* (
     instanceId: ProviderInstanceId,
   ) {
+    // Best effort: an unconfirmed child shutdown must not lock the user out of
+    // signing out or switching accounts. The bridge keeps the child tracked
+    // and reports the failure on its task row.
     yield* (providers.stopCrossProviderSessions?.(instanceId) ?? Effect.void).pipe(
-      Effect.mapError(
-        () =>
-          new ProviderSetupError({
-            instanceId,
-            operation: "stopSessions",
-            detail: "Could not stop all agents for this provider. Try again.",
-          }),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider auth could not stop every cross-provider agent", {
+          instanceId,
+          cause: Cause.pretty(cause),
+        }),
       ),
     );
     const bindings = yield* directory.listBindings().pipe(

@@ -1204,7 +1204,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             CASE WHEN kind LIKE 'approval.%' THEN 'approval' ELSE 'user-input' END
           ORDER BY sequence DESC, created_at DESC, activity_id DESC
         ) AS position
-        FROM projection_thread_activities INDEXED BY idx_projection_bridge_requests
+        FROM projection_thread_activities
         WHERE thread_id = ${threadId}
           AND kind IN ('approval.requested', 'approval.resolved', 'user-input.requested', 'user-input.resolved')
           AND json_extract(payload_json, '$.bridgeAgentId') IS NOT NULL

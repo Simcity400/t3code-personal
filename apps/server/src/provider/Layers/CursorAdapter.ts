@@ -1097,24 +1097,16 @@ export function makeCursorAdapter(
         );
       });
 
-    // ACP cancellation may include opaque descendants, so it requires explicit tree scope.
-    const interruptTurn: CursorAdapterShape["interruptTurn"] = (threadId, turnId, scope = "self") =>
+    const interruptTurn: CursorAdapterShape["interruptTurn"] = (threadId) =>
       Effect.gen(function* () {
-        if (scope === "self") {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "interruptTurn",
-            issue:
-              "Cursor cannot confirm an individual stop preserves native descendants. Use Stop all.",
-          });
-        }
         const ctx = yield* requireSession(threadId);
-        if (turnId !== undefined && ctx.activeTurnId !== turnId) return;
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
-        yield* ctx.acp.cancel.pipe(
-          Effect.mapError((error) =>
-            mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
+        yield* Effect.ignore(
+          ctx.acp.cancel.pipe(
+            Effect.mapError((error) =>
+              mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
+            ),
           ),
         );
       });
@@ -1211,11 +1203,7 @@ export function makeCursorAdapter(
 
     return {
       provider: PROVIDER,
-      capabilities: {
-        sessionModelSwitch: "in-session",
-        isolatedTurnInterrupt: false,
-        nativeDescendantsObservable: false,
-      },
+      capabilities: { sessionModelSwitch: "in-session" },
       startSession,
       sendTurn,
       interruptTurn,

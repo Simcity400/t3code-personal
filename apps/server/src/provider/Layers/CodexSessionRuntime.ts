@@ -9,7 +9,6 @@ import {
   type ProviderApprovalOption,
   type ProviderEvent,
   type ProviderInteractionMode,
-  type ProviderInterruptScope,
   type ProviderRequestKind,
   type ProviderSession,
   type ProviderTurnStartResult,
@@ -211,7 +210,6 @@ export interface CodexSessionRuntimeShape {
   readonly interruptTurn: (
     turnId?: TurnId,
     taskId?: string,
-    scope?: ProviderInterruptScope,
   ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
@@ -2956,7 +2954,7 @@ export const makeCodexSessionRuntime = (
               : {}),
           } satisfies ProviderTurnStartResult;
         }),
-      interruptTurn: (turnId, taskId, scope = "self") =>
+      interruptTurn: (turnId, taskId) =>
         Effect.gen(function* () {
           if (taskId !== undefined) {
             const childTurnId = (yield* Ref.get(collabChildLiveTurnsRef)).get(taskId);
@@ -2967,14 +2965,8 @@ export const makeCodexSessionRuntime = (
           const providerThreadId = yield* readProviderThreadId;
           const session = yield* Ref.get(sessionRef);
           const effectiveTurnId = turnId ?? session.activeTurnId;
-          if (scope === "self") {
-            if (effectiveTurnId)
-              yield* client.request("turn/interrupt", {
-                threadId: providerThreadId,
-                turnId: effectiveTurnId,
-              });
-            return;
-          }
+          // Stop-everything: children are full threads with their own turns, so
+          // interrupting only the parent would leave the fleet running.
           const interruptNativeTurn = (threadId: string, turnId: string) =>
             client
               .request("turn/interrupt", {

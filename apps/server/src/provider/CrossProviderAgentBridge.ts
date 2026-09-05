@@ -270,10 +270,6 @@ export const makeCrossProviderAgentBridge = Effect.fn("makeCrossProviderAgentBri
         child.changed = yield* Deferred.make<void>();
         yield* Deferred.succeed(previous, undefined);
       });
-    const canInterrupt = (child: Child) =>
-      child.adapter.capabilities.isolatedTurnInterrupt === true ||
-      (child.adapter.capabilities.nativeDescendantsObservable !== false &&
-        child.nativeTasks.size === 0);
     const publishTask = (child: Child) =>
       Effect.gen(function* () {
         yield* deps.publish({
@@ -296,7 +292,7 @@ export const makeCrossProviderAgentBridge = Effect.fn("makeCrossProviderAgentBri
             ...(child.parent ? { parentAgentId: child.parent } : {}),
             status: child.status,
             isBackgrounded: true,
-            canStop: !child.closed && canInterrupt(child),
+            canStop: !child.closed,
             canResume: !child.deleted && !active(child) && !child.stopping,
             ...(child.error ? { error: child.error } : {}),
           },
@@ -612,12 +608,6 @@ export const makeCrossProviderAgentBridge = Effect.fn("makeCrossProviderAgentBri
           child.generation++;
         }
         child.queue = [];
-        if (!canInterrupt(child)) {
-          yield* boundedControl(persist(child));
-          return yield* invalid(
-            "This provider cannot confirm an isolated stop while native descendants may be running. Use explicit Stop all.",
-          );
-        }
         if (child.stopping) return yield* invalid("An interruption is already pending.");
         child.stopping = true;
         const failures: string[] = [];
@@ -630,8 +620,11 @@ export const makeCrossProviderAgentBridge = Effect.fn("makeCrossProviderAgentBri
                 const generation = child.generation;
                 const result = yield* boundedControl(
                   Effect.gen(function* () {
+                    // The child's own native descendants belong to its
+                    // session and stop with it. Bridge grandchildren are
+                    // separate sessions and keep running.
                     if (yield* child.adapter.hasSession(child.hiddenId))
-                      yield* child.adapter.interruptTurn(child.hiddenId, undefined, "self");
+                      yield* child.adapter.interruptTurn(child.hiddenId);
                   }),
                 ).pipe(
                   Effect.onInterrupt(() =>
@@ -1200,13 +1193,6 @@ export const makeCrossProviderAgentBridge = Effect.fn("makeCrossProviderAgentBri
       Effect.gen(function* () {
         if (child.closed) return;
         if (child.stopping) return yield* invalid("An interruption is already pending.");
-        if (
-          child.nativeTasks.size ||
-          child.adapter.capabilities.nativeDescendantsObservable === false
-        )
-          return yield* invalid(
-            "Native descendants still exist; individual close cannot guarantee isolation. Use Stop all.",
-          );
         child.queue = [];
         child.stopping = true;
         const failures: string[] = [];
@@ -1292,7 +1278,7 @@ export const makeCrossProviderAgentBridge = Effect.fn("makeCrossProviderAgentBri
                   Effect.gen(function* () {
                     if (dispose) yield* child.adapter.stopSession(child.hiddenId);
                     else if (yield* child.adapter.hasSession(child.hiddenId))
-                      yield* child.adapter.interruptTurn(child.hiddenId, undefined, "tree");
+                      yield* child.adapter.interruptTurn(child.hiddenId);
                     if (child.turnId) child.settledTurns.add(child.turnId);
                     child.status = "interrupted";
                     child.turnId = undefined;
@@ -1561,7 +1547,6 @@ export const makeCrossProviderAgentBridge = Effect.fn("makeCrossProviderAgentBri
             isAgent,
           });
           payload.canStop = child.adapter.stopTask !== undefined && isAgent;
-          yield* task(child);
         }
         let requestId: string | undefined;
         if (event.requestId) {
@@ -1662,12 +1647,14 @@ export const makeCrossProviderAgentBridge = Effect.fn("makeCrossProviderAgentBri
                 : "title" in event.payload && typeof event.payload.title === "string"
                   ? event.payload.title
                   : undefined;
+          // Journal in memory only. The record is written at turn boundaries
+          // and on stop, close, and resume; writing it per item would rewrite
+          // the full context on every tool call.
           if (detail)
             rememberContext(
               child,
               `${agentId === child.id ? "Agent" : agentId}: ${detail.slice(-12_000)}`,
             );
-          yield* persist(child);
         }
         return true;
       });

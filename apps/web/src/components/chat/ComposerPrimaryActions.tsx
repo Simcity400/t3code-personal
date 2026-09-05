@@ -34,7 +34,7 @@ interface ComposerPrimaryActionsProps {
   showSendWhileRunning?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
-  onStopAll: () => void;
+  onStopAll?: (() => void) | undefined;
   onImplementPlanInNewThread: () => void;
 }
 
@@ -109,26 +109,28 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           <rect x="2" y="2" width="8" height="8" rx="1.5" />
         </svg>
       </button>
-      <Menu>
-        <MenuTrigger
-          render={
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label="Stop actions"
-              disabled={isEnvironmentUnavailable}
-              {...pointerFocusProps}
-            />
-          }
-        >
-          <ChevronDownIcon className="size-3.5" />
-        </MenuTrigger>
-        <MenuPopup align="end" side="top" {...composerFloatingLayerProps}>
-          <MenuItem disabled={isEnvironmentUnavailable} onClick={onStopAll}>
-            Stop all
-          </MenuItem>
-        </MenuPopup>
-      </Menu>
+      {onStopAll ? (
+        <Menu>
+          <MenuTrigger
+            render={
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Stop actions"
+                disabled={isEnvironmentUnavailable}
+                {...pointerFocusProps}
+              />
+            }
+          >
+            <ChevronDownIcon className="size-3.5" />
+          </MenuTrigger>
+          <MenuPopup align="end" side="top" {...composerFloatingLayerProps}>
+            <MenuItem disabled={isEnvironmentUnavailable} onClick={onStopAll}>
+              Stop all
+            </MenuItem>
+          </MenuPopup>
+        </Menu>
+      ) : null}
     </div>
   );
 

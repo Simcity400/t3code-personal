@@ -667,7 +667,7 @@ describe("CodexSessionRuntime collab integration", () => {
 
   // it.live: the runtime talks to a real child process; under it.effect's
   // TestClock the internal timers freeze and the join never completes.
-  it.live("self Stop preserves children; tree Stop reports failures", () =>
+  it.live("Stop interrupts every live child and reports unconfirmed interrupts", () =>
     Effect.gen(function* () {
       const platform = yield* HostProcessPlatform;
       // Ordering + liveness torture for stop-everything: child A's
@@ -791,22 +791,9 @@ describe("CodexSessionRuntime collab integration", () => {
         .pipe(Effect.result);
       assert.equal(unknownStop._tag, "Failure");
 
-      yield* runtime.interruptTurn();
-      yield* runtime.interruptTurn(undefined, undefined, "self");
-      const selfInterrupts = NodeFS.readFileSync(interruptsPath, "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { threadId: string });
-      assert.deepEqual(
-        selfInterrupts.map((entry) => entry.threadId),
-        [CHILD_B, ROOT, ROOT],
-      );
-
       // Stop everything. The parent must be interrupted before child cleanup,
       // and A's hung interrupt must not prevent other cancellation attempts.
-      const treeResult = yield* runtime
-        .interruptTurn(undefined, undefined, "tree")
-        .pipe(Effect.result);
+      const treeResult = yield* runtime.interruptTurn().pipe(Effect.result);
       assert.equal(treeResult._tag, "Failure");
       if (treeResult._tag === "Failure") {
         assert.include(treeResult.failure.message, "not confirmed");
@@ -828,7 +815,7 @@ describe("CodexSessionRuntime collab integration", () => {
         interruptedThreads.has(MEMORY),
         "memory consolidation must be interrupted without appearing in chat",
       );
-      assert.equal(interrupted[selfInterrupts.length]?.threadId, ROOT);
+      assert.equal(interrupted[individual.length]?.threadId, ROOT, "parent is interrupted first");
       assert.equal(interrupted.filter((entry) => entry.threadId === CHILD_A).length, 1);
 
       yield* runtime.close;
@@ -910,9 +897,7 @@ describe("CodexSessionRuntime collab integration", () => {
           yield* runtime.start();
           const parent = yield* runtime.sendTurn({ input: "Launch during cancellation" });
           yield* Fiber.join(ready);
-          const result = yield* runtime
-            .interruptTurn(undefined, undefined, "tree")
-            .pipe(Effect.result);
+          const result = yield* runtime.interruptTurn().pipe(Effect.result);
           assert.equal(result._tag, failParent ? "Failure" : "Success");
           if (result._tag === "Failure")
             assert.include(result.failure.message, "thread already closed");

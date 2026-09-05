@@ -1373,9 +1373,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
 
       yield* provider.interruptTurn({ threadId: session.threadId });
-      assert.deepEqual(routing.codex.interruptTurn.mock.calls, [
-        [session.threadId, undefined, "self"],
-      ]);
+      assert.deepEqual(routing.codex.interruptTurn.mock.calls, [[session.threadId, undefined]]);
 
       yield* provider.respondToRequest({
         threadId: session.threadId,
@@ -3480,7 +3478,7 @@ integratedBridge.layer("ProviderServiceLive cross-provider bridge integration", 
         assert.include(error.message, "root stop rejected");
         assert.include(error.message, "child stop rejected");
         assert.deepEqual(integratedBridge.cursor.interruptTurn.mock.calls, [
-          [sibling.input.threadId, undefined, "tree"],
+          [sibling.input.threadId],
         ]);
         yield* provider.sendTurn({ threadId: caller.threadId, input: "Resume main only" });
         const failed = yield* bridge.wait(caller, { agentId: failedChild.agentId });
@@ -3545,10 +3543,10 @@ integratedBridge.layer("ProviderServiceLive cross-provider bridge integration", 
         assert.instanceOf(error, ProviderValidationError);
         assert.include(error.message, "manual stop persistence failed");
         assert.deepEqual(integratedBridge.codex.interruptTurn.mock.calls, [
-          [caller.threadId, undefined, "tree"],
+          [caller.threadId, undefined],
         ]);
         assert.deepEqual(integratedBridge.claude.interruptTurn.mock.calls, [
-          [child.input.threadId, undefined, "tree"],
+          [child.input.threadId],
         ]);
         assert.instanceOf(yield* bridge.targets(caller).pipe(Effect.flip), ProviderValidationError);
       }).pipe(Effect.ensuring(Effect.sync(() => spy.mockRestore())));
@@ -3609,7 +3607,7 @@ integratedBridge.layer("ProviderServiceLive cross-provider bridge integration", 
         integratedBridge.codex.sendTurn.mockClear();
         yield* provider.interruptTurn({ threadId: caller.threadId });
         assert.deepEqual(integratedBridge.codex.interruptTurn.mock.calls, [
-          [caller.threadId, undefined, "self"],
+          [caller.threadId, undefined],
         ]);
         assert.isEmpty(integratedBridge.claude.interruptTurn.mock.calls);
         assert.deepInclude(
@@ -3694,14 +3692,14 @@ integratedBridge.layer("ProviderServiceLive cross-provider bridge integration", 
         integratedBridge.cursor.interruptTurn.mockClear();
         yield* provider.interruptTurn({ threadId: caller.threadId, scope: "tree" });
         assert.deepEqual(integratedBridge.codex.interruptTurn.mock.calls, [
-          [caller.threadId, undefined, "tree"],
+          [caller.threadId, undefined],
         ]);
         assert.deepEqual(integratedBridge.claude.interruptTurn.mock.calls, [
-          [child.input.threadId, undefined, "tree"],
+          [child.input.threadId],
         ]);
         assert.deepEqual(integratedBridge.cursor.interruptTurn.mock.calls, [
-          [sibling.input.threadId, undefined, "tree"],
-          [grandchild.input.threadId, undefined, "tree"],
+          [sibling.input.threadId],
+          [grandchild.input.threadId],
         ]);
         assert.equal(
           (yield* bridge.wait(otherCaller, { agentId: unrelated.agentId })).status,

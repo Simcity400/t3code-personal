@@ -139,7 +139,7 @@ export interface ThreadComposerProps {
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
-  readonly onStopAll: () => void;
+  readonly onStopAll?: (() => void) | undefined;
   readonly onSendMessage: () => Promise<
     { readonly messageId: MessageId | null } | MessageId | null
   >;
@@ -816,14 +816,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       variant="danger"
                       onPress={props.onStopThread}
                     />
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="Stop all"
-                      onPress={props.onStopAll}
-                      className="min-h-11 justify-center px-2"
-                    >
-                      <Text className="text-xs text-danger-foreground">Stop all</Text>
-                    </Pressable>
+                    {props.onStopAll ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Stop all"
+                        onPress={props.onStopAll}
+                        className="min-h-11 justify-center px-2"
+                      >
+                        <Text className="text-xs text-danger-foreground">Stop all</Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                 ) : (
                   <ComposerActionButton
@@ -922,14 +924,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                         variant="danger"
                         onPress={props.onStopThread}
                       />
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="Stop all"
-                        onPress={props.onStopAll}
-                        className="min-h-11 justify-center px-2"
-                      >
-                        <Text className="text-xs text-danger-foreground">Stop all</Text>
-                      </Pressable>
+                      {props.onStopAll ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Stop all"
+                          onPress={props.onStopAll}
+                          className="min-h-11 justify-center px-2"
+                        >
+                          <Text className="text-xs text-danger-foreground">Stop all</Text>
+                        </Pressable>
+                      ) : null}
                     </View>
                   ) : voicePresentation.showsSend ? (
                     <ComposerActionButton

@@ -1129,12 +1129,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               }
               yield* routed.adapter.stopTask(routed.threadId, input.taskId);
             } else {
+              // The adapter interrupt already covers the root's native
+              // descendants; tree scope only adds the bridge children below.
               if (routed.isActive)
-                yield* routed.adapter.interruptTurn(
-                  routed.threadId,
-                  input.turnId,
-                  input.scope ?? "self",
-                );
+                yield* routed.adapter.interruptTurn(routed.threadId, input.turnId);
             }
           });
           if (input.taskId === undefined && input.scope === "tree") {

@@ -6,11 +6,9 @@ Enable **Agent Browser access** before starting the parent session. Cross-provid
 
 ## Stopping and messaging
 
-**Stop** in the main conversation stops only the main agent. Independently managed children keep working. **Stop** beside a child stops only that child; independent grandchildren continue. **Stop all** explicitly interrupts the main agent and its descendants in this thread, not other threads.
+**Stop** in the main conversation works as it always has: it stops the main agent and the native subagents it launched. Cross-provider children run on their own provider sessions, so they keep working. **Stop** beside a child stops that child and its own native subagents; cross-provider grandchildren continue. While a cross-provider child is running, a **Stop all** option appears next to Stop; it interrupts the main agent and every child in this thread, not other threads. If the main agent's provider fails to honor Stop all, T3 closes its session outright so a stuck agent can always be ended.
 
-Some native descendants share a provider process that cannot be interrupted independently. T3 disables unsupported individual controls or reports an error; it does not silently turn an individual Stop into Stop all. A failed stop is not confirmation that work has ended.
-
-Cursor and Grok do not expose enough information to verify independent native cancellation, so their Stop requires explicit **Stop all**. Independently managed children of other providers still have their own supported controls.
+Some providers cannot stop an individual native task on its own. T3 disables that control or reports an error; it does not silently turn an individual Stop into Stop all. A failed stop is not confirmation that work has ended.
 
 Agents can send follow-up instructions to their owned descendants. Codex can accept live steering; other providers queue ordinary messages until their current turn ends. Interrupt-and-redirect stops the recipient first, then sends the replacement instruction. An agent cannot interrupt its ancestors or siblings.
 
