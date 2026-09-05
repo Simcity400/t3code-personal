@@ -25,6 +25,7 @@ import {
   buildLoadingThreadFromShell,
   buildRevertTurnCountByUserMessageId,
   buildThreadTurnInterruptInput,
+  getLatestRootInterruptFailureId,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   dismissBranchMismatchForSession,
@@ -682,13 +683,58 @@ describe("buildThreadTurnInterruptInput", () => {
           },
         }),
       ),
-    ).toEqual({ threadId, turnId: activeTurnId });
+    ).toEqual({ threadId, turnId: activeTurnId, scope: "self" });
   });
 
   it("omits a turn id when the session is not running", () => {
     expect(buildThreadTurnInterruptInput(makeThread({ session: readySession }))).toEqual({
       threadId,
+      scope: "self",
     });
+  });
+
+  it("stops the whole root tree without targeting a task or a stale turn", () => {
+    for (const session of [
+      readySession,
+      { ...readySession, status: "running" as const, activeTurnId: TurnId.make("turn-running") },
+      null,
+    ]) {
+      expect(buildThreadTurnInterruptInput(makeThread({ session }), "tree")).toEqual({
+        threadId,
+        scope: "tree",
+      });
+    }
+  });
+});
+
+describe("getLatestRootInterruptFailureId", () => {
+  it("identifies new root failures for retry without reacting to unrelated task failures", () => {
+    const events = [
+      {
+        id: "root-1",
+        kind: "provider.turn.interrupt.failed",
+        payload: { detail: "Tree partially stopped" },
+      },
+    ];
+    expect(getLatestRootInterruptFailureId(events)).toBe("root-1");
+    expect(
+      getLatestRootInterruptFailureId([
+        ...events,
+        { id: "resume", kind: "task.resume.failed", payload: { taskId: "task-1" } },
+        { id: "task", kind: "provider.turn.interrupt.failed", payload: { taskId: "task-1" } },
+      ]),
+    ).toBe("root-1");
+    expect(
+      getLatestRootInterruptFailureId([
+        ...events,
+        {
+          id: "root-2",
+          kind: "provider.turn.interrupt.failed",
+          payload: { detail: "Retry failed" },
+        },
+      ]),
+    ).toBe("root-2");
+    expect(getLatestRootInterruptFailureId([])).toBeNull();
   });
 });
 

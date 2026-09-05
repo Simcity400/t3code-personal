@@ -23,6 +23,7 @@ import type {
   OrchestrationThreadShell,
   ProjectId,
   ThreadId,
+  TaskState,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Option from "effect/Option";
@@ -74,6 +75,22 @@ export interface ProjectionThreadDetailQuery {
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  /** One canonical current task, scoped to its owning thread without transcript hydration. */
+  readonly getTaskState: (input: {
+    readonly threadId: ThreadId;
+    readonly taskId: string;
+  }) => Effect.Effect<Option.Option<TaskState>, ProjectionRepositoryError>;
+  /** Current bridge executions and their unresolved requests, without transcript hydration. */
+  readonly getCrossProviderRecovery: () => Effect.Effect<
+    {
+      readonly tasks: ReadonlyArray<{ readonly threadId: ThreadId; readonly state: TaskState }>;
+      readonly requests: ReadonlyArray<{
+        readonly threadId: ThreadId;
+        readonly activity: OrchestrationThreadActivity;
+      }>;
+    },
+    ProjectionRepositoryError
+  >;
   /** Read the latest request or resolution without loading the thread history. */
   readonly getUserInputActivity: (input: {
     readonly threadId: ThreadId;

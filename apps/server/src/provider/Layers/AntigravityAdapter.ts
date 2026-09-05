@@ -1124,17 +1124,29 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
     );
   });
 
-  const interruptTurn: Adapter["interruptTurn"] = (threadId) =>
+  const interruptTurn: Adapter["interruptTurn"] = (threadId, turnId, scope = "self") =>
     Effect.gen(function* () {
       const context = yield* requireSession(threadId);
-      yield* context.promptLock
-        .withPermit(
-          Effect.gen(function* () {
-            yield* cancelRequests(context);
-            yield* context.runtime.cancel;
-          }),
-        )
-        .pipe(Effect.mapError((cause) => mapAntigravityError(threadId, "session/cancel", cause)));
+      yield* context.promptLock.withPermit(
+        Effect.gen(function* () {
+          if (turnId !== undefined && context.activeTurnId !== turnId) return;
+          if (
+            scope === "self" &&
+            Array.from(context.subagents.values()).some((task) => typeof task !== "string")
+          ) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/cancel",
+              detail:
+                "Antigravity cannot stop only this agent while native subagents share its session. Use Stop all.",
+            });
+          }
+          yield* cancelRequests(context);
+          yield* context.runtime.cancel.pipe(
+            Effect.mapError((cause) => mapAntigravityError(threadId, "session/cancel", cause)),
+          );
+        }),
+      );
     });
 
   const respondToRequest: Adapter["respondToRequest"] = (threadId, requestId, decision) =>
@@ -1209,7 +1221,11 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
 
   return {
     provider: PROVIDER,
-    capabilities: { sessionModelSwitch: "in-session", supportsConversationRollback: false },
+    capabilities: {
+      sessionModelSwitch: "in-session",
+      supportsConversationRollback: false,
+      isolatedTurnInterrupt: false,
+    },
     startSession,
     sendTurn,
     interruptTurn,

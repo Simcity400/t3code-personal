@@ -180,6 +180,12 @@ export interface LatestProposedPlanState {
 export type TimelineEntry =
   | {
       id: string;
+      kind: "reasoning";
+      createdAt: string;
+      content: import("@t3tools/client-runtime/state/subagentRuntime").SubagentTranscriptContent;
+    }
+  | {
+      id: string;
       kind: "message";
       createdAt: string;
       message: ChatMessage;

@@ -18,6 +18,8 @@ export const TaskState = Schema.Struct({
   agentKind: Schema.Literals(["agent", "background"]),
   kind: Schema.Literals(["subagent", "workflow", "workflow_agent"]),
   taskType: Schema.NullOr(Schema.String),
+  executionOwner: Schema.optional(Schema.Literal("cross-provider")),
+  canResume: Schema.optional(Schema.Boolean),
   toolUseId: Schema.optional(Schema.String),
   agentPath: Schema.optional(Schema.String),
   title: Schema.String,

@@ -1033,7 +1033,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
               ApprovalRequestId.make(String(event.requestId)),
               "cancel",
             );
-            yield* adapter.interruptTurn(threadId);
+            yield* adapter.interruptTurn(threadId, undefined, "tree");
             return;
           }
           if (event.type === "request.resolved") {
@@ -1218,7 +1218,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         .pipe(Effect.forkChild);
 
       yield* Deferred.await(userInputRequested);
-      yield* adapter.interruptTurn(threadId);
+      yield* adapter.interruptTurn(threadId, undefined, "tree");
       yield* Fiber.await(sendTurnFiber);
 
       assert.equal(yield* adapter.hasSession(threadId), true);

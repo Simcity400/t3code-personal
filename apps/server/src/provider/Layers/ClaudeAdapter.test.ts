@@ -3101,7 +3101,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("interruptTurn settles live tasks and closes the provider session", () => {
+  it.effect("self Stop preserves live native tasks and only tree Stop closes the query", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -3158,13 +3158,26 @@ describe("ClaudeAdapterLive", () => {
 
       yield* Fiber.join(taskEventsFiber);
 
+      for (const scope of [undefined, "self"] as const) {
+        const result = yield* adapter
+          .interruptTurn(session.threadId, undefined, scope)
+          .pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") {
+          assert.equal(result.failure._tag, "ProviderAdapterRequestError");
+          assert.include(result.failure.message, "Stop all");
+        }
+        assert.equal(harness.query.closeCalls, 0);
+        assert.equal(yield* adapter.hasSession(session.threadId), true);
+      }
+
       const stoppedTaskEventFiber = yield* adapter.streamEvents.pipe(
         Stream.filter((event) => event.type === "task.completed"),
         Stream.take(1),
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* adapter.interruptTurn(session.threadId);
+      yield* adapter.interruptTurn(session.threadId, undefined, "tree");
 
       // Closing the session is the hard stop because SDK interrupt can leave
       // resumed background work alive.

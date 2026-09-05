@@ -28,7 +28,9 @@ import {
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -36,6 +38,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as Stream from "effect/Stream";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
@@ -49,7 +52,11 @@ import {
   providerTurnMetricAttributes,
   withMetrics,
 } from "../../observability/Metrics.ts";
-import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
+import {
+  type ProviderAdapterError,
+  type ProviderServiceError,
+  ProviderValidationError,
+} from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
@@ -60,7 +67,15 @@ import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import {
+  makeCrossProviderAgentBridge,
+  isCrossProviderSessionId,
+} from "../CrossProviderAgentBridge.ts";
+import { makeCrossProviderAgentRecoveryStore } from "../CrossProviderAgentRecovery.ts";
 const isModelSelection = Schema.is(ModelSelection);
+const isManuallyStopped = Schema.is(Schema.Struct({ manualStopped: Schema.Literal(true) }));
+const ROOT_STOP_TIMEOUT_MS = 5_000;
+const TREE_STOP_TIMEOUT_MS = 15_000;
 
 /**
  * Hook for tests that want to override the canonical event logger pulled
@@ -260,7 +275,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     ),
   );
 
-  const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
+  const prepareMcpSession = (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    visibleThreadId?: ThreadId,
+  ) =>
     Effect.gen(function* () {
       if (!(yield* agentBrowserAccessEnabled)) {
         // Revoke as well as clear. Every other prepare path reaches
@@ -273,7 +292,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         yield* Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId));
         return undefined;
       }
-      const credential = yield* issueMcpCredential({ threadId, providerInstanceId });
+      const credential = yield* issueMcpCredential({
+        threadId,
+        providerInstanceId,
+        ...(visibleThreadId ? { visibleThreadId } : {}),
+      });
       if (credential) {
         yield* Effect.sync(() => McpProviderSession.setMcpProviderSession(credential.config));
       }
@@ -338,10 +361,55 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
     });
 
+  const manuallyStoppedRoots = new Set<ThreadId>();
+  const rootStopEpoch = new Map<ThreadId, number>();
+  const rootStopped = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      if (manuallyStoppedRoots.has(threadId)) return true;
+      const binding = yield* directory.getBinding(threadId);
+      return Option.isSome(binding) && isManuallyStopped(binding.value.runtimePayload);
+    });
+  const interactionModes = new Map<ThreadId, ProviderSendTurnInput["interactionMode"]>();
+  const crossProviderAgents = yield* makeCrossProviderAgentBridge({
+    recovery: makeCrossProviderAgentRecoveryStore(directory),
+    registry,
+    publish: publishRuntimeEvent,
+    prepare: prepareMcpSession,
+    clear: clearMcpSession,
+    touch: McpSessionRegistry.touchActiveMcpThread,
+    enabled: agentBrowserAccessEnabled,
+    rootStopped,
+    root: (threadId) =>
+      Effect.gen(function* () {
+        const binding = yield* directory.getBinding(threadId);
+        if (Option.isNone(binding))
+          return yield* toValidationError(
+            "cross-provider-agent",
+            "The parent session is unavailable.",
+          );
+        const instanceId = yield* requireBindingInstanceId("cross-provider-agent", binding.value);
+        const adapter = yield* registry.getByInstance(instanceId);
+        const session = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === threadId,
+        );
+        if (!session)
+          return yield* toValidationError(
+            "cross-provider-agent",
+            "The parent session is not running.",
+          );
+        return {
+          session,
+          interactionMode: interactionModes.get(threadId),
+          modelSelection: readPersistedModelSelection(binding.value.runtimePayload),
+        };
+      }),
+  }).pipe(Effect.provide(NodeCrypto.layer));
+
   const processRuntimeEvent = (
     source: {
       readonly instanceId: ProviderInstanceId;
       readonly provider: ProviderDriverKind;
+      readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
     },
     event: ProviderRuntimeEvent,
   ): Effect.Effect<void> =>
@@ -350,7 +418,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         increment(providerRuntimeEventsTotal, {
           provider: canonicalEvent.provider,
           eventType: canonicalEvent.type,
-        }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
+        }).pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              if (!(yield* crossProviderAgents.onEvent(canonicalEvent, source.adapter))) {
+                yield* publishRuntimeEvent(canonicalEvent);
+              }
+            }),
+          ),
+        ),
       ),
     );
 
@@ -393,11 +469,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             {
               instanceId: id,
               provider: adapter.provider,
+              adapter,
             },
             event,
           ),
         ).pipe(Effect.forkScoped);
       }
+    }
+    for (const [id, adapter] of previous) {
+      if (next.get(id) !== adapter) yield* crossProviderAgents.retire(adapter);
     }
     yield* Ref.set(subscribedAdapters, next);
   });
@@ -820,6 +900,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "Either input text or at least one attachment is required",
       );
     }
+    const sendEpoch = rootStopEpoch.get(parsed.threadId) ?? 0;
+    if (parsed.interactionMode) interactionModes.set(parsed.threadId, parsed.interactionMode);
 
     const inputTextWithCitations =
       parsed.input === undefined ? undefined : expandAssistantCitationsForProvider(parsed.input);
@@ -903,7 +985,48 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       // rather than issuing a new one: sessions that go a long time between
       // browser tool calls used to lose the toolkit outright.
       yield* McpSessionRegistry.touchActiveMcpThread(input.threadId);
-      const turn = yield* routed.adapter.sendTurn(input);
+      if ((rootStopEpoch.get(input.threadId) ?? 0) !== sendEpoch) {
+        return yield* toValidationError(
+          "ProviderService.sendTurn",
+          "The user stopped this thread while the prompt was being prepared.",
+        );
+      }
+      yield* directory.upsert({
+        threadId: input.threadId,
+        provider: routed.adapter.provider,
+        providerInstanceId: routed.instanceId,
+        runtimePayload: { manualStopped: false },
+      });
+      const childMessages = crossProviderAgents.rootMessages(input.threadId);
+      if ((rootStopEpoch.get(input.threadId) ?? 0) !== sendEpoch) {
+        // A preparation write may have completed after Stop persisted its latch.
+        yield* directory.upsert({
+          threadId: input.threadId,
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          runtimePayload: { manualStopped: manuallyStoppedRoots.has(input.threadId) },
+        });
+        return yield* toValidationError(
+          "ProviderService.sendTurn",
+          "The user stopped this thread while the prompt was being prepared.",
+        );
+      }
+      manuallyStoppedRoots.delete(input.threadId);
+      crossProviderAgents.releaseRootStop(input.threadId);
+      const turn = yield* routed.adapter.sendTurn(
+        childMessages.length
+          ? {
+              ...input,
+              input: [input.input, ...childMessages.map((message) => message.prompt)]
+                .filter(Boolean)
+                .join("\n\n"),
+            }
+          : input,
+      );
+      crossProviderAgents.confirmRootMessages(
+        input.threadId,
+        childMessages.map((message) => message.id),
+      );
       yield* directory.upsert({
         threadId: input.threadId,
         provider: routed.adapter.provider,
@@ -911,6 +1034,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         status: "running",
         ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
         runtimePayload: {
+          manualStopped: manuallyStoppedRoots.has(input.threadId),
           ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
           activeTurnId: turn.turnId,
           lastRuntimeEvent: "provider.sendTurn",
@@ -952,33 +1076,122 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         schema: ProviderInterruptTurnInput,
         payload: rawInput,
       });
+      if (input.taskId === undefined && !input.resume) {
+        rootStopEpoch.set(input.threadId, (rootStopEpoch.get(input.threadId) ?? 0) + 1);
+        manuallyStoppedRoots.add(input.threadId);
+      }
       let metricProvider = "unknown";
       return yield* Effect.gen(function* () {
-        const routed = yield* resolveRoutableSession({
-          threadId: input.threadId,
-          operation: "ProviderService.interruptTurn",
-          allowRecovery: input.taskId === undefined,
-        });
-        metricProvider = routed.adapter.provider;
-        yield* Effect.annotateCurrentSpan({
-          "provider.operation": "interrupt-turn",
-          "provider.kind": routed.adapter.provider,
-          "provider.thread_id": input.threadId,
-          "provider.turn_id": input.turnId,
-        });
-        if (input.taskId !== undefined) {
-          if (!routed.adapter.stopTask) {
-            return yield* new ProviderValidationError({
-              operation: "ProviderService.stopTask",
-              issue: "This provider does not expose individual task stopping.",
-            });
+        if (
+          input.taskId !== undefined &&
+          (yield* crossProviderAgents.stopTask(input.threadId, input.taskId, input.resume))
+        )
+          return;
+        if (input.resume && !input.taskId?.startsWith("cross-provider:"))
+          return yield* toValidationError(
+            "ProviderService.resumeTask",
+            "This task does not support cross-provider resume.",
+          );
+        if (input.taskId?.startsWith("cross-provider:"))
+          return yield* toValidationError(
+            "ProviderService.stopTask",
+            "This cross-provider task is no longer available.",
+          );
+        const stopSelected = Effect.gen(function* () {
+          const routed = yield* resolveRoutableSession({
+            threadId: input.threadId,
+            operation: "ProviderService.interruptTurn",
+            allowRecovery: false,
+          });
+          metricProvider = routed.adapter.provider;
+          const persistStop =
+            input.taskId === undefined
+              ? directory.upsert({
+                  threadId: input.threadId,
+                  provider: routed.adapter.provider,
+                  providerInstanceId: routed.instanceId,
+                  runtimePayload: { manualStopped: true },
+                })
+              : Effect.void;
+          yield* Effect.annotateCurrentSpan({
+            "provider.operation": "interrupt-turn",
+            "provider.kind": routed.adapter.provider,
+            "provider.thread_id": input.threadId,
+            "provider.turn_id": input.turnId,
+          });
+          const stopNative = Effect.gen(function* () {
+            if (input.taskId !== undefined) {
+              if (!routed.adapter.stopTask) {
+                return yield* new ProviderValidationError({
+                  operation: "ProviderService.stopTask",
+                  issue: "This provider does not expose individual task stopping.",
+                });
+              }
+              yield* routed.adapter.stopTask(routed.threadId, input.taskId);
+            } else {
+              if (routed.isActive)
+                yield* routed.adapter.interruptTurn(
+                  routed.threadId,
+                  input.turnId,
+                  input.scope ?? "self",
+                );
+            }
+          });
+          if (input.taskId === undefined && input.scope === "tree") {
+            const results: ReadonlyArray<Exit.Exit<void, ProviderServiceError>> = yield* Effect.all(
+              [persistStop.pipe(Effect.exit), stopNative.pipe(Effect.exit)],
+              { concurrency: "unbounded" },
+            );
+            const failures = results.flatMap((result) =>
+              Exit.isFailure(result) ? [Cause.pretty(result.cause)] : [],
+            );
+            if (failures.length)
+              return yield* toValidationError("ProviderService.interruptTurn", failures.join("\n"));
+          } else {
+            yield* persistStop;
+            yield* stopNative;
           }
-          yield* routed.adapter.stopTask(routed.threadId, input.taskId);
+        });
+        if (input.taskId === undefined && input.scope === "tree") {
+          const attempt = Effect.fn("ProviderService.attemptTreeStop")(function* (
+            label: string,
+            stop: Effect.Effect<void, ProviderServiceError>,
+            timeoutMs: number,
+          ) {
+            const exit = yield* stop.pipe(
+              Effect.timeoutOrElse({
+                duration: timeoutMs,
+                orElse: () =>
+                  Effect.fail(
+                    toValidationError(
+                      "ProviderService.interruptTurn",
+                      `${label} timed out; stop remains unconfirmed.`,
+                    ),
+                  ),
+              }),
+              Effect.exit,
+            );
+            return Exit.isFailure(exit) ? `${label}: ${Cause.pretty(exit.cause)}` : undefined;
+          });
+          const results = yield* Effect.all(
+            [
+              attempt("Root interruption", stopSelected, ROOT_STOP_TIMEOUT_MS),
+              attempt(
+                "Child tree interruption",
+                crossProviderAgents.stopTree(input.threadId),
+                TREE_STOP_TIMEOUT_MS,
+              ),
+            ],
+            { concurrency: "unbounded" },
+          );
+          const failures = results.filter((result) => result !== undefined);
+          if (failures.length)
+            return yield* toValidationError("ProviderService.interruptTurn", failures.join("\n"));
         } else {
-          yield* routed.adapter.interruptTurn(routed.threadId, input.turnId);
+          yield* stopSelected;
         }
         yield* analytics.record("provider.turn.interrupted", {
-          provider: routed.adapter.provider,
+          provider: metricProvider,
         });
       }).pipe(
         withMetrics({
@@ -1001,6 +1214,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
       let metricProvider = "unknown";
       return yield* Effect.gen(function* () {
+        if (
+          yield* crossProviderAgents.respond(input.threadId, input.requestId, {
+            decision: input.decision,
+          })
+        )
+          return;
+        if (input.requestId.startsWith("cross-provider:"))
+          return yield* toValidationError(
+            "ProviderService.respondToRequest",
+            "This child request has expired.",
+          );
         const routed = yield* resolveRoutableSession({
           threadId: input.threadId,
           operation: "ProviderService.respondToRequest",
@@ -1040,6 +1264,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     });
     let metricProvider = "unknown";
     return yield* Effect.gen(function* () {
+      if (
+        yield* crossProviderAgents.respond(input.threadId, input.requestId, {
+          answers: input.answers,
+        })
+      )
+        return;
+      if (input.requestId.startsWith("cross-provider:"))
+        return yield* toValidationError(
+          "ProviderService.respondToUserInput",
+          "This child request has expired.",
+        );
       const routed = yield* resolveRoutableSession({
         threadId: input.threadId,
         operation: "ProviderService.respondToUserInput",
@@ -1125,7 +1360,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ),
         ),
       );
-      const activeSessions = sessionsByProvider.flatMap((sessions) => sessions);
+      const activeSessions = sessionsByProvider
+        .flatMap((sessions) => sessions)
+        .filter((session) => !isCrossProviderSessionId(session.threadId));
       // Only live adapter sessions appear in this response. Resolving every
       // historical binding here makes each call scale with the full thread
       // history instead of the active session set.
@@ -1316,15 +1553,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ),
       ),
     ).pipe(Effect.map((sessionsByAdapter) => sessionsByAdapter.flatMap((sessions) => sessions)));
-    yield* Effect.forEach(activeSessions, (session) =>
-      Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
-        upsertSessionBinding(session, session.threadId, {
-          lastRuntimeEvent: "provider.stopAll",
-          lastRuntimeEventAt,
-        }),
-      ),
+    yield* Effect.forEach(
+      activeSessions.filter((session) => !isCrossProviderSessionId(session.threadId)),
+      (session) =>
+        Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
+          upsertSessionBinding(session, session.threadId, {
+            lastRuntimeEvent: "provider.stopAll",
+            lastRuntimeEventAt,
+          }),
+        ),
     ).pipe(Effect.asVoid);
-    yield* Effect.forEach(currentAdapters, ([, adapter]) => adapter.stopAll()).pipe(Effect.asVoid);
+    yield* Effect.forEach(currentAdapters, ([, adapter]) =>
+      crossProviderAgents.retire(adapter).pipe(Effect.andThen(adapter.stopAll())),
+    ).pipe(Effect.asVoid);
     yield* McpSessionRegistry.revokeAllActiveMcpCredentials();
     McpProviderSession.clearAllMcpProviderSessions();
     const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
@@ -1364,6 +1605,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   );
 
   return {
+    crossProviderAgents,
+    stopCrossProviderSessions: (instanceId: ProviderInstanceId) =>
+      crossProviderAgents.stopInstance(instanceId),
     startSession,
     sendTurn,
     interruptTurn,

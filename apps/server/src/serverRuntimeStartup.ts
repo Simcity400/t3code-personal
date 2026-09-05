@@ -1,5 +1,6 @@
 import {
   CommandId,
+  EventId,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   type ModelSelection,
@@ -38,8 +39,10 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
+import { makeCrossProviderAgentRecoveryStore } from "./provider/CrossProviderAgentRecovery.ts";
 import * as ProviderSessionReaper from "./provider/Services/ProviderSessionReaper.ts";
 import { forkParked } from "./serverActivation.ts";
+import { taskStateActivity } from "./orchestration/taskState.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import {
@@ -386,6 +389,9 @@ export const markRunningProviderSessionsForContinuation = Effect.gen(function* (
       if (Option.isNone(binding)) {
         continue;
       }
+      if (readRuntimePayload(binding.value.runtimePayload).manualStopped === true) {
+        continue;
+      }
       if (binding.value.resumeCursor === null || binding.value.resumeCursor === undefined) {
         continue;
       }
@@ -437,12 +443,89 @@ export const clearProviderSessionContinuationMarkers = (threadIds: ReadonlyArray
     yield* clearContinuationMarkers(directory, threadIds);
   }).pipe(Effect.mapError(toServerUpdateThreadContinuationError));
 
+export const reconcileCrossProviderExecutions = Effect.gen(function* () {
+  const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+  const recoveryStore = makeCrossProviderAgentRecoveryStore(directory);
+  const recovery = yield* query.getCrossProviderRecovery();
+  const now = DateTime.formatIso(yield* DateTime.now);
+  for (const { threadId, activity } of recovery.requests) {
+    const payload = activity.payload as Record<string, unknown>;
+    const approval = activity.kind === "approval.requested";
+    const id = `cross-provider-recovery:request:${activity.id}`;
+    yield* engine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(id),
+      threadId,
+      createdAt: now,
+      activity: {
+        id: EventId.make(id),
+        createdAt: now,
+        tone: approval ? "approval" : "info",
+        kind: approval ? "approval.resolved" : "user-input.resolved",
+        summary: approval
+          ? "Approval cancelled after server restart"
+          : "User input cancelled after server restart",
+        turnId: activity.turnId,
+        payload: {
+          requestId: payload.requestId,
+          agentId: payload.agentId,
+          bridgeAgentId: payload.bridgeAgentId,
+          ...(approval
+            ? { decision: "cancel", requestType: payload.requestType }
+            : { cancelled: true, answers: {} }),
+          reason: "The child provider session did not survive a server restart.",
+        },
+      },
+    });
+  }
+  for (const { threadId, state } of recovery.tasks) {
+    const record =
+      state.taskType === "cross_provider"
+        ? yield* recoveryStore
+            .load(state.id)
+            .pipe(Effect.catchTag("ProviderValidationError", () => Effect.succeed(undefined)))
+        : undefined;
+    const canResume = record !== undefined && record.root === threadId && !record.deleted;
+    const lostExecution = ["pending", "running", "waiting", "idle"].includes(state.status);
+    if (!lostExecution && Boolean(state.canResume) === canResume && !state.canStop) continue;
+    // @effect-diagnostics-next-line preferSchemaOverJson:off
+    const id = `cross-provider-recovery:task:${JSON.stringify([threadId, state.id, state.activationCount, state.updatedAt])}`;
+    yield* engine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(id),
+      threadId,
+      createdAt: now,
+      activity: {
+        ...taskStateActivity(threadId, {
+          ...state,
+          status: lostExecution ? "interrupted" : state.status,
+          canStop: false,
+          canResume,
+          waitReason: null,
+          waitingSince: null,
+          completedAt: lostExecution ? now : state.completedAt,
+          updatedAt: now,
+          error: lostExecution
+            ? canResume
+              ? "The child execution was interrupted by a server restart. Resume this agent to continue."
+              : "The child provider session did not survive a server restart. Start a new child to continue."
+            : state.error,
+        }),
+      },
+    });
+  }
+});
+
 export const reconcileProviderSessions = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
   const providerService = yield* ProviderService.ProviderService;
   const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+
+  yield* reconcileCrossProviderExecutions;
 
   const liveThreadIds = new Set(
     (yield* providerService.listSessions()).map((session) => session.threadId),
@@ -478,6 +561,10 @@ export const reconcileProviderSessions = Effect.gen(function* () {
       ? readServerUpdateContinuationTurnId(binding.value.runtimePayload)
       : null;
     const continuationMarked =
+      !(
+        Option.isSome(binding) &&
+        readRuntimePayload(binding.value.runtimePayload).manualStopped === true
+      ) &&
       continuationTurnId !== null &&
       (session.activeTurnId === null || continuationTurnId === session.activeTurnId);
     const settleAsError = (lastError: string) =>
@@ -578,6 +665,12 @@ export const reconcileProviderSessions = Effect.gen(function* () {
       yield* forkParked(
         Effect.gen(function* () {
           const continuation = Effect.gen(function* () {
+            const currentBinding = yield* directory.getBinding(thread.id);
+            if (
+              Option.isSome(currentBinding) &&
+              readRuntimePayload(currentBinding.value.runtimePayload).manualStopped === true
+            )
+              return;
             const providerInstanceId = binding.value.providerInstanceId;
             if (providerInstanceId === undefined) {
               return yield* new ProviderSessionContinuationError({

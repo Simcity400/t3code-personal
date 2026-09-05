@@ -353,6 +353,71 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
+  it("renders child plans and coalesced reasoning as dedicated Markdown entries", () => {
+    const at = "2026-09-05T00:00:00.000Z";
+    const rows: OrchestrationThreadActivity[] = [
+      {
+        id: EventId.make("prompt"),
+        createdAt: at,
+        kind: "tool.completed",
+        tone: "info",
+        summary: "Instruction",
+        turnId: null,
+        payload: { agentId: "child", itemType: "user_message", prompt: "Begin" },
+      },
+      {
+        id: EventId.make("r1"),
+        createdAt: at,
+        kind: "content.delta",
+        tone: "info",
+        summary: "reasoning_text",
+        turnId: null,
+        payload: {
+          agentId: "child",
+          itemId: "reasoning",
+          streamKind: "reasoning_text",
+          delta: "Read **",
+        },
+      },
+      {
+        id: EventId.make("r2"),
+        createdAt: at,
+        kind: "content.delta",
+        tone: "info",
+        summary: "reasoning_text",
+        turnId: null,
+        payload: {
+          agentId: "child",
+          itemId: "reasoning",
+          streamKind: "reasoning_text",
+          delta: "code**.",
+        },
+      },
+      {
+        id: EventId.make("plan"),
+        createdAt: at,
+        kind: "turn.proposed.completed",
+        tone: "info",
+        summary: "Plan proposed",
+        turnId: null,
+        payload: { agentId: "child", planMarkdown: "# Plan\n\n- Verify" },
+      },
+    ];
+    const thread = makeThread({
+      id: ThreadId.make("child-content"),
+      projectId: ProjectId.make("project"),
+      title: "Child",
+      activities: rows,
+    });
+    const feed = buildThreadFeed(thread, { agentId: "child" });
+    expect(
+      feed.map((entry) =>
+        entry.type === "transcript-content" ? [entry.content.kind, entry.content.text] : entry.type,
+      ),
+    ).toEqual(["message", ["reasoning", "Read **code**."], ["plan", "# Plan\n\n- Verify"]]);
+    expect(buildThreadFeed(thread)).toEqual([]);
+    expect(deriveThreadFeedPresentation(feed, null, new Set())).toEqual(feed);
+  });
   it("shows the provider reason from legacy runtime error activities", () => {
     const reason = "You've hit your Codex usage limit. Try again later.";
     const thread = makeThread({

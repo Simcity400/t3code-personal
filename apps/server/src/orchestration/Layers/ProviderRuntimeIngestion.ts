@@ -234,6 +234,10 @@ function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
 }
 
 function proposedPlanIdFromEvent(event: ProviderRuntimeEvent, threadId: ThreadId): string {
+  const agentId =
+    ("agentId" in event.payload ? event.payload.agentId : undefined) ?? event.bridgeAgentId;
+  if (agentId !== undefined)
+    return `plan:${threadId}:agent:${agentId}:${event.itemId ?? event.turnId ?? "current"}`;
   const turnId = toTurnId(event.turnId);
   if (turnId) {
     return proposedPlanIdForTurn(threadId, turnId);
@@ -253,7 +257,7 @@ function assistantSegmentBaseKeyFromEvent(event: ProviderRuntimeEvent): string {
     event.payload.agentId !== undefined
       ? event.payload.agentId
       : undefined;
-  const base = String(event.itemId ?? event.turnId ?? event.eventId);
+  const base = String(event.itemId ?? event.turnId ?? (agentId ? "current" : event.eventId));
   return agentId ? `agent:${agentId}:${base}` : base;
 }
 
@@ -364,6 +368,9 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
   };
   for (const key of [
     "taskType",
+    "executionOwner",
+    "canStop",
+    "canResume",
     "agentId",
     "title",
     // Reader-facing task detail: a shell's command line and a monitor's
@@ -442,6 +449,67 @@ export function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
   taskTitle?: string,
 ): ReadonlyArray<OrchestrationThreadActivity> {
+  const agentId =
+    ("agentId" in event.payload ? event.payload.agentId : undefined) ?? event.bridgeAgentId;
+  return runtimeEventToUnattributedActivities(event, taskTitle).map((activity) => ({
+    ...activity,
+    payload: {
+      ...(activity.payload as Record<string, unknown>),
+      ...(agentId !== undefined ? { agentId } : {}),
+      ...(event.bridgeAgentId !== undefined ? { bridgeAgentId: event.bridgeAgentId } : {}),
+      ...((event.type === "item.started" ||
+        event.type === "item.updated" ||
+        event.type === "item.completed") &&
+      event.payload.itemType === "user_message" &&
+      agentId !== undefined &&
+      event.payload.detail !== undefined
+        ? { prompt: event.payload.detail }
+        : {}),
+      ...(event.bridgeAgentId !== undefined && activity.kind.startsWith("task.")
+        ? { executionOwner: "cross-provider" }
+        : {}),
+    },
+  }));
+}
+
+function runtimeEventToUnattributedActivities(
+  event: ProviderRuntimeEvent,
+  taskTitle?: string,
+): ReadonlyArray<OrchestrationThreadActivity> {
+  if (
+    event.bridgeAgentId !== undefined &&
+    ((event.type === "content.delta" && event.payload.streamKind !== "assistant_text") ||
+      ((event.type === "item.started" ||
+        event.type === "item.updated" ||
+        event.type === "item.completed") &&
+        ["reasoning", "plan", "context_compaction", "error"].includes(event.payload.itemType)))
+  ) {
+    const kind =
+      event.type === "content.delta"
+        ? event.type
+        : event.payload.itemType === "context_compaction"
+          ? "context-compaction"
+          : event.payload.itemType === "error"
+            ? "runtime.error"
+            : event.type;
+    return [
+      {
+        id: event.eventId,
+        createdAt: event.createdAt,
+        kind,
+        tone: kind === "runtime.error" ? "error" : "info",
+        summary:
+          event.type === "content.delta"
+            ? event.payload.streamKind
+            : (event.payload.title ?? event.payload.itemType),
+        payload: {
+          ...event.payload,
+          ...(event.itemId !== undefined ? { itemId: event.itemId } : {}),
+        },
+        turnId: toTurnId(event.turnId) ?? null,
+      },
+    ];
+  }
   const maybeSequence = (() => {
     const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
     return eventWithSequence.sessionSequence !== undefined
@@ -610,6 +678,10 @@ export function runtimeEventToActivities(
             questions: event.payload.questions,
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.responseMode ? { responseMode: event.payload.responseMode } : {}),
+            ...((event.payload.delivery === "agent" || event.bridgeAgentId !== undefined) &&
+            event.payload.responseMode === "message"
+              ? { delivery: "agent" }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -624,10 +696,14 @@ export function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: "info",
           kind: "user-input.resolved",
-          summary: "User input submitted",
+          summary: event.payload.cancelled ? "User input cancelled" : "User input submitted",
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             answers: event.payload.answers,
+            ...(event.payload.cancelled !== undefined
+              ? { cancelled: event.payload.cancelled }
+              : {}),
+            ...(event.payload.reason !== undefined ? { reason: event.payload.reason } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -875,7 +951,9 @@ export function runtimeEventToActivities(
           // One row per thread, rewritten by each edge: the panel asks "is it
           // compacting, and since when", which is latest-state. A row per edge
           // would accumulate one pair per compaction for no reader.
-          id: EventId.make(`session-compacting:${event.threadId}`),
+          id: EventId.make(
+            `session-compacting:${event.threadId}${event.bridgeAgentId !== undefined ? `:${event.bridgeAgentId}` : ""}`,
+          ),
           createdAt: event.createdAt,
           tone: "info",
           kind: "session.compacting",
@@ -1084,6 +1162,20 @@ const make = Effect.gen(function* () {
     capacity: BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY,
     timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
+  });
+
+  const childAssistantMessages = yield* Cache.make<
+    MessageId,
+    {
+      threadId: ThreadId;
+      agentId: string;
+      bridgeAgentId: string;
+      turnId?: TurnId;
+    }
+  >({
+    capacity: BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY,
+    timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
+    lookup: () => Effect.die("Child assistant segments must be registered before lookup"),
   });
 
   // Task names arrive on task.started/task.progress but not on task.completed,
@@ -1573,7 +1665,7 @@ const make = Effect.gen(function* () {
       yield* Effect.forEach(
         proposedPlanKeys,
         (key) =>
-          key.startsWith(proposedPlanPrefix)
+          key.startsWith(proposedPlanPrefix) && !key.startsWith(`${proposedPlanPrefix}agent:`)
             ? Cache.invalidate(bufferedProposedPlanById, key)
             : Effect.void,
         { concurrency: 1 },
@@ -1664,7 +1756,11 @@ const make = Effect.gen(function* () {
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
-      if (event.type === "content.delta" && event.payload.streamKind !== "assistant_text") {
+      if (
+        event.type === "content.delta" &&
+        event.payload.streamKind !== "assistant_text" &&
+        event.bridgeAgentId === undefined
+      ) {
         return;
       }
 
@@ -1715,6 +1811,7 @@ const make = Effect.gen(function* () {
           : false;
 
       const shouldApplyThreadLifecycle = (() => {
+        if (event.bridgeAgentId !== undefined) return false;
         if (!STRICT_PROVIDER_LIFECYCLE_GUARD) {
           return true;
         }
@@ -1868,6 +1965,14 @@ const make = Effect.gen(function* () {
           event,
           ...(turnId ? { turnId } : {}),
         });
+        if (agentId !== undefined && event.bridgeAgentId !== undefined) {
+          yield* Cache.set(childAssistantMessages, assistantMessageId, {
+            threadId: thread.id,
+            agentId,
+            bridgeAgentId: event.bridgeAgentId,
+            ...(turnId !== undefined ? { turnId } : {}),
+          });
+        }
         if (turnId && agentId === undefined) {
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
         }
@@ -1909,7 +2014,7 @@ const make = Effect.gen(function* () {
         (event.type === "user-input.requested" && event.payload.responseMode !== "message")
           ? toTurnId(event.turnId)
           : undefined;
-      if (pauseForUserTurnId) {
+      if (pauseForUserTurnId && event.bridgeAgentId === undefined) {
         const detailedThread = yield* getLoadedThreadDetail();
         const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
           serverSettingsService.getSettings,
@@ -1953,6 +2058,33 @@ const make = Effect.gen(function* () {
       if (proposedPlanDelta && proposedPlanDelta.length > 0) {
         const planId = proposedPlanIdFromEvent(event, thread.id);
         yield* appendBufferedProposedPlan(planId, proposedPlanDelta, now);
+      }
+
+      if (
+        event.type === "turn.proposed.completed" &&
+        (event.bridgeAgentId !== undefined || event.payload.agentId !== undefined)
+      ) {
+        const planId = proposedPlanIdFromEvent(event, thread.id);
+        const buffered = yield* takeBufferedProposedPlan(planId);
+        yield* orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: yield* providerCommandId(event, "child-proposed-plan"),
+          threadId: thread.id,
+          activity: {
+            id: event.eventId,
+            createdAt: now,
+            kind: "turn.proposed.completed",
+            tone: "info",
+            summary: "Plan proposed",
+            turnId: eventTurnId ?? null,
+            payload: {
+              planMarkdown: event.payload.planMarkdown || buffered?.text,
+              agentId: event.payload.agentId ?? event.bridgeAgentId,
+              ...(event.bridgeAgentId !== undefined ? { bridgeAgentId: event.bridgeAgentId } : {}),
+            },
+          },
+          createdAt: now,
+        });
       }
 
       const assistantCompletion =
@@ -2021,6 +2153,7 @@ const make = Effect.gen(function* () {
               ? { fallbackText: assistantCompletion.fallbackText }
               : {}),
           });
+          yield* Cache.invalidate(childAssistantMessages, assistantMessageId);
 
           if (turnId && assistantCompletion.agentId === undefined) {
             yield* forgetAssistantMessageId(thread.id, turnId, assistantMessageId);
@@ -2032,7 +2165,49 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (proposedPlanCompletion) {
+      if (
+        event.bridgeAgentId !== undefined &&
+        (event.type === "task.completed" ||
+          (event.type === "task.updated" &&
+            ["completed", "failed", "interrupted", "cancelled"].includes(
+              event.payload.status ?? "",
+            )) ||
+          event.type === "request.opened" ||
+          (event.type === "user-input.requested" && event.payload.responseMode !== "message"))
+      ) {
+        const owner =
+          "taskId" in event.payload
+            ? event.payload.taskId
+            : (("agentId" in event.payload ? event.payload.agentId : undefined) ??
+              event.bridgeAgentId);
+        for (const messageId of yield* Cache.keys(childAssistantMessages)) {
+          const segment = yield* Cache.getOption(childAssistantMessages, messageId);
+          if (
+            Option.isNone(segment) ||
+            segment.value.threadId !== thread.id ||
+            segment.value.agentId !== owner
+          )
+            continue;
+          yield* finalizeAssistantMessage({
+            event,
+            threadId: thread.id,
+            messageId,
+            agentId: segment.value.agentId,
+            ...(segment.value.turnId !== undefined ? { turnId: segment.value.turnId } : {}),
+            createdAt: now,
+            commandTag: "child-assistant-complete",
+            finalDeltaCommandTag: "child-assistant-flush",
+            hasProjectedMessage: true,
+          });
+          yield* Cache.invalidate(childAssistantMessages, messageId);
+        }
+      }
+
+      if (
+        proposedPlanCompletion &&
+        event.bridgeAgentId === undefined &&
+        !("agentId" in event.payload && event.payload.agentId !== undefined)
+      ) {
         const detailedThread = yield* getLoadedThreadDetail();
         yield* finalizeBufferedProposedPlan({
           event,
@@ -2045,7 +2220,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (event.type === "turn.completed") {
+      if (event.type === "turn.completed" && event.bridgeAgentId === undefined) {
         const detailedThread = yield* getLoadedThreadDetail();
         const messages = detailedThread?.messages ?? [];
         const proposedPlans = detailedThread?.proposedPlans ?? [];
@@ -2081,11 +2256,15 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "session.exited") {
+      if (event.type === "session.exited" && event.bridgeAgentId === undefined) {
         yield* clearTurnStateForSession(thread.id);
       }
 
-      if (event.type === "runtime.error") {
+      if (
+        event.type === "runtime.error" &&
+        event.bridgeAgentId === undefined &&
+        event.payload.agentId === undefined
+      ) {
         const runtimeErrorMessage = event.payload.message;
 
         const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
@@ -2114,7 +2293,11 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "thread.metadata.updated" && event.payload.name) {
+      if (
+        event.type === "thread.metadata.updated" &&
+        event.payload.name &&
+        event.bridgeAgentId === undefined
+      ) {
         if (canReplaceThreadTitle(thread.title)) {
           yield* orchestrationEngine.dispatch({
             type: "thread.meta.update",
@@ -2125,7 +2308,7 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "turn.diff.updated") {
+      if (event.type === "turn.diff.updated" && event.bridgeAgentId === undefined) {
         const turnId = toTurnId(event.turnId);
         const checkpointContext = turnId
           ? yield* projectionSnapshotQuery
@@ -2173,9 +2356,9 @@ const make = Effect.gen(function* () {
       // Events carrying a turn id that conflicts with the active turn are
       // stale (superseded turn) and must neither overwrite nor clear the
       // active turn's progress; session.exited always clears.
-      if (event.type === "session.exited") {
+      if (event.type === "session.exited" && event.bridgeAgentId === undefined) {
         threadPlanProgress.clearThreadPlanProgress(thread.id);
-      } else if (!conflictsWithActiveTurn) {
+      } else if (!conflictsWithActiveTurn && event.bridgeAgentId === undefined) {
         if (event.type === "turn.plan.updated") {
           // A subagent's own todo list is not the thread's working indicator:
           // recording it here made the parent's status line narrate a child's
@@ -2231,7 +2414,7 @@ const make = Effect.gen(function* () {
         // The sidebar reads the shell, not thread activities, so this is how a
         // compacting thread stops claiming its agent is working.
         case "session.state.changed":
-          if (event.payload.compacting !== undefined) {
+          if (event.payload.compacting !== undefined && event.bridgeAgentId === undefined) {
             threadBackgroundLiveness.recordSessionCompacting({
               threadId: thread.id,
               compacting: event.payload.compacting,
@@ -2240,7 +2423,8 @@ const make = Effect.gen(function* () {
           }
           break;
         case "session.exited":
-          threadBackgroundLiveness.clearThreadLiveness(thread.id);
+          if (event.bridgeAgentId === undefined)
+            threadBackgroundLiveness.clearThreadLiveness(thread.id);
           break;
         default:
           break;
@@ -2263,9 +2447,14 @@ const make = Effect.gen(function* () {
           payload: {
             ...payload,
             canStop:
-              (event.provider === "claudeAgent" && !String(payload.taskId).includes(":wf:")) ||
-              ((event.provider === "codex" || event.provider === "opencode") &&
-                payload.agentKind === "agent"),
+              typeof payload.canStop === "boolean"
+                ? payload.canStop
+                : event.bridgeAgentId !== undefined
+                  ? false
+                  : (event.provider === "claudeAgent" &&
+                      !String(payload.taskId).includes(":wf:")) ||
+                    ((event.provider === "codex" || event.provider === "opencode") &&
+                      payload.agentKind === "agent"),
           },
         };
       });

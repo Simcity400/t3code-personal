@@ -1,4 +1,5 @@
 import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { buildThreadTurnInterruptInput } from "./threadTurnInterrupt";
 import {
   StackActions,
   useFocusEffect,
@@ -504,12 +505,15 @@ function ThreadRouteContent(
     }
     return interruptThreadTurn({
       environmentId: selectedThread.environmentId,
-      input: {
-        threadId: selectedThread.id,
-        ...(selectedThread.session.activeTurnId
-          ? { turnId: selectedThread.session.activeTurnId }
-          : {}),
-      },
+      input: buildThreadTurnInterruptInput(selectedThread),
+    });
+  }, [interruptThreadTurn, selectedThread]);
+
+  const handleStopAll = useCallback(() => {
+    if (!selectedThread) return;
+    return interruptThreadTurn({
+      environmentId: selectedThread.environmentId,
+      input: buildThreadTurnInterruptInput(selectedThread, "tree"),
     });
   }, [interruptThreadTurn, selectedThread]);
 
@@ -926,6 +930,7 @@ function ThreadRouteContent(
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
+          onStopAll={handleStopAll}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

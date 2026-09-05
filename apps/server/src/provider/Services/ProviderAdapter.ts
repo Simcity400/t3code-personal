@@ -11,6 +11,7 @@ import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
   ProviderDriverKind,
+  ProviderInterruptScope,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
@@ -28,6 +29,16 @@ import type * as Stream from "effect/Stream";
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
+  /** True only when self interrupt is verified to preserve native descendants.
+   * Omitted means false; childless stops also require observable native descendants. */
+  readonly isolatedTurnInterrupt?: boolean;
+  /** False when an empty observed task roster cannot establish native childlessness.
+   * Omitted means observable. Opaque providers require isolatedTurnInterrupt for self Stop. */
+  readonly nativeDescendantsObservable?: boolean;
+  /** True when sendTurn can deliver input during active work without cancelling it. */
+  readonly supportsInputSteering?: boolean;
+  /** False when this adapter cannot host T3-managed cross-provider agents. Omitted means allowed. */
+  readonly crossProviderAgents?: boolean;
   /**
    * Declares whether changing the model on an existing session is supported.
    */
@@ -71,9 +82,16 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
   /**
-   * Interrupt an active turn.
+   * Interrupt only the selected execution by default. Native descendants are
+   * included only for explicit tree scope; independent bridge sessions are
+   * never adapter descendants. Fail if the native primitive cannot isolate
+   * self, without falling back to stopSession.
    */
-  readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
+  readonly interruptTurn: (
+    threadId: ThreadId,
+    turnId?: TurnId,
+    scope?: ProviderInterruptScope,
+  ) => Effect.Effect<void, TError>;
 
   /** Stop one native task without interrupting its parent or siblings. */
   readonly stopTask?: (threadId: ThreadId, taskId: string) => Effect.Effect<void, TError>;

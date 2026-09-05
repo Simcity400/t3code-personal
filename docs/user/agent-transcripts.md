@@ -17,3 +17,5 @@ The Agents panel groups background tasks by their owner, including **Main**. Wor
 Use **Stop** beside a running agent or task to stop just that work. Claude supports native task stopping; Codex and OpenCode support stopping individual child agents. Other providers may expose a task without exposing an individual stop operation; the control explains when that operation is unavailable. A rejected individual stop reports an error and leaves the parent session running.
 
 Older threads recorded before the current task roster was introduced are not backfilled. New provider activity creates current task records.
+
+Agents launched through T3's [cross-provider tools](cross-provider-agents.md) use this same view. Main **Stop** leaves independently managed children running; use **Stop all** for the whole thread's agent tree. The cross-provider guide includes messaging, recovery limits, and reusable project instructions.

@@ -9,6 +9,8 @@ import {
   ENCRYPTED_SUBAGENT_PROMPT_PLACEHOLDER,
   deriveSubagentReplies,
   deriveSubagentTranscript,
+  deriveSubagentTranscriptContent,
+  isSubagentTranscriptContentActivity,
   deriveAgentPanelModel,
   foldSubagentActivities as selectfoldSubagentActivities,
   formatSubagentModelLabel,
@@ -27,6 +29,65 @@ import {
 } from "./subagentRuntime.ts";
 
 let sequence = 0;
+
+describe("child transcript Markdown content", () => {
+  it("coalesces reasoning, keeps complete plans, and scopes children independently", () => {
+    const rows = [
+      activity("content.delta", {
+        agentId: "child",
+        itemId: "r",
+        streamKind: "reasoning_text",
+        delta: "Inspect **",
+      }),
+      activity("content.delta", {
+        agentId: "sibling",
+        itemId: "r",
+        streamKind: "reasoning_text",
+        delta: "Other",
+      }),
+      activity("content.delta", {
+        agentId: "child",
+        itemId: "r",
+        streamKind: "reasoning_text",
+        delta: "code**.",
+      }),
+      activity("item.completed", {
+        agentId: "child",
+        itemId: "r",
+        itemType: "reasoning",
+        detail: "Inspect **code**.",
+      }),
+      activity("turn.proposed.completed", {
+        agentId: "child",
+        planMarkdown: "# Plan\n\n```ts\nrun();\n```",
+      }),
+    ];
+    const content = deriveSubagentTranscriptContent(
+      selectSubagentTranscriptActivities(rows, "child"),
+    );
+    expect(content.map(({ kind, text, streaming }) => ({ kind, text, streaming }))).toEqual([
+      { kind: "reasoning", text: "Inspect **code**.", streaming: false },
+      { kind: "plan", text: "# Plan\n\n```ts\nrun();\n```", streaming: false },
+    ]);
+    expect(rows.every(isSubagentTranscriptContentActivity)).toBe(true);
+  });
+
+  it("retains separate summary streams and missing-ID blocks after completion", () => {
+    const rows = [
+      activity("content.delta", { streamKind: "reasoning_text", delta: "First" }),
+      activity("content.delta", { streamKind: "reasoning_summary_text", delta: "Summary" }),
+      activity("item.completed", { itemType: "reasoning" }),
+      activity("content.delta", { streamKind: "reasoning_text", delta: "Next" }),
+    ];
+    expect(
+      deriveSubagentTranscriptContent(rows).map(({ text, streaming }) => ({ text, streaming })),
+    ).toEqual([
+      { text: "First", streaming: false },
+      { text: "Summary", streaming: false },
+      { text: "Next", streaming: true },
+    ]);
+  });
+});
 /**
  * Fixtures model POST-INGESTION rows: ingestion stamps agentKind on every
  * task.* payload, so the helper stamps too (same classifier). Pass an
@@ -968,6 +1029,50 @@ describe("selectSubagentTranscriptMessages", () => {
 });
 
 describe("selectSubagentTranscriptActivities", () => {
+  it("excludes the wrapper's own lifecycle and report while retaining real descendants", () => {
+    const ownRows = [
+      activity("task.started", { taskId: "wrapper", agentId: "wrapper" }),
+      activity("task.updated", { taskId: "wrapper", agentId: "wrapper" }),
+      activity("task.completed", {
+        taskId: "wrapper",
+        agentId: "wrapper",
+        agentKind: "agent",
+        status: "completed",
+        summary: "Own assistant reply",
+      }),
+      activity("task.state", {
+        id: "wrapper",
+        agentId: "wrapper",
+        typedUsage: { totalTokens: 123 },
+      }),
+    ];
+    const descendantRows = [
+      activity("task.started", { taskId: "nested", parentAgentId: "wrapper" }),
+      activity("task.state", { id: "nested", parentAgentId: "wrapper" }),
+      activity("task.completed", {
+        taskId: "nested",
+        parentAgentId: "wrapper",
+        agentKind: "agent",
+        status: "completed",
+        summary: "Descendant report",
+      }),
+    ];
+    const usage = activity("context-window.updated", { agentId: "wrapper", usedTokens: 123 });
+    const rows = [...ownRows, ...descendantRows, usage];
+    const selected = selectSubagentTranscriptActivities(rows, "wrapper");
+    expect(selected.map((row) => row.id)).toEqual([...descendantRows, usage].map((row) => row.id));
+    expect(selectSubagentRepliesFor(deriveSubagentReplies(rows), "wrapper")).toMatchObject([
+      { agentId: "nested", text: "Descendant report" },
+    ]);
+    // Selection must not remove the roster's current state/usage from the source.
+    expect(rows).toContain(ownRows[3]);
+    expect(ownRows[3]?.payload).toMatchObject({
+      id: "wrapper",
+      agentId: "wrapper",
+      typedUsage: { totalTokens: 123 },
+    });
+  });
+
   it("returns only the selected agent's rows, without attribution", () => {
     const selected = selectSubagentTranscriptActivities(
       [
@@ -1997,6 +2102,51 @@ describe("nested agents vs subagent shells", () => {
 });
 
 describe("deriveSubagentReplies", () => {
+  it("routes bridge self-attributed reports through task-state parents without self delivery", () => {
+    const wrapper = "bridge-wrapper";
+    const child = "bridge-wrapper:native-child";
+    const replies = deriveSubagentReplies([
+      activity("task.completed", {
+        bridgeAgentId: wrapper,
+        taskId: child,
+        agentId: child,
+        agentKind: "agent",
+        status: "completed",
+        summary: "Native descendant report",
+      }),
+      activity("task.completed", {
+        bridgeAgentId: wrapper,
+        taskId: wrapper,
+        agentId: wrapper,
+        agentKind: "agent",
+        status: "completed",
+        summary: "Wrapper report",
+      }),
+      // Current state supplies the parent even when the completion omits it
+      // and arrives earlier in the activity array.
+      activity("task.state", {
+        id: child,
+        agentId: child,
+        parentAgentId: wrapper,
+        agentKind: "agent",
+      }),
+      activity("task.state", {
+        id: wrapper,
+        agentId: wrapper,
+        parentAgentId: "root-provider-thread",
+        agentKind: "agent",
+        executionOwner: "cross-provider",
+      }),
+    ]);
+    expect(selectSubagentRepliesFor(replies, wrapper)).toMatchObject([
+      { agentId: child, ownerAgentId: wrapper, text: "Native descendant report" },
+    ]);
+    expect(selectSubagentRepliesFor(replies, child)).toEqual([]);
+    expect(selectSubagentRepliesFor(replies, null)).toMatchObject([
+      { agentId: wrapper, ownerAgentId: null, text: "Wrapper report" },
+    ]);
+  });
+
   function message(
     id: string,
     agentId: string | undefined,

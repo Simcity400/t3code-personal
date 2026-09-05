@@ -130,6 +130,7 @@ export interface ThreadDetailScreenProps {
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  readonly onStopAll: () => void;
   readonly onSendMessage: () => Promise<{ readonly messageId: MessageId | null } | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
@@ -825,6 +826,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 status={floatingStatus}
                 showScrollToEnd={showScrollToEndButton}
                 onScrollToEnd={handleScrollToEnd}
+                onStopAll={
+                  floatingStatus?.kind === "waiting" &&
+                  props.selectedThread.backgroundWait != null &&
+                  props.selectedThread.compactingSince == null
+                    ? props.onStopAll
+                    : undefined
+                }
               />
               <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
                 {props.activePendingApproval || props.activePendingUserInput ? (
@@ -845,6 +853,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                         approval={props.activePendingApproval}
                         respondingApprovalId={props.respondingApprovalId}
                         onRespond={props.onRespondToApproval}
+                        onStopAll={props.onStopAll}
                       />
                     ) : null}
                     {props.activePendingUserInput ? (
@@ -854,6 +863,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                         collapsed={userInputCollapsed}
                         onToggleCollapsed={handleToggleUserInputCollapsed}
                         onStopThread={props.onStopThread}
+                        onStopAll={props.onStopAll}
                         cardProgress={userInputCardProgress}
                         cardCoverage={userInputCardCoverage}
                         onInputFocusChange={handleOwnedInputFocusChange}
@@ -893,6 +903,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   onNativePasteImages={props.onNativePasteImages}
                   onRemoveDraftImage={props.onRemoveDraftImage}
                   onStopThread={props.onStopThread}
+                  onStopAll={props.onStopAll}
                   onSendMessage={handleSendMessage}
                   onReconnectEnvironment={props.onReconnectEnvironment}
                   onUpdateModelSelection={props.onUpdateThreadModelSelection}

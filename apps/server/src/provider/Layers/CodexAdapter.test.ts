@@ -85,8 +85,9 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       }),
   );
 
-  public readonly interruptTurnImpl = vi.fn((_turnId?: TurnId): Promise<void> =>
-    Promise.resolve(undefined),
+  public readonly interruptTurnImpl = vi.fn(
+    (..._args: Parameters<CodexSessionRuntimeShape["interruptTurn"]>): Promise<void> =>
+      Promise.resolve(undefined),
   );
 
   public readonly readThreadImpl = vi.fn((): Promise<CodexThreadSnapshot> =>
@@ -135,8 +136,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     return Effect.promise(() => this.sendTurnImpl(input));
   }
 
-  interruptTurn(turnId?: TurnId) {
-    return Effect.promise(() => this.interruptTurnImpl(turnId));
+  interruptTurn(...args: Parameters<CodexSessionRuntimeShape["interruptTurn"]>) {
+    return Effect.promise(() => this.interruptTurnImpl(...args));
   }
 
   readThread = Effect.promise(() => this.readThreadImpl());
@@ -2318,6 +2319,31 @@ const scopedLifecycleLayer = it.layer(
 );
 
 scopedLifecycleLayer("CodexAdapterLive scoped lifecycle", (it) => {
+  it.effect("self Stop forwards native scope without closing the selected session", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-scoped-interrupt");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = scopedLifecycleRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      NodeAssert.equal(adapter.capabilities.isolatedTurnInterrupt, true);
+      yield* adapter.interruptTurn(threadId);
+      yield* adapter.interruptTurn(threadId, asTurnId("selected-turn"), "self");
+      yield* adapter.interruptTurn(threadId, undefined, "tree");
+      NodeAssert.deepEqual(runtime.interruptTurnImpl.mock.calls, [
+        [undefined, undefined, "self"],
+        [asTurnId("selected-turn"), undefined, "self"],
+        [undefined, undefined, "tree"],
+      ]);
+      NodeAssert.equal(runtime.closeImpl.mock.calls.length, 0);
+      NodeAssert.equal(yield* adapter.hasSession(threadId), true);
+    }),
+  );
+
   it.effect("closes the externally owned session scope on stopSession", () =>
     Effect.gen(function* () {
       scopedLifecycleRuntimeFactory.releasedThreadIds.length = 0;

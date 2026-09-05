@@ -1,6 +1,6 @@
 import { GlassContainer, GlassView } from "expo-glass-effect";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Text as SystemText, View } from "react-native";
+import { ActivityIndicator, Pressable, Text as SystemText, View } from "react-native";
 import Animated, {
   Easing,
   FadeIn,
@@ -59,6 +59,7 @@ export function FloatingWorkingControl(props: {
   readonly status: FloatingWorkingStatus | null;
   readonly showScrollToEnd: boolean;
   readonly onScrollToEnd: () => void;
+  readonly onStopAll?: (() => void) | undefined;
 }) {
   const separationProgress = useSharedValue(props.showScrollToEnd ? 1 : 0);
 
@@ -97,11 +98,13 @@ export function FloatingWorkingControl(props: {
           <AnimatedGlassView
             colorScheme={props.colorScheme}
             glassEffectStyle="regular"
-            pointerEvents="none"
-            className="h-11 justify-center overflow-hidden rounded-full"
+            pointerEvents={props.onStopAll ? "auto" : "none"}
+            isInteractive={Boolean(props.onStopAll)}
+            className="h-11 flex-row items-center justify-center overflow-hidden rounded-full"
             style={timerStyle}
           >
             <FloatingStatusLabel status={props.status} />
+            {props.onStopAll ? <StopAllButton onPress={props.onStopAll} /> : null}
           </AnimatedGlassView>
 
           <AnimatedGlassView
@@ -122,11 +125,12 @@ export function FloatingWorkingControl(props: {
       ) : props.status !== null ? (
         <View pointerEvents="box-none" className="flex-row items-center gap-4">
           <Animated.View
-            pointerEvents="none"
-            className="h-11 justify-center rounded-full border border-border bg-card shadow-md shadow-black/10"
+            pointerEvents={props.onStopAll ? "auto" : "none"}
+            className="h-11 flex-row items-center justify-center rounded-full border border-border bg-card shadow-md shadow-black/10"
             style={timerStyle}
           >
             <FloatingStatusLabel status={props.status} />
+            {props.onStopAll ? <StopAllButton onPress={props.onStopAll} /> : null}
           </Animated.View>
 
           <Animated.View
@@ -164,6 +168,19 @@ export function FloatingWorkingControl(props: {
         />
       )}
     </Animated.View>
+  );
+}
+
+function StopAllButton(props: { readonly onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Stop all"
+      className="min-h-11 justify-center px-3"
+      onPress={props.onPress}
+    >
+      <Text className="text-xs text-danger-foreground">Stop all</Text>
+    </Pressable>
   );
 }
 
