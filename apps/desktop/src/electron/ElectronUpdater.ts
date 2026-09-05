@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
+import { app } from "electron";
 import { autoUpdater } from "electron-updater";
 import { configureWindowsUpdateSelection } from "../updates/windowsUpdateSelection.ts";
 
@@ -131,7 +132,9 @@ export const make = ElectronUpdater.of({
     const platform = yield* HostProcessPlatform;
     const arch = yield* HostProcessArchitecture;
     if (platform === "win32" && !windowsSelectionConfigured) {
-      configureWindowsUpdateSelection(autoUpdater, arch);
+      // Recover native ARM updates even if an older updater installed an x64 build.
+      const updateArch = app.runningUnderARM64Translation ? "arm64" : arch;
+      configureWindowsUpdateSelection(autoUpdater, updateArch);
       windowsSelectionConfigured = true;
     }
     const channel = autoUpdater.channel;
