@@ -1,4 +1,5 @@
 import * as React from "react";
+import { isListedThread } from "@t3tools/client-runtime/state/threads";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
@@ -915,7 +916,7 @@ export function getFallbackThreadIdAfterDelete<
           thread.projectId === deletedThread.projectId &&
           thread.id !== deletedThreadId &&
           !deletedThreadIds?.has(thread.id) &&
-          (thread.forkedFromThreadId == null || thread.sideChatPromotedAt != null),
+          isListedThread(thread),
       ),
       sortOrder,
     )[0]?.id ?? null

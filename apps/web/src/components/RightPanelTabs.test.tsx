@@ -127,6 +127,8 @@ function renderTabs(
       filesAvailable={false}
       pullRequestAvailable={false}
       agentsAvailable={false}
+      onAddSideChat={() => undefined}
+      sideChatAvailable={false}
     >
       <div>content</div>
     </RightPanelTabs>,
