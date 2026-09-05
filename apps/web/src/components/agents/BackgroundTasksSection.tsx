@@ -8,9 +8,9 @@ import { TaskStopButton } from "./TaskControls";
  * - Elapsed timers self-tick via DOM writes, zero React commits per second.
  * - Rows reserve a fixed height, so a progress line arriving cannot reflow
  *   the list under the reader's cursor.
- * - Live work and failures stay visible; successes collapse behind a
- *   disclosure, because a finished task is a receipt and a failed one is a
- *   reason the thread is quietly wrong.
+ * - Live work stays visible; every settled task, failures included, collapses
+ *   behind the Finished disclosure. The header's failed count still calls out
+ *   a thread that is quietly wrong.
  */
 import {
   backgroundTaskSourceLabel,

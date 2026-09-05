@@ -38,7 +38,7 @@ describe("BackgroundTasksSection", () => {
     ).toBe("");
   });
 
-  it("shows live work and failures, and hides successes behind the disclosure", () => {
+  it("shows live work, and finishes failures and successes behind the disclosure", () => {
     const markup = renderToStaticMarkup(
       <BackgroundTasksSection
         model={deriveBackgroundTasksPanelModel({
@@ -52,9 +52,9 @@ describe("BackgroundTasksSection", () => {
     );
 
     expect(markup).toContain("pnpm test --watch");
-    expect(markup).toContain("cargo build");
-    expect(markup).toContain("exit 101");
-    // Collapsed by default: the receipt is available, not in the way.
+    // Collapsed by default while work is live: settled rows, failed or not,
+    // are receipts. The header still counts the failure.
+    expect(markup).not.toContain("cargo build");
     expect(markup).not.toContain("git fetch");
     expect(markup).toContain("Finished");
     expect(markup).toContain("1 failed");
@@ -79,20 +79,25 @@ describe("BackgroundTasksSection", () => {
     expect(markup).not.toContain('sr-only">Running, detached');
   });
 
-  it("keeps interrupted work visible instead of collapsing it as finished", () => {
+  it("opens Finished by default when nothing is live", () => {
     const markup = renderToStaticMarkup(
       <BackgroundTasksSection
         model={deriveBackgroundTasksPanelModel({
           tasks: [
             task({ id: "dead", label: "tail -f log", status: "interrupted" }),
+            task({ id: "bad", label: "cargo build", status: "failed", error: "exit 101" }),
             task({ id: "done", label: "git fetch", status: "completed" }),
           ],
         })}
       />,
     );
-    // Interrupted work died with its session and may need restarting.
+    // Every ending is finished; with no live groups the disclosure starts
+    // open so the outcomes, including the failure, are in view.
     expect(markup).toContain("tail -f log");
-    expect(markup).not.toContain("git fetch");
+    expect(markup).toContain("cargo build");
+    expect(markup).toContain("exit 101");
+    expect(markup).toContain("git fetch");
+    expect(markup).toContain("1 failed");
   });
 
   it("attributes a finished row to its owner when main owns all the live work", () => {

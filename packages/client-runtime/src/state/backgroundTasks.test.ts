@@ -612,20 +612,22 @@ describe("deriveBackgroundTasksPanelModel", () => {
     expect(deriveBackgroundTasksPanelModel({ tasks: [] }).hasTasks).toBe(false);
   });
 
-  it("keeps failures visible and collapses successes", () => {
+  it("keeps only live work in the groups and finishes every settled task", () => {
     const model = deriveBackgroundTasksPanelModel({
       tasks: [
         make("live", null, "running"),
         make("bad", null, "failed"),
         make("good", null, "completed"),
         make("gone", null, "cancelled"),
+        make("died", null, "interrupted"),
+        make("parked", null, "idle"),
       ],
     });
-    expect(model.groups[0]?.tasks.map((task) => task.id)).toEqual(["live", "bad"]);
-    expect(model.finished.map((entry) => entry.task.id)).toEqual(["good", "gone"]);
+    expect(model.groups[0]?.tasks.map((task) => task.id)).toEqual(["live", "parked"]);
+    expect(model.finished.map((entry) => entry.task.id)).toEqual(["bad", "good", "gone", "died"]);
     expect(model.activeCount).toBe(1);
     expect(model.failedCount).toBe(1);
-    expect(model.totalCount).toBe(4);
+    expect(model.totalCount).toBe(6);
   });
 
   it("groups by owner with main first and names owners from the roster", () => {
@@ -648,15 +650,15 @@ describe("deriveBackgroundTasksPanelModel", () => {
     expect(model.groups[0]?.ownerLabel).toBe("ghost");
   });
 
-  it("sorts live work above failures and ambient housekeeping last", () => {
+  it("sorts live work above idle and ambient housekeeping last", () => {
     const model = deriveBackgroundTasksPanelModel({
       tasks: [
         make("ambient", null, "running", { ambient: true }),
-        make("bad", null, "failed"),
+        make("parked", null, "idle"),
         make("live", null, "running"),
       ],
     });
-    expect(model.groups[0]?.tasks.map((task) => task.id)).toEqual(["live", "bad", "ambient"]);
+    expect(model.groups[0]?.tasks.map((task) => task.id)).toEqual(["live", "parked", "ambient"]);
     expect(model.groups[0]?.activeCount).toBe(2);
   });
 });
@@ -1524,11 +1526,10 @@ describe("the compacting wait", () => {
 });
 
 describe("a task the provider stopped listing", () => {
-  it("settles as interrupted and stays beside live work", () => {
+  it("settles as interrupted and lists under Finished", () => {
     // The adapter synthesizes this patch when a background_tasks_changed
-    // snapshot twice omits a task it should have listed. `interrupted` keeps
-    // the row visible rather than collapsing it into Finished: nobody chose
-    // to stop it, and it may need restarting.
+    // snapshot twice omits a task it should have listed. The row is settled
+    // work like any other ending, so it leaves the live groups.
     const tasks = foldBackgroundTasks([
       activity("task.started", {
         taskId: "sh-lost",
@@ -1546,10 +1547,8 @@ describe("a task the provider stopped listing", () => {
     expect(byId(tasks, "sh-lost").status).toBe("interrupted");
 
     const model = deriveBackgroundTasksPanelModel({ tasks });
-    expect(model.groups.flatMap((group) => group.tasks).map((task) => task.id)).toEqual([
-      "sh-lost",
-    ]);
-    expect(model.finished).toEqual([]);
+    expect(model.groups).toEqual([]);
+    expect(model.finished.map((entry) => entry.task.id)).toEqual(["sh-lost"]);
   });
 
   it("no longer counts as blocking whoever started it", () => {
