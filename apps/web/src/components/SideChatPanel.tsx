@@ -45,6 +45,8 @@ import type { ChatFileAttachment, TurnDiffSummary } from "../types";
 import { newMessageId } from "~/lib/utils";
 import { buildThreadTurnInterruptInput } from "./ChatView.logic";
 import type { ExpandedImagePreview } from "./chat/ExpandedImagePreview";
+import { ComposerSendButton, ComposerStopButton } from "./chat/ComposerPrimaryActions";
+import { ComposerSurface } from "./chat/ComposerSurface";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { Button } from "./ui/button";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -141,7 +143,10 @@ export function SideChatPanel(props: {
   const runningTurnId =
     (session?.status === "running" ? session.activeTurnId : null) ??
     (latestTurn?.state === "running" ? latestTurn.turnId : null);
-  const isWorking = phase === "running" || phase === "connecting" || sending;
+  // Like the main composer: the send button spins until the server reports
+  // the turn, then the stop button takes over.
+  const turnRunning = phase === "running" || phase === "connecting";
+  const isWorking = turnRunning || sending;
   // The local send anchor only bridges the gap until the server reports the
   // turn; once the session is running, the turn's own start time wins.
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
@@ -424,51 +429,54 @@ export function SideChatPanel(props: {
 
       {!isGone ? (
         <form
-          className="border-t border-border/60 p-2"
+          className="p-2"
           onSubmit={(event) => {
             event.preventDefault();
             void send();
           }}
         >
-          <div className="rounded-lg border border-border/60 bg-card px-2 py-1.5 focus-within:border-border">
-            <textarea
-              ref={textareaRef}
-              aria-label="Side chat message"
-              placeholder={
-                shell === null ? "Opening side chat…" : "Ask the side chat… (Enter to send)"
-              }
-              rows={2}
-              disabled={composerDisabled}
-              className="field-sizing-content block max-h-48 min-h-12 w-full resize-none bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-60"
-              value={draft}
-              onChange={(event) => setDraft(threadRef, event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void send();
-                }
-              }}
-            />
-            <div className="flex items-center justify-between gap-2 pt-1">
-              <span className="truncate text-[.65rem] text-muted-foreground">
-                Text only here. Attachments and mentions live in the full view.
-              </span>
-              {isWorking ? (
-                <Button type="button" size="xs" variant="outline" onClick={() => void stop()}>
-                  Stop
-                </Button>
-              ) : (
-                <Button
-                  type="submit"
-                  size="xs"
-                  disabled={composerDisabled || draft.trim().length === 0}
-                >
-                  Send
-                </Button>
-              )}
-            </div>
-          </div>
+          {/* Same glass surface, placeholder and buttons as the main composer;
+              only the text field, since anything richer lives in the full view. */}
+          <ComposerSurface.Shell>
+            <ComposerSurface.Host>
+              {/* The main composer's resting row: field and send button side by
+                  side, growing with the draft. */}
+              <div className="relative z-10 flex items-end gap-2 py-2 ps-3 pe-2 sm:ps-4">
+                <textarea
+                  ref={textareaRef}
+                  aria-label="Side chat message"
+                  placeholder={shell === null ? "Opening side chat…" : "Ask side chat"}
+                  rows={1}
+                  disabled={composerDisabled}
+                  className="field-sizing-content block max-h-[min(20rem,40dvh)] min-h-8 min-w-0 flex-1 resize-none bg-transparent py-1 leading-relaxed text-foreground outline-none [font-family:var(--font-composer,var(--font-sans))] [font-size:var(--font-size-prompt,0.875rem)] placeholder:text-placeholder/75 disabled:opacity-60"
+                  value={draft}
+                  onChange={(event) => setDraft(threadRef, event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      void send();
+                    }
+                  }}
+                />
+                <div className="flex h-8 shrink-0 items-center">
+                  {turnRunning ? (
+                    <ComposerStopButton
+                      className="size-8"
+                      aria-label="Stop generation"
+                      onClick={() => void stop()}
+                    />
+                  ) : (
+                    <ComposerSendButton
+                      busy={sending}
+                      disabled={composerDisabled || sending || draft.trim().length === 0}
+                      aria-label={sending ? "Sending" : "Send message"}
+                    />
+                  )}
+                </div>
+              </div>
+            </ComposerSurface.Host>
+          </ComposerSurface.Shell>
         </form>
       ) : null}
     </div>

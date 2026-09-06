@@ -30,7 +30,7 @@ running reply. For attachments, mentions, approvals, or anything else the main c
 use **Open full view** in the tab header; the draft you typed comes with you.
 
 Several side chats can be open as tabs at once. Closed tabs are not lost: reopen any side chat from
-the **Side chats** strip at the top of its original thread.
+the panel's **+** menu on its original thread, or from the panel's launcher when no tab is open.
 
 ## Keep it or close it
 

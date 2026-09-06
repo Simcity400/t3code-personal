@@ -44,6 +44,7 @@ import {
   Menu,
   MenuItem,
   MenuPopup,
+  MenuSeparator,
   MenuShortcut,
   MenuSub,
   MenuSubPopup,
@@ -114,8 +115,13 @@ interface RightPanelTabsProps {
   agentsAvailable: boolean;
   /** Creates a fresh side chat forked from this thread and opens it as a tab. */
   onAddSideChat: () => void;
+  /** Reopens the tab of a side chat that still exists but whose tab was closed. */
+  onOpenSideChat: (sideChatThreadId: string) => void;
   sideChatAvailable: boolean;
-  /** Tab labels for open side chats; a missing entry falls back to "Side chat". */
+  /**
+   * Titles of every side chat attached to this thread, keyed by thread id.
+   * Labels open tabs and lists the closed ones for reopening.
+   */
   sideChatTitlesById?: ReadonlyMap<string, string>;
   pullRequestStatusSeeds?: Readonly<Record<string, PullRequestTabStatusSeed>>;
   /** Running + waiting subagents; badges the Agents card in the empty state. */
@@ -269,6 +275,22 @@ function DisabledReasonTooltip(props: { reason: string; trigger: ReactElement })
   );
 }
 
+/**
+ * Side chats that still belong to the thread but have no open tab, as
+ * `[threadId, title]` pairs. Closing a tab does not delete the side chat, so
+ * the + menu and the empty-state launcher list these as the way back in.
+ */
+export function closedSideChatEntries(
+  sideChatTitlesById: ReadonlyMap<string, string> | undefined,
+  surfaces: ReadonlyArray<{ readonly id: string }>,
+): Array<readonly [threadId: string, title: string]> {
+  if (!sideChatTitlesById) return [];
+  const openIds = new Set(surfaces.map((surface) => surface.id));
+  return Array.from(sideChatTitlesById).filter(
+    ([threadId]) => !openIds.has(`side-chat:${threadId}`),
+  );
+}
+
 function SurfaceMenuItem(props: {
   available: boolean;
   disabledReason?: string;
@@ -315,6 +337,8 @@ function RightPanelEmptyState(props: {
   agentsAvailable: boolean;
   onAddSideChat: () => void;
   sideChatAvailable: boolean;
+  closedSideChats: ReadonlyArray<readonly [threadId: string, title: string]>;
+  onOpenSideChat: (sideChatThreadId: string) => void;
   liveAgentCount: number;
 }) {
   // -1 means no highlight: it only appears on hover or arrow use.
@@ -596,6 +620,27 @@ function RightPanelEmptyState(props: {
             ),
           )}
         </div>
+        {props.closedSideChats.length > 0 ? (
+          <div className="mt-5">
+            <p className="mb-2 text-muted-foreground text-xs">Reopen a side chat</p>
+            <div className="flex flex-col gap-1">
+              {props.closedSideChats.map(([threadId, title]) => (
+                <button
+                  key={threadId}
+                  type="button"
+                  onClick={() => props.onOpenSideChat(threadId)}
+                  className={cn(
+                    "flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-sm transition hover:border-border hover:bg-accent/60",
+                    cardShellClass,
+                  )}
+                >
+                  <MessagesSquare className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 truncate">{title}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -848,6 +893,8 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       onClick: props.onAddSideChat,
     },
   ] as const;
+
+  const closedSideChats = closedSideChatEntries(props.sideChatTitlesById, props.surfaces);
 
   const handleAddSurfaceMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const action = surfaceShortcutActionForKey(addSurfaceActions, event.nativeEvent);
@@ -1221,6 +1268,17 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                       </SurfaceMenuItem>
                     );
                   })}
+                  {closedSideChats.length > 0 ? (
+                    <>
+                      <MenuSeparator />
+                      {closedSideChats.map(([threadId, title]) => (
+                        <MenuItem key={threadId} onClick={() => props.onOpenSideChat(threadId)}>
+                          <MessagesSquare />
+                          <span className="min-w-0 truncate">{title}</span>
+                        </MenuItem>
+                      ))}
+                    </>
+                  ) : null}
                 </MenuPopup>
               </Menu>
             ) : null}
@@ -1291,6 +1349,8 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddAgents={props.onAddAgents}
             onAddSideChat={props.onAddSideChat}
             sideChatAvailable={props.sideChatAvailable}
+            closedSideChats={closedSideChats}
+            onOpenSideChat={props.onOpenSideChat}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
