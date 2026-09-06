@@ -15,7 +15,6 @@ import {
 import type { SidebarThreadSummary, Thread } from "../types";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
-import { resolveThreadWorkState } from "@t3tools/shared/threadWorkState";
 
 const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 200;
@@ -178,15 +177,6 @@ export function buildBulkTitleRegenerationContextMenuItem(input: {
   };
 }
 
-export type ThreadStatusPillKind =
-  | "working"
-  | "waiting"
-  | "connecting"
-  | "completed"
-  | "approval"
-  | "input"
-  | "plan-ready";
-
 /**
  * Bulk unpin follows the same "count only what the action will touch" rule
  * as title regeneration: on a mixed selection the label counts the pinned
@@ -200,29 +190,30 @@ export function buildBulkUnpinContextMenuItem(input: {
 }
 
 export interface ThreadStatusPill {
-  /** What the pill means; the rollup and any styling switch on this. */
-  kind: ThreadStatusPillKind;
-  /**
-   * What it says. Free-form because a waiting thread names the work it is
-   * waiting on, and that text is the provider's, not ours.
-   */
-  label: string;
+  label:
+    | "Working"
+    | "Monitoring"
+    | "Connecting"
+    | "Completed"
+    | "Pending Approval"
+    | "Awaiting Input"
+    | "Plan Ready";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
 }
 
 // Rollup order mirrors the per-thread resolver exactly: attention states,
-// then active work, then the actionable plan prompt, then passive waiting.
-// A waiting sibling must never hide a Plan Ready thread.
-const THREAD_STATUS_PRIORITY: Record<ThreadStatusPillKind, number> = {
-  approval: 6,
-  input: 5,
-  working: 4,
-  connecting: 4,
-  "plan-ready": 3,
-  waiting: 2,
-  completed: 1,
+// then active work, then the actionable plan prompt, then passive
+// monitoring. A Monitoring sibling must never hide a Plan Ready thread.
+const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
+  "Pending Approval": 6,
+  "Awaiting Input": 5,
+  Working: 4,
+  Connecting: 4,
+  "Plan Ready": 3,
+  Monitoring: 2,
+  Completed: 1,
 };
 
 type ThreadStatusInput = Pick<
@@ -233,8 +224,7 @@ type ThreadStatusInput = Pick<
   | "interactionMode"
   | "latestTurn"
   | "session"
-  | "backgroundWait"
-  | "compactingSince"
+  | "backgroundLiveness"
 > & {
   lastVisitedAt?: string | undefined;
 };
@@ -501,7 +491,13 @@ export function resolveThreadRowClassName(input: {
 // whether it finished, asked a question, or proposed a plan.
 // Unread completion is tracked separately: it describes whether a ready
 // thread needs attention, not what the thread is currently doing.
-export type SidebarThreadStatus = "approval" | "input" | "working" | "waiting" | "failed" | "ready";
+export type SidebarThreadStatus =
+  | "approval"
+  | "input"
+  | "working"
+  | "monitoring"
+  | "failed"
+  | "ready";
 
 export function shouldRecedeSidebarThread(input: {
   status: SidebarThreadStatus;
@@ -511,7 +507,7 @@ export function shouldRecedeSidebarThread(input: {
   isSelected: boolean;
 }): boolean {
   if (input.isActive || input.isSelected) return false;
-  if (input.status === "working" || input.status === "waiting") return true;
+  if (input.status === "working" || input.status === "monitoring") return true;
   if (input.status === "ready" || input.status === "approval" || input.status === "input") {
     return !input.isUnread && !input.isWoke;
   }
@@ -520,7 +516,7 @@ export function shouldRecedeSidebarThread(input: {
 
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
-  "hasPendingApprovals" | "hasPendingUserInput" | "session" | "backgroundWait" | "compactingSince"
+  "hasPendingApprovals" | "hasPendingUserInput" | "session" | "backgroundLiveness"
 >;
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
@@ -530,36 +526,23 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  // Compaction reports itself as a running session, so it has to be read
-  // before that check or it would show up as the agent working. Only
-  // compaction jumps the queue: a failed session still outranks work the
-  // thread merely left running.
-  if (thread.compactingSince != null) {
-    return "waiting";
-  }
   if (thread.session?.status === "running" || thread.session?.status === "starting") {
     return "working";
   }
-  // A failed session outranks lingering background work: the user must see
-  // the failure, not a stale label (review finding).
+  // A failed session outranks lingering background liveness: the user must
+  // see the failure, not a stale Working (review finding).
   if (thread.session?.status === "error") {
     return "failed";
   }
-  // The agent is producing nothing of its own while work it started runs on.
-  if (resolveThreadWorkState(thread).state === "waiting") {
-    return "waiting";
+  // Background work outlives the turn: fleets read as working; monitoring
+  // only when watch loops are the sole live work.
+  if (thread.backgroundLiveness === "working") {
+    return "working";
+  }
+  if (thread.backgroundLiveness === "monitoring") {
+    return "monitoring";
   }
   return "ready";
-}
-
-/** The waiting row's text and timer anchor, from the one shared derivation. */
-export function resolveSidebarThreadWaitLabel(
-  thread: SidebarThreadStatusInput,
-): { readonly label: string; readonly since: string | null } | null {
-  const workState = resolveThreadWorkState(thread);
-  return workState.state === "waiting" && workState.label !== null
-    ? { label: workState.label, since: workState.since }
-    : null;
 }
 
 /** First VALID timestamp wins: `a ?? b` falls through on null, but a present-
@@ -709,7 +692,6 @@ export function resolveThreadStatusPill(input: {
 
   if (thread.hasPendingApprovals) {
     return {
-      kind: "approval",
       label: "Pending Approval",
       colorClass: "text-amber-600 dark:text-amber-300/90",
       dotClass: "bg-amber-500 dark:bg-amber-300/90",
@@ -719,7 +701,6 @@ export function resolveThreadStatusPill(input: {
 
   if (thread.hasPendingUserInput) {
     return {
-      kind: "input",
       label: "Awaiting Input",
       colorClass: "text-indigo-600 dark:text-indigo-300/90",
       dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
@@ -727,25 +708,8 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  // Compaction reports itself as a running session, so it is read first or it
-  // would show up as the agent working. Only compaction jumps the queue here:
-  // ordinary background work stays below the plan prompt, which needs a human.
-  if (thread.compactingSince != null) {
-    const compacting = resolveSidebarThreadWaitLabel(thread);
-    if (compacting) {
-      return {
-        kind: "waiting",
-        label: compacting.label,
-        colorClass: "text-sky-600 dark:text-sky-300/80",
-        dotClass: "bg-sky-500 dark:bg-sky-300/80",
-        pulse: false,
-      };
-    }
-  }
-
   if (thread.session?.status === "running") {
     return {
-      kind: "working",
       label: "Working",
       colorClass: "text-sky-600 dark:text-sky-300/80",
       dotClass: "bg-sky-500 dark:bg-sky-300/80",
@@ -755,7 +719,6 @@ export function resolveThreadStatusPill(input: {
 
   if (thread.session?.status === "starting") {
     return {
-      kind: "connecting",
       label: "Connecting",
       colorClass: "text-sky-600 dark:text-sky-300/80",
       dotClass: "bg-sky-500 dark:bg-sky-300/80",
@@ -772,7 +735,6 @@ export function resolveThreadStatusPill(input: {
     thread.hasActionableProposedPlan;
   if (hasPlanReadyPrompt) {
     return {
-      kind: "plan-ready",
       label: "Plan Ready",
       colorClass: "text-violet-600 dark:text-violet-300/90",
       dotClass: "bg-violet-500 dark:bg-violet-300/90",
@@ -780,14 +742,22 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  // The agent is producing nothing of its own — work it started runs on, or
-  // the provider is compacting. A wait, not work, so the label names what is
-  // being waited on rather than asserting progress, and the dot is static.
-  const waiting = resolveSidebarThreadWaitLabel(thread);
-  if (waiting) {
+  // The turn can settle while native background work runs on. Subagent and
+  // workflow fleets read as plain Working; Monitoring is reserved for watch
+  // loops (a parent agent babysitting a PR, tailing checks) with no other
+  // live work. Same recede treatment as Working per inbox-zero.
+  if (thread.backgroundLiveness === "working") {
     return {
-      kind: "waiting",
-      label: waiting.label,
+      label: "Working",
+      colorClass: "text-sky-600 dark:text-sky-300/80",
+      dotClass: "bg-sky-500 dark:bg-sky-300/80",
+      pulse: true,
+    };
+  }
+
+  if (thread.backgroundLiveness === "monitoring") {
+    return {
+      label: "Monitoring",
       colorClass: "text-sky-600 dark:text-sky-300/80",
       dotClass: "bg-sky-500 dark:bg-sky-300/80",
       pulse: false,
@@ -796,7 +766,6 @@ export function resolveThreadStatusPill(input: {
 
   if (hasUnseenCompletion(thread)) {
     return {
-      kind: "completed",
       label: "Completed",
       colorClass: "text-emerald-600 dark:text-emerald-300/90",
       dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
@@ -816,7 +785,7 @@ export function resolveProjectStatusIndicator(
     if (status === null) continue;
     if (
       highestPriorityStatus === null ||
-      THREAD_STATUS_PRIORITY[status.kind] > THREAD_STATUS_PRIORITY[highestPriorityStatus.kind]
+      THREAD_STATUS_PRIORITY[status.label] > THREAD_STATUS_PRIORITY[highestPriorityStatus.label]
     ) {
       highestPriorityStatus = status;
     }
