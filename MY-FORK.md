@@ -231,6 +231,14 @@ machine.
   and fork-mobile-preview.yml. Upstream-only workflows require its runners and secrets,
   so sync removes them inside the merge commit. A collision with a fork-owned workflow
   stops the run for review. The packaged updater offers complete releases.
+- **Native Codex goals** (2026-09-06): upstream PR pingdotgg/t3code#7935 (stekman08,
+  "feat(codex): add native Goal lifecycle controls") merged as-is on top of nightly 1292. `/goal <objective>`, `status`, `steer`, `pause`, `resume` and `clear` drive Codex
+  App Server's `thread/goal/*` API; T3 keeps no goal state of its own and the banner is a
+  projection of Codex's notifications. Nothing here is fork-invented, so a later upstream
+  merge of the same PR should be a no-op; if upstream lands a different design, drop this
+  in favour of theirs. Claude Code's `/goal` is not available through the Agent SDK's
+  headless mode (verified 2026-09-06: no `active_goal` events, no stop-hook loop; upstream
+  issue #9266), so no Claude goal path exists yet and none is emulated.
 - **Blocked-sync notice** (2026-09-06): when Fork Sync cannot merge a nightly it pushes
   the `needs-merge-help` branch with `fork-sync-status.json`; the desktop updater
   reads it with the private-feed token and the sidebar shows "Official update needs a
