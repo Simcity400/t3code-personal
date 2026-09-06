@@ -26,6 +26,7 @@ import {
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
+  taskAssignmentTitle,
   type RuntimeTaskUsage,
   type TurnTokenUsage,
   ProviderApprovalDecision,
@@ -1062,8 +1063,9 @@ function mapItemLifecycle(
 /**
  * Maps the session runtime's synthetic `collabAgent/*` events (native
  * multi-agent v2 child-thread signals) into the shared task.* lifecycle.
- * Agent identity = child thread id; nickname is the display title, role is
- * agentRole (fallback: last agentPath segment, then "general-purpose").
+ * Agent identity = child thread id; role is agentRole (fallback: last
+ * agentPath segment, then "general-purpose"). Rows carry no title — see
+ * below for why a nickname is not one.
  * A completed child turn is idle (resumable), not terminal. timelineBypass
  * keeps these rows out of the parent chat.
  */
@@ -1083,14 +1085,18 @@ function mapCollabAgentEvent(
   const taskId = RuntimeTaskId.make(agentThreadId);
   const agentPath = typeof payload.agentPath === "string" ? payload.agentPath : undefined;
   const pathLeaf = agentPath?.split("/").findLast((segment) => segment.length > 0);
-  const nickname = typeof payload.nickname === "string" ? payload.nickname : undefined;
   const role =
     (typeof payload.role === "string" ? payload.role : undefined) ?? pathLeaf ?? "general-purpose";
-  // A bare thread id is not a name. Omitting the title lets the client fold
-  // keep the real one from task.started instead of clobbering it (probe
-  // finding: progress rows renamed math_one to its UUID).
-  const knownName = nickname ?? pathLeaf;
-  const title = knownName ?? agentThreadId;
+  // Neither a nickname nor a bare thread id is a name: "marlow" says nothing
+  // about what the child is doing. Rows carry no title, so the fold labels
+  // the agent from its assignment and the task-title reactor replaces that
+  // with a generated purpose name. The nickname still rides every row as an
+  // address, since the parent can send follow-ups to it. task.progress
+  // requires a description, and ingestion turns it into the row's title, so
+  // it is the bare id on purpose: an id can never displace a real name in the
+  // fold, where a nickname did.
+  const nickname = typeof payload.nickname === "string" ? payload.nickname : undefined;
+  const progressDescription = agentThreadId;
   const model = typeof payload.model === "string" ? payload.model.trim() : "";
   const effort = typeof payload.effort === "string" ? payload.effort.trim() : "";
   // Identity repeated on every status patch so rows are self-describing when
@@ -1104,7 +1110,7 @@ function mapCollabAgentEvent(
     typeof payload.parentThreadId === "string" ? payload.parentThreadId : undefined;
   const linkage = {
     role,
-    ...(knownName ? { title: knownName } : {}),
+    ...(nickname ? { nickname } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
     ...(agentPath ? { agentPath } : {}),
@@ -1137,8 +1143,6 @@ function mapCollabAgentEvent(
           type: "task.started",
           payload: {
             taskId,
-            description: title,
-            title,
             ...linkage,
             ...(typeof payload.prompt === "string" ? { prompt: payload.prompt } : {}),
             ...(typeof payload.promptId === "string" ? { promptId: payload.promptId } : {}),
@@ -1154,20 +1158,31 @@ function mapCollabAgentEvent(
       if (prompt.trim().length === 0) {
         return [];
       }
-      const historical = event.method === "collabAgent/historicalPrompt";
+      const promptId = typeof payload.promptId === "string" ? { promptId: payload.promptId } : {};
+      if (event.method === "collabAgent/historicalPrompt") {
+        // Reopened-thread recovery only adds transcript metadata. Using an
+        // update keeps it out of launch-card derivation while still letting
+        // the agent fold and transcript selector consume the prompt.
+        return [
+          {
+            ...base,
+            type: "task.updated",
+            payload: { taskId, prompt, ...promptId, status: "idle" as const, ...linkage },
+          },
+        ];
+      }
+      const assignment = taskAssignmentTitle(prompt);
       return [
         {
           ...base,
-          // Reopened-thread recovery only adds transcript metadata. Using an
-          // update keeps it out of launch-card derivation while still letting
-          // the agent fold and transcript selector consume the prompt.
-          type: historical ? "task.updated" : "task.progress",
+          type: "task.progress",
           payload: {
             taskId,
-            description: title,
+            description: progressDescription,
+            // The instruction's opening line is the child's current activity.
+            ...(assignment ? { summary: assignment } : {}),
             prompt,
-            ...(typeof payload.promptId === "string" ? { promptId: payload.promptId } : {}),
-            ...(historical ? { status: "idle" as const } : {}),
+            ...promptId,
             ...linkage,
           },
         },
@@ -1195,16 +1210,13 @@ function mapCollabAgentEvent(
       if (activityKind === "started") {
         // Wire-probe finding: children often register via subAgentActivity
         // alone (no thread/started with a spawn source), so this is the one
-        // shot at a task.started with a real name — agentPath leaf beats a
-        // bare thread-id title.
+        // shot at a task.started that carries the assignment.
         return [
           {
             ...base,
             type: "task.started",
             payload: {
               taskId,
-              description: title,
-              title,
               ...linkage,
               ...(typeof payload.prompt === "string" ? { prompt: payload.prompt } : {}),
             },
@@ -1345,7 +1357,7 @@ function mapCollabAgentEvent(
           type: "task.progress",
           payload: {
             taskId,
-            description: title,
+            description: progressDescription,
             ...linkage,
             typedUsage,
           },
@@ -1401,7 +1413,7 @@ function mapCollabAgentEvent(
           type: "task.progress",
           payload: {
             taskId,
-            description: title,
+            description: progressDescription,
             ...linkage,
             summary,
           },
