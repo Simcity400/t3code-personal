@@ -62,6 +62,7 @@ export class ClaudeSharedHomeFileSystemError extends Schema.TaggedErrorClass<Cla
     operation: Schema.Literals([
       "readLink",
       "realPath",
+      "stat",
       "makeDirectory",
       "readDirectory",
       "rename",
@@ -161,15 +162,6 @@ export const materializeClaudeSharedHome = Effect.fn("materializeClaudeSharedHom
   if (samePath(layout.conversationHomePath, layout.homePath)) {
     return yield* conflict;
   }
-  if (
-    samePath(path.parse(layout.conversationHomePath).root, path.parse(layout.homePath).root) ===
-    false
-  ) {
-    return yield* new ClaudeSharedHomeVolumeError({
-      homePath: layout.homePath,
-      sharedHomePath: layout.conversationHomePath,
-    });
-  }
 
   // Only the two base directories exist before the real-path comparison; a
   // case variant or a junction to the same place must not pass the guard, and
@@ -188,6 +180,19 @@ export const materializeClaudeSharedHome = Effect.fn("materializeClaudeSharedHom
   ]);
   if (samePath(realHome, realShared)) {
     return yield* conflict;
+  }
+  // Existing conversations are moved across with rename, which cannot cross
+  // volumes. Device ids catch this on every platform; path roots only would
+  // on Windows.
+  const [homeInfo, sharedInfo] = yield* Effect.all([
+    fileSystem.stat(realHome).pipe(Effect.mapError(fail("stat", realHome))),
+    fileSystem.stat(realShared).pipe(Effect.mapError(fail("stat", realShared))),
+  ]);
+  if (homeInfo.dev !== sharedInfo.dev) {
+    return yield* new ClaudeSharedHomeVolumeError({
+      homePath: layout.homePath,
+      sharedHomePath: layout.conversationHomePath,
+    });
   }
 
   const sharedProjects = path.join(layout.conversationHomePath, CLAUDE_SHARED_ENTRY);
