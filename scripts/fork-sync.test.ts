@@ -11,6 +11,7 @@ import {
   markSyncBlocked,
   NightlyMergeConflict,
   planSync,
+  resolveTagCommit,
   SYNC_BLOCKED_BRANCH,
   SYNC_BLOCKED_FILE,
   syncNightly,
@@ -115,6 +116,7 @@ describe("published nightly sync", () => {
   it("publishes the blocked marker on origin and leaves the checkout where it was", () => {
     const main = git(fork, "rev-parse", "HEAD");
     const status = {
+      repository: "Simcity400/t3code-personal",
       tag: TAG,
       commit: "0123456789abcdef0123456789abcdef01234567",
       conflicts: ["feature.txt"],
@@ -135,6 +137,17 @@ describe("published nightly sync", () => {
     const replaced = markSyncBlocked(fork, { ...status, conflicts: [] });
     expect(git(upstream, "rev-parse", SYNC_BLOCKED_BRANCH)).toBe(replaced);
     expect(git(upstream, "rev-parse", `${SYNC_BLOCKED_BRANCH}^`)).toBe(main);
+  });
+  it("resolves a lightweight or annotated tag to its commit", () => {
+    write(upstream, "feature.txt", "tagged\n");
+    commit(upstream);
+    const head = git(upstream, "rev-parse", "HEAD");
+    git(upstream, "tag", TAG);
+    expect(resolveTagCommit(upstream, TAG)).toBe(head);
+    git(upstream, "tag", "-d", TAG);
+    git(upstream, "tag", "-a", "-m", "annotated", TAG);
+    expect(resolveTagCommit(upstream, TAG)).toBe(head);
+    expect(resolveTagCommit(upstream, "v0.0.39-nightly.20260905.9999")).toBeNull();
   });
   it("does not overwrite a fork-owned workflow", () => {
     write(upstream, ".github/workflows/fork-release.yml", "name: Collision\n");

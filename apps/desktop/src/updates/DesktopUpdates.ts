@@ -463,11 +463,14 @@ export const make = Effect.gen(function* () {
   const refreshUpstreamMergeStatus = Effect.gen(function* () {
     const source = yield* Ref.get(upstreamMergeSourceRef);
     if (Option.isNone(source)) return;
-    const upstreamMerge = yield* credentials.readUpstreamMergeStatus(
-      source.value.feed,
-      source.value.token,
-    );
     const current = yield* Ref.get(updateStateRef);
+    // A stalled request must not hold the check reservation; keep what we knew.
+    const upstreamMerge = yield* credentials
+      .readUpstreamMergeStatus(source.value.feed, source.value.token)
+      .pipe(
+        Effect.timeout("10 seconds"),
+        Effect.orElseSucceed(() => current.upstreamMerge),
+      );
     if (isSameUpstreamMergeStatus(current.upstreamMerge, upstreamMerge)) return;
     yield* updateState((state) => ({ ...state, upstreamMerge }));
     yield* logUpdaterInfo(

@@ -21,7 +21,7 @@ export function describeUpstreamMerge(status: DesktopUpstreamMergeStatus): strin
  */
 export function buildUpstreamMergePrompt(status: DesktopUpstreamMergeStatus): string {
   const lines = [
-    `Finish the upstream merge: integrate the official nightly ${status.tag} into this fork's main.`,
+    `Finish the upstream merge: integrate the official nightly ${status.tag} into main of the fork ${status.repository}.`,
     'Follow docs/internals/personal-fork-updates.md, section "Finishing a blocked sync", and keep the fork\'s customizations listed in MY-FORK.md.',
   ];
   if (status.commit) lines.push(`Upstream commit: ${status.commit}`);

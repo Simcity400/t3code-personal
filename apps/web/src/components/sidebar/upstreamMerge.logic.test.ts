@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { buildUpstreamMergePrompt, describeUpstreamMerge } from "./upstreamMerge.logic";
 
 const blocked: DesktopUpstreamMergeStatus = {
+  repository: "Simcity400/t3code-personal",
   tag: "v0.0.39-nightly.20260906.1291",
   commit: "bd16b86d50c1df49afeb7c0a7568a4908ade4048",
   conflicts: ["apps/web/src/components/ChatView.tsx", "packages/contracts/src/rpc.ts"],
@@ -33,7 +34,7 @@ describe("upstream merge notice text", () => {
   it("writes a prompt that names the recipe, the commit, every conflict and the run", () => {
     const prompt = buildUpstreamMergePrompt(blocked);
     expect(prompt.split("\n")).toEqual([
-      "Finish the upstream merge: integrate the official nightly v0.0.39-nightly.20260906.1291 into this fork's main.",
+      "Finish the upstream merge: integrate the official nightly v0.0.39-nightly.20260906.1291 into main of the fork Simcity400/t3code-personal.",
       'Follow docs/internals/personal-fork-updates.md, section "Finishing a blocked sync", and keep the fork\'s customizations listed in MY-FORK.md.',
       "Upstream commit: bd16b86d50c1df49afeb7c0a7568a4908ade4048",
       "Conflicting files:",

@@ -34,7 +34,8 @@ fork with its `main` checked out and current.
    `git merge --no-commit --no-ff FETCH_HEAD`.
 2. Delete upstream-only workflows inside the merge (`git rm` everything under
    `.github/workflows` except `fork-sync.yml`, `fork-release.yml` and
-   `fork-mobile-preview.yml`). The push is refused if a workflow file changes.
+   `fork-mobile-preview.yml`). The fork's three workflows must come through the merge
+   unchanged: CI's later pushes cannot touch workflow files.
 3. Resolve each conflict so both sides survive: upstream's fix plus the fork
    customization MY-FORK.md describes for that area. When the fork retired a feature
    on purpose, drop upstream's additions to it rather than reviving it.
@@ -44,8 +45,8 @@ fork with its `main` checked out and current.
    resolved by hand. Hand-resolved code has never compiled; expect dropped
    definitions and stubs behind new interfaces, and fix them rather than skipping.
 6. Write the tag and its commit to `fork-upstream.json`, commit as
-   `chore(fork): sync <tag>`, get a review pass, and push `main`. Fork Sync then
-   clears the marker and builds the release.
+   `chore(fork): sync <tag>`, get a review pass, and push `main`. Fork Sync's next
+   check sees a current main, clears the marker, and builds the release.
 
 The release workflow runs focused fork regression tests and requires both Windows
 architectures. Assets upload into a draft with prerelease disabled, because authenticated

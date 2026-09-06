@@ -4,8 +4,7 @@ import { useState } from "react";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { isElectron } from "../../env";
-import { useHandleNewThread, useNewThreadHandler } from "../../hooks/useHandleNewThread";
-import { readProjects } from "../../state/entities";
+import { useHandleNewThread } from "../../hooks/useHandleNewThread";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
@@ -21,23 +20,24 @@ export function SidebarUpstreamMergeNotice() {
 function SidebarUpstreamMergeNoticeContent() {
   const state = useDesktopUpdateState();
   const status = state?.upstreamMerge ?? null;
-  const { activeThread, activeDraftThread } = useHandleNewThread();
-  const handleNewThread = useNewThreadHandler();
+  const { activeThread, activeDraftThread, defaultProjectRef, handleNewThread } =
+    useHandleNewThread();
   const [dismissedTag, setDismissedTag] = useState<string | null>(null);
   const [isOpening, setIsOpening] = useState(false);
 
   const openMergeThread = async () => {
     if (!status || isOpening) return;
-    // The thread starts in the project the user is looking at; the draft's
-    // project picker is one click away when the fork lives elsewhere.
+    // The thread starts in the project the user is looking at, else the first
+    // in their order; the draft's project picker is one click away when the
+    // fork lives elsewhere, and the prompt names the repository.
     const current = activeThread ?? activeDraftThread;
-    const project = current
-      ? { environmentId: current.environmentId, id: current.projectId }
-      : (readProjects()[0] ?? null);
-    if (!project) return;
+    const projectRef = current
+      ? scopeProjectRef(current.environmentId, current.projectId)
+      : defaultProjectRef;
+    if (!projectRef) return;
     setIsOpening(true);
     try {
-      const opened = await handleNewThread(scopeProjectRef(project.environmentId, project.id));
+      const opened = await handleNewThread(projectRef);
       if (opened) {
         useComposerDraftStore
           .getState()

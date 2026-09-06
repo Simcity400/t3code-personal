@@ -27,6 +27,7 @@ export class NightlyMergeConflict extends Error {
 }
 
 export interface SyncBlockedStatus {
+  readonly repository: string;
   readonly tag: string;
   readonly commit: string | null;
   readonly conflicts: ReadonlyArray<string>;
@@ -174,6 +175,19 @@ export function markSyncBlocked(cwd: string, status: SyncBlockedStatus): string 
   }
 }
 
+/** The commit a tag names; nightlies are lightweight, so prefer the peeled ref when there is one. */
+export function resolveTagCommit(remote: string, tag: string): string | null {
+  const listed = NodeChildProcess.spawnSync(
+    "git",
+    ["ls-remote", "--tags", remote, `refs/tags/${tag}`, `refs/tags/${tag}^{}`],
+    { encoding: "utf8" },
+  );
+  const lines = (listed.stdout ?? "").trim().split("\n").filter(Boolean);
+  const peeled = lines.find((line) => line.endsWith("^{}"));
+  const commit = (peeled ?? lines[0])?.split(/\s+/)[0];
+  return commit && /^[a-f0-9]{40}$/.test(commit) ? commit : null;
+}
+
 function output(name: string, value: string | boolean) {
   if (!process.env.GITHUB_OUTPUT) throw new Error("This command requires GITHUB_OUTPUT.");
   NodeFS.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
@@ -221,11 +235,14 @@ if (import.meta.main) {
       );
     } catch (error) {
       // The failure step publishes the marker after this process has stopped,
-      // so the conflict list must survive it.
-      if (error instanceof NightlyMergeConflict && process.env.FORK_SYNC_CONFLICTS_FILE) {
+      // so the cause must survive it.
+      if (process.env.FORK_SYNC_CONFLICTS_FILE) {
         NodeFS.writeFileSync(
           process.env.FORK_SYNC_CONFLICTS_FILE,
-          JSON.stringify(error.conflicts) + "\n",
+          JSON.stringify({
+            conflicts: error instanceof NightlyMergeConflict ? error.conflicts : [],
+            reason: error instanceof NightlyMergeConflict ? null : String(error),
+          }) + "\n",
         );
       }
       throw error;
@@ -234,25 +251,25 @@ if (import.meta.main) {
     const tag = process.env.NIGHTLY_TAG ?? "";
     if (!nightlyTag.test(tag)) throw new Error("Invalid official nightly tag.");
     const conflictsFile = process.env.FORK_SYNC_CONFLICTS_FILE;
-    const conflicts =
+    const cause =
       conflictsFile && NodeFS.existsSync(conflictsFile)
-        ? (JSON.parse(NodeFS.readFileSync(conflictsFile, "utf8")) as ReadonlyArray<string>)
-        : [];
-    const upstreamCommit = NodeChildProcess.spawnSync(
-      "git",
-      ["ls-remote", "--tags", "https://github.com/pingdotgg/t3code.git", `refs/tags/${tag}^{}`],
-      { cwd, encoding: "utf8" },
-    );
-    const commit = upstreamCommit.stdout?.trim().split(/\s+/)[0] ?? null;
+        ? (JSON.parse(NodeFS.readFileSync(conflictsFile, "utf8")) as {
+            conflicts: ReadonlyArray<string>;
+            reason: string | null;
+          })
+        : null;
+    const conflicts = cause?.conflicts ?? [];
     console.log(
       markSyncBlocked(cwd, {
+        repository: repo,
         tag,
-        commit: commit && /^[a-f0-9]{40}$/.test(commit) ? commit : null,
+        commit: resolveTagCommit("https://github.com/pingdotgg/t3code.git", tag),
         conflicts,
         reason:
           conflicts.length > 0
             ? null
-            : "The sync run failed before a merge could be judged. Read the run log.",
+            : (cause?.reason ??
+              "The sync run failed before a merge could be judged. Read the run log."),
         runUrl: process.env.FORK_SYNC_RUN_URL ?? null,
         at: new Date().toISOString(),
       }),
