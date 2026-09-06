@@ -3,8 +3,9 @@ import { TaskStopButton } from "./TaskControls";
  * Mobile counterpart of the web Agents panel's background-task surface.
  *
  * Same shared model (`@t3tools/client-runtime/state/backgroundTasks`), same
- * rules — live work and failures visible, successes behind a disclosure, one
- * arrow line per blocked owner. Only the markup differs.
+ * rules — live work visible, every settled task (failures included) behind
+ * the Finished disclosure, one arrow line per blocked owner. Only the markup
+ * differs.
  *
  * Elapsed times read from the existing agent status clock rather than a
  * second interval, and rows memo on the tick so a settled task never

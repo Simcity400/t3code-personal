@@ -18,7 +18,7 @@ Transcripts are persisted with the thread. Agent work recorded before this featu
 
 Instructions sent to an agent appear as user messages, including the original assignment and subsequent instructions. An agent's own final message stays in its transcript; it is not automatically copied into the main conversation. Use **Load earlier turns** to read older conversation history.
 
-The Agents panel groups background tasks by their owner, including **Main**. Workflow phases, retries, and token usage are shown when the provider supplies them. Agent and task records survive long work logs and reconnects.
+The Agents panel groups background tasks by their owner, including **Main**. Only running and idle tasks stay in those groups. Every settled task, whether it completed, failed, was stopped, or was interrupted, moves under **Finished**, which starts open when nothing is running. The Tasks header counts failures so a failed task is never silent. Workflow phases, retries, and token usage are shown when the provider supplies them. Agent and task records survive long work logs and reconnects.
 
 Use the square **Stop** icon beside a running agent or task to stop just that work. On web and desktop, hovering anywhere on an agent row highlights its full width, including the stop control. Claude supports native task stopping; Codex and OpenCode support stopping individual child agents. Other providers may expose a task without exposing an individual stop operation; the control explains when that operation is unavailable. A rejected individual stop reports an error and leaves the parent session running.
 
