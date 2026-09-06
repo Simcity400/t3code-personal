@@ -457,6 +457,15 @@ machine.
   with the `onCompact` / `compactDisabled` / `compactDisabledReason` props the composer threaded
   to it; `/compact` in the composer and the "Resume with less context" banner in `ChatView`
   still compact. Expect a conflict here whenever upstream touches that popover.
+- **Migration ids are offset from upstream's** (2026-09-07 sync): the fork added
+  migrations 041/042 (agent attribution, side chats) before upstream reached those ids, and
+  050/051 (cross-provider recovery indexes, goals) are fork-only too. The migrator runs only
+  ids above the highest recorded one, so every upstream migration from
+  `AuthSessionClientConnection` on is renumbered on the way in (upstream 041 → 043 … 047 → 049,
+  048 → 052, 049 → 053; the table in `apps/server/src/persistence/Migrations.ts` is the
+  record). Expect `Migrations.ts` to conflict whenever upstream adds a migration: `git mv` the
+  new file(s) to the next free fork id, fix the import path in the paired `.test.ts`, and bump
+  any `toMigrationInclusive` ids that test uses.
 - **Nightly integration marker**: fork-upstream.json records the last integrated official
   release tag and its commit. Source package versions remain upstream-owned. The release
   pipeline stamps the personal nightly version only while building, avoiding four permanent

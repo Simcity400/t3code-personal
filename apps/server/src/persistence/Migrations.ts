@@ -59,7 +59,8 @@ import Migration0042 from "./Migrations/042_ProjectionThreadSideChats.ts";
 // recorded one, so every upstream migration from AuthSessionClientConnection onwards is
 // renumbered here (+2) — otherwise it would silently never run on fork machines.
 // Upstream 041 -> 043, 042 -> 044, 043 -> 045, 044 -> 046, 045 -> 047, 046 -> 048,
-// 047 -> 049. The files on disk carry the fork ids, not upstream's.
+// 047 -> 049, 048 -> 052, 049 -> 053 (050/051 are fork-only). The files on disk carry
+// the fork ids, not upstream's.
 import Migration0043 from "./Migrations/043_AuthSessionClientConnection.ts";
 import Migration0044 from "./Migrations/044_ProjectionThreadLinkedPullRequest.ts";
 import Migration0045 from "./Migrations/045_ProjectionThreadsUnsettledAt.ts";
@@ -69,6 +70,8 @@ import Migration0048 from "./Migrations/048_RepairAutomaticSettlementTimestamps.
 import Migration0049 from "./Migrations/049_ProjectionProjectIcon.ts";
 import Migration0050 from "./Migrations/050_CrossProviderRecoveryIndexes.ts";
 import Migration0051 from "./Migrations/051_ProjectionThreadsGoal.ts";
+import Migration0052 from "./Migrations/052_ProjectionThreadBranchPullRequest.ts";
+import Migration0053 from "./Migrations/053_ProjectionThreadsActiveOrderKey.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -132,6 +135,8 @@ export const migrationEntries = [
   [49, "ProjectionProjectIcon", Migration0049],
   [50, "CrossProviderRecoveryIndexes", Migration0050],
   [51, "ProjectionThreadsGoal", Migration0051],
+  [52, "ProjectionThreadBranchPullRequest", Migration0052],
+  [53, "ProjectionThreadsActiveOrderKey", Migration0053],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
