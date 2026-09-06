@@ -122,6 +122,61 @@ describe("server task state", () => {
       agentKind: "agent",
     });
   });
+  it("keeps a subagent batch distinct from a plain subagent through sparse updates", () => {
+    const start = updateTaskState(
+      undefined,
+      activity("task.progress", {
+        taskId: "trajectory:4",
+        taskType: "subagent_batch",
+        agentKind: "agent",
+        title: "Antigravity subagent batch",
+        status: "running",
+      }),
+    );
+    expect(start).toMatchObject({ kind: "subagent_batch", title: "Antigravity subagent batch" });
+    const sparse = updateTaskState(
+      start,
+      activity("task.updated", { taskId: "trajectory:4", status: "idle" }, 1),
+    );
+    expect(sparse).toMatchObject({ kind: "subagent_batch", status: "idle" });
+  });
+
+  it("shows a status-only update's detail as progress", () => {
+    const start = updateTaskState(
+      undefined,
+      activity("task.progress", {
+        taskId: "trajectory:4",
+        taskType: "subagent_batch",
+        agentKind: "agent",
+        title: "Antigravity subagent batch",
+        status: "running",
+        summary: "Launch readers",
+      }),
+    );
+    expect(start?.progress).toBe("Launch readers");
+    const ended = updateTaskState(
+      start,
+      activity(
+        "task.updated",
+        {
+          taskId: "trajectory:4",
+          taskType: "subagent_batch",
+          status: "idle",
+          detail: "Turn ended. Individual agent status is unavailable.",
+          timelineBypass: true,
+        },
+        1,
+      ),
+    );
+    expect(ended).toMatchObject({
+      status: "idle",
+      progress: "Turn ended. Individual agent status is unavailable.",
+      title: "Antigravity subagent batch",
+      result: null,
+      error: null,
+    });
+  });
+
   const unnamedAgentId = "01a0703f-a995-7000-8000-123456789abc";
 
   it("names an unnamed agent from its assignment and retains that name through updates", () => {

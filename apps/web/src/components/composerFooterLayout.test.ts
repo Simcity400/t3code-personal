@@ -12,6 +12,7 @@ import {
   shouldAnimateComposerRestingTransition,
   shouldUseCompactComposerPrimaryActions,
   shouldUseCompactComposerFooter,
+  shouldUseRestingComposerLayout,
 } from "./composerFooterLayout";
 
 describe("getRestingComposerImagePreviewCounts", () => {
@@ -92,6 +93,58 @@ describe("resolveComposerTimelineInset", () => {
     expect(
       resolveComposerTimelineInset({ currentInset: 0, overlayHeight: 60, isResting: true }),
     ).toBe(60 + COMPOSER_RESTING_EXPANSION_MIN_PX);
+  });
+});
+
+describe("shouldUseRestingComposerLayout", () => {
+  const resting = {
+    isExistingThread: true,
+    isMobileViewport: false,
+    isFocused: false,
+    isScrollCollapsed: false,
+    hasExpandedChrome: false,
+    collapseOnBlur: true,
+  };
+
+  it("uses the resting layout for an unfocused desktop composer", () => {
+    expect(shouldUseRestingComposerLayout(resting)).toBe(true);
+  });
+
+  it("keeps an unfocused composer expanded when blur collapse is off", () => {
+    expect(shouldUseRestingComposerLayout({ ...resting, collapseOnBlur: false })).toBe(false);
+  });
+
+  it("rests a scroll-collapsed composer even while focused", () => {
+    expect(
+      shouldUseRestingComposerLayout({ ...resting, isFocused: true, isScrollCollapsed: true }),
+    ).toBe(true);
+  });
+
+  it("rests a scroll-collapsed composer regardless of the blur preference", () => {
+    expect(
+      shouldUseRestingComposerLayout({
+        ...resting,
+        isFocused: true,
+        isScrollCollapsed: true,
+        collapseOnBlur: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps new-thread composers expanded", () => {
+    expect(shouldUseRestingComposerLayout({ ...resting, isExistingThread: false })).toBe(false);
+  });
+
+  it("leaves responsive mobile on its existing collapse path", () => {
+    expect(shouldUseRestingComposerLayout({ ...resting, isMobileViewport: true })).toBe(false);
+  });
+
+  it("expands when focus is anywhere in the composer", () => {
+    expect(shouldUseRestingComposerLayout({ ...resting, isFocused: true })).toBe(false);
+  });
+
+  it("keeps drawers and composer-owned menus expanded", () => {
+    expect(shouldUseRestingComposerLayout({ ...resting, hasExpandedChrome: true })).toBe(false);
   });
 });
 
