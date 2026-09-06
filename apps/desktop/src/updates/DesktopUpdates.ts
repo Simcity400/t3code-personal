@@ -5,6 +5,7 @@ import {
   type DesktopUpdateChannel,
   type DesktopUpdateCheckResult,
   type DesktopUpdateState,
+  type DesktopUpstreamMergeStatus,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -34,6 +35,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
+import { fetchUpstreamMergeStatus, isSameUpstreamMergeStatus } from "./upstreamMerge.ts";
 import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
 import {
   createInitialDesktopUpdateState,
@@ -200,6 +202,11 @@ export class DesktopUpdateCredentials extends Context.Service<
   DesktopUpdateCredentials,
   {
     readonly resolvePrivateGitHubToken: Effect.Effect<Option.Option<string>>;
+    /** Fork: the blocked-sync marker, read with the private-feed token. */
+    readonly readUpstreamMergeStatus: (
+      feed: PrivateGitHubUpdateFeed,
+      token: string,
+    ) => Effect.Effect<DesktopUpstreamMergeStatus | null>;
   }
 >()("@t3tools/desktop/updates/DesktopUpdates/DesktopUpdateCredentials") {}
 
@@ -220,7 +227,10 @@ const makeDesktopUpdateCredentials = Effect.gen(function* () {
       Effect.map((token) => (token.length > 0 ? Option.some(token) : Option.none<string>())),
       Effect.orElseSucceed(() => Option.none<string>()),
     );
-  return DesktopUpdateCredentials.of({ resolvePrivateGitHubToken });
+  return DesktopUpdateCredentials.of({
+    resolvePrivateGitHubToken,
+    readUpstreamMergeStatus: (feed, token) => fetchUpstreamMergeStatus(feed, token),
+  });
 });
 
 export const desktopUpdateCredentialsLayer = Layer.effect(
@@ -446,6 +456,28 @@ export const make = Effect.gen(function* () {
 
   const shouldEnableAutoUpdates = resolveDisabledReason.pipe(Effect.map(Option.isNone));
 
+  // Fork: where the blocked-sync marker is read from, once the private feed is configured.
+  const upstreamMergeSourceRef = yield* Ref.make(
+    Option.none<{ readonly feed: PrivateGitHubUpdateFeed; readonly token: string }>(),
+  );
+  const refreshUpstreamMergeStatus = Effect.gen(function* () {
+    const source = yield* Ref.get(upstreamMergeSourceRef);
+    if (Option.isNone(source)) return;
+    const upstreamMerge = yield* credentials.readUpstreamMergeStatus(
+      source.value.feed,
+      source.value.token,
+    );
+    const current = yield* Ref.get(updateStateRef);
+    if (isSameUpstreamMergeStatus(current.upstreamMerge, upstreamMerge)) return;
+    yield* updateState((state) => ({ ...state, upstreamMerge }));
+    yield* logUpdaterInfo(
+      upstreamMerge
+        ? "official nightly sync needs a manual merge"
+        : "official nightly sync unblocked",
+      upstreamMerge ? { tag: upstreamMerge.tag, conflicts: upstreamMerge.conflicts.length } : {},
+    );
+  }).pipe(Effect.withSpan("desktop.updates.refreshUpstreamMergeStatus"));
+
   const checkForUpdates = Effect.fn("desktop.updates.checkForUpdates")(function* (
     reason: string,
     actionReservation: "acquire" | "held" = "acquire",
@@ -487,6 +519,9 @@ export const make = Effect.gen(function* () {
             return true;
           }),
         }),
+        // Whatever the release feed said, a stopped sync is a separate fact
+        // the user must hear about; it rides along with every check.
+        Effect.tap(() => refreshUpstreamMergeStatus),
       );
     });
 
@@ -936,6 +971,10 @@ export const make = Effect.gen(function* () {
           if (Option.isNone(token)) {
             yield* Ref.set(privateFeedAuthMissingRef, true);
           } else {
+            yield* Ref.set(
+              upstreamMergeSourceRef,
+              Option.some({ feed: privateGitHubFeed.value, token: token.value }),
+            );
             yield* electronUpdater.setFeedURL({
               provider: "github",
               owner: privateGitHubFeed.value.owner,

@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { DesktopUpdateState } from "@t3tools/contracts";
+import type { DesktopUpdateState, DesktopUpstreamMergeStatus } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
@@ -37,6 +37,7 @@ export interface UpdatesHarnessOptions {
   readonly resourcesPath?: string;
   readonly mockUpdates?: boolean;
   readonly githubToken?: string;
+  readonly upstreamMerge?: DesktopUpstreamMergeStatus | null;
 }
 
 export function makeHarness(options: UpdatesHarnessOptions = {}) {
@@ -127,6 +128,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     resolvePrivateGitHubToken: Effect.succeed(
       options.githubToken ? Option.some(options.githubToken.trim()) : Option.none(),
     ),
+    readUpstreamMergeStatus: () => Effect.succeed(options.upstreamMerge ?? null),
   });
 
   const windowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {

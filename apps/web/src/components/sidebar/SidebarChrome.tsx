@@ -33,6 +33,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
+import { SidebarUpstreamMergeNotice } from "./SidebarUpstreamMergeNotice";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
@@ -225,6 +226,7 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   return (
     <SidebarFooter className="p-[var(--sidebar-content-inset)]">
       <SidebarProviderUpdatePill />
+      <SidebarUpstreamMergeNotice />
       <SidebarUpdateArchitectureWarning />
       <SidebarUtilityMenu />
     </SidebarFooter>

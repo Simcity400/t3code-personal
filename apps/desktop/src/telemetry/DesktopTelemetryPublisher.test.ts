@@ -442,6 +442,7 @@ describe("DesktopTelemetryPublisher", () => {
             errorContext: null,
             canRetry: false,
             omittedReleaseCount: 0,
+            upstreamMerge: null,
           },
         } as const;
         yield* publisher.publishUpdateReport(report);

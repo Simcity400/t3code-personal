@@ -229,8 +229,13 @@ machine.
 - **Only the fork's own workflows**: the fork keeps fork-sync.yml, fork-release.yml
   and fork-mobile-preview.yml. Upstream-only workflows require its runners and secrets,
   so sync removes them inside the merge commit. A collision with a fork-owned workflow
-  stops the run for review. The packaged updater offers complete releases; sync errors
-  are reported in GitHub Actions, not through a separate source-updater pill.
+  stops the run for review. The packaged updater offers complete releases.
+- **Blocked-sync notice** (2026-09-06): when Fork Sync cannot merge a nightly it pushes
+  the `needs-merge-help` branch with `fork-sync-status.json`; the desktop updater
+  reads it with the private-feed token and the sidebar shows "Official update needs a
+  merge" with a button that opens a new thread prompted to finish the merge (recipe in
+  `docs/internals/personal-fork-updates.md`). This replaces the retired source-checkout
+  updater pill: no local git resets or rebuilds, only the marker and the prompt.
 
 - **One-line composer (web)**: retired 2026-09-03 — upstream's "collapse the resting
   composer" (#7855) collapses the desktop composer to a single line at rest and expands
