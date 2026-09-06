@@ -725,8 +725,7 @@ function AgentRosterSection({
   );
 }
 
-const EMPTY_TURN_DIFFS = new Map<MessageId, TurnDiffSummary>();
-const EMPTY_REVERT_COUNTS = new Map<MessageId, number>();
+const EMPTY_TURN_DIFFS: ReadonlyArray<TurnDiffSummary> = [];
 const NOOP_MESSAGE_ANCHOR = () => {};
 const NOOP_TURN_DIFF = () => {};
 const NOOP_REVERT = () => {};
@@ -952,11 +951,11 @@ function AgentTranscript({
           {...(onCiteAssistantText ? { onCiteAssistantText } : {})}
           latestTurn={latestTurn}
           runningTurnId={isWorking ? turnId : null}
-          turnDiffSummaryByAssistantMessageId={EMPTY_TURN_DIFFS}
+          turnDiffSummaries={EMPTY_TURN_DIFFS}
           routeThreadKey={scopedThreadKey(threadRef)}
           onOpenTurnDiff={NOOP_TURN_DIFF}
-          revertTurnCountByUserMessageId={EMPTY_REVERT_COUNTS}
-          onRevertUserMessage={NOOP_REVERT}
+          supportsConversationRollback={false}
+          onRevertToTurnCount={NOOP_REVERT}
           isRevertingCheckpoint={false}
           onImageExpand={onImageExpand ?? NOOP_IMAGE_EXPAND}
           activeThreadEnvironmentId={threadRef.environmentId}

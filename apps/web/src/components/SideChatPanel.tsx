@@ -28,12 +28,12 @@ import { truncate } from "@t3tools/shared/String";
 import { ArrowUpRight, ChevronDown, Maximize2, MessagesSquare, Square, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
+
 import { useComposerDraftStore } from "../composerDraftStore";
 import { readLocalApi } from "../localApi";
 import {
   deriveActiveWorkStartedAt,
-  derivePendingApprovals,
-  derivePendingUserInputs,
   derivePhase,
   deriveTimelineEntries,
   deriveWorkLogEntries,
@@ -52,8 +52,7 @@ import { Button } from "./ui/button";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-const EMPTY_TURN_DIFFS = new Map<MessageId, TurnDiffSummary>();
-const EMPTY_REVERT_COUNTS = new Map<MessageId, number>();
+const EMPTY_TURN_DIFFS: ReadonlyArray<TurnDiffSummary> = [];
 const EMPTY_MESSAGES: ReadonlyArray<OrchestrationMessage> = Object.freeze([]);
 const EMPTY_ACTIVITIES: ReadonlyArray<OrchestrationThreadActivity> = Object.freeze([]);
 const EMPTY_PROPOSED_PLANS: ReadonlyArray<OrchestrationProposedPlan> = Object.freeze([]);
@@ -154,10 +153,10 @@ export function SideChatPanel(props: {
     session,
     phase === "running" ? null : sendStartedAt,
   );
-  const pendingApprovalCount = useMemo(
-    () => derivePendingApprovals(activities).length + derivePendingUserInputs(activities).length,
-    [activities],
-  );
+  const pendingApprovalCount = useMemo(() => {
+    const pending = derivePendingRequests(activities);
+    return pending.approvals.length + pending.userInputs.length;
+  }, [activities]);
   const timelineEntries = useMemo(
     () => deriveTimelineEntries(messages, proposedPlans, deriveWorkLogEntries(activities)),
     [activities, messages, proposedPlans],
@@ -383,11 +382,11 @@ export function SideChatPanel(props: {
               timelineEntries={timelineEntries}
               latestTurn={latestTurn}
               runningTurnId={isWorking ? runningTurnId : null}
-              turnDiffSummaryByAssistantMessageId={EMPTY_TURN_DIFFS}
+              turnDiffSummaries={EMPTY_TURN_DIFFS}
               routeThreadKey={scopedThreadKey(threadRef)}
               onOpenTurnDiff={NOOP}
-              revertTurnCountByUserMessageId={EMPTY_REVERT_COUNTS}
-              onRevertUserMessage={NOOP}
+              supportsConversationRollback={false}
+              onRevertToTurnCount={NOOP}
               isRevertingCheckpoint={false}
               onImageExpand={props.onImageExpand}
               {...(props.onFileOpen ? { onFileOpen: props.onFileOpen } : {})}
