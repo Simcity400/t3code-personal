@@ -1,7 +1,7 @@
 import { Button } from "../ui/button";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { Minimize2Icon } from "lucide-react";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { composerFloatingLayerProps } from "./composerEventScope";
 import type { ServerProvider, TimestampFormat } from "@t3tools/contracts";
 import { useNowMinute } from "~/hooks/useNowMinute";
@@ -22,15 +22,17 @@ function formatPercentage(value: number | null): string | null {
   return `${Math.round(value)}%`;
 }
 
+/**
+ * The popover is a glance, not a page: one line per reading, bars inline,
+ * and no actions. Manual compaction is `/compact` in the composer, so the
+ * fork dropped upstream's "Compact context" button from here (2026-09-06).
+ */
 export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot | null;
   provider?: ServerProvider | null;
   timestampFormat?: TimestampFormat;
-  onCompact?: (() => void) | undefined;
-  compactDisabled?: boolean | undefined;
-  compactDisabledReason?: string | null | undefined;
 }) {
-  const { usage, provider, onCompact, compactDisabled, compactDisabledReason } = props;
+  const { usage, provider } = props;
   const [open, setOpen] = useState(false);
   const usedPercentage = formatPercentage(usage?.usedPercentage ?? null);
   const normalizedPercentage = Math.max(0, Math.min(100, usage?.usedPercentage ?? 0));
@@ -41,6 +43,12 @@ export function ContextWindowMeter(props: {
   const showTotalProcessed = totalProcessedTokens !== null && totalProcessedTokens > 0;
   const isOverloaded = normalizedPercentage > 90;
   const usageColor = isOverloaded ? "var(--color-error)" : usageAccentColor;
+  const reading =
+    usage === null
+      ? "Not reported yet"
+      : usage.maxTokens != null && usedPercentage
+        ? `${formatContextWindowTokens(usage.usedTokens)}/${formatContextWindowTokens(usage.maxTokens)} · ${usedPercentage}`
+        : `${formatContextWindowTokens(usage.usedTokens)} tokens`;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -94,73 +102,33 @@ export function ContextWindowMeter(props: {
         {...composerFloatingLayerProps}
         side="top"
         align="end"
-        className="w-96 max-w-[calc(100vw-2rem)] text-left whitespace-normal"
+        className="w-64 max-w-[calc(100vw-2rem)] p-2.5 text-left whitespace-normal"
       >
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="font-medium text-muted-foreground text-xs">Context Window</div>
-            {usage?.maxTokens != null && usedPercentage ? (
-              <div className="text-secondary-label text-[11px] tabular-nums">
-                <span>
-                  {formatContextWindowTokens(usage.usedTokens)}/
-                  {formatContextWindowTokens(usage.maxTokens)} ({usedPercentage})
-                </span>
-              </div>
-            ) : (
-              <div className="text-secondary-label text-[11px] tabular-nums">
-                {usage
-                  ? `${formatContextWindowTokens(usage.usedTokens)} tokens`
-                  : "Not reported yet"}
-              </div>
-            )}
-          </div>
-          {usedPercentage !== null ? (
-            <div
-              className="h-1.5 w-full overflow-hidden rounded-full bg-muted/60"
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.round(normalizedPercentage)}
-              aria-label="Context window usage"
-            >
-              <div
-                className="h-full rounded-full transition-[width,background-color] duration-500 ease-out motion-reduce:transition-none"
-                style={{ width: `${normalizedPercentage}%`, backgroundColor: usageColor }}
+        <div className="flex flex-col gap-1.5 text-[11px] leading-4">
+          <div className="flex items-center gap-2">
+            <span className="shrink-0 font-medium text-muted-foreground">Context</span>
+            {usedPercentage !== null ? (
+              <UsageBar
+                className="min-w-8 flex-1"
+                label="Context window usage"
+                percent={normalizedPercentage}
+                color={usageColor}
               />
-            </div>
-          ) : null}
+            ) : (
+              <span className="flex-1" />
+            )}
+            <span className="shrink-0 tabular-nums text-secondary-label">{reading}</span>
+          </div>
           {showTotalProcessed ? (
-            <div className="flex items-center justify-between gap-3 text-[11px] leading-4">
-              <span className="text-secondary-label">Total processed</span>
-              <span className="font-medium tabular-nums text-secondary-label">
-                {formatContextWindowTokens(totalProcessedTokens)}
-              </span>
+            <div className="text-right tabular-nums text-secondary-label">
+              {formatContextWindowTokens(totalProcessedTokens)} processed in total
             </div>
           ) : null}
           {open && provider !== undefined ? (
-            <UsageLimitsDetails
+            <ContextUsageLimits
               provider={provider}
               timestampFormat={props.timestampFormat ?? "locale"}
             />
-          ) : null}
-          {onCompact ? (
-            <>
-              <Button
-                size="xs"
-                variant="outline"
-                className="mt-1 w-full justify-center"
-                disabled={compactDisabled}
-                onClick={onCompact}
-              >
-                <Minimize2Icon aria-hidden="true" />
-                Compact context
-              </Button>
-              {compactDisabled && compactDisabledReason ? (
-                <div className="text-pretty text-secondary-label text-[11px]">
-                  {compactDisabledReason}
-                </div>
-              ) : null}
-            </>
           ) : null}
         </div>
       </PopoverPopup>
@@ -168,7 +136,37 @@ export function ContextWindowMeter(props: {
   );
 }
 
-function UsageLimitsDetails({
+function UsageBar({
+  label,
+  percent,
+  color,
+  className,
+}: {
+  label: string;
+  percent: number;
+  color: string;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`h-1 overflow-hidden rounded-full bg-muted/60 ${className ?? ""}`}
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(percent)}
+    >
+      <div
+        className="h-full rounded-full transition-[width,background-color] duration-500 ease-out motion-reduce:transition-none"
+        style={{ width: `${percent}%`, backgroundColor: color }}
+      />
+    </div>
+  );
+}
+
+/** One row per window: label, bar, percent, time to reset. The absolute reset
+    time is a tooltip on the countdown; the Usage page has the long form. */
+export function ContextUsageLimits({
   provider,
   timestampFormat,
 }: {
@@ -182,64 +180,68 @@ function UsageLimitsDetails({
     ? limitsNotice(limits)
     : "Usage limits are not available for this provider.";
   return (
-    <div className="flex flex-col gap-3 border-t border-border pt-3 text-xs">
-      <div className="text-muted-foreground">
-        Plan usage limits{provider?.auth.label ? ` · ${provider.auth.label}` : ""}
+    <div className="mt-0.5 flex flex-col gap-1.5 border-t border-border pt-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate font-medium text-muted-foreground">
+          Limits{provider?.auth.label ? ` · ${provider.auth.label}` : ""}
+        </span>
+        <Link
+          to="/usage"
+          search={{ view: "limits" }}
+          className="shrink-0 text-muted-foreground hover:text-foreground"
+        >
+          Details
+        </Link>
       </div>
       {notice ? (
         <p className="text-muted-foreground">{notice}</p>
       ) : (
-        limits?.windows.map((window) => {
-          const used = Math.max(0, Math.min(100, window.usedPercent));
-          const countdown = formatResetsIn(window, now);
-          const resetAt = window.resetsAt
-            ? formatChatTimestampTooltip(window.resetsAt, timestampFormat)
-            : "";
-          const label =
-            window.kind === "session" && window.windowDurationMins === 300
-              ? "5-hour limit"
-              : window.label;
-          return (
-            <div key={window.id} className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium">{label}</span>
-                <span className="tabular-nums text-muted-foreground">{Math.round(used)}%</span>
-              </div>
-              <div
-                className="h-1.5 overflow-hidden rounded-full bg-muted/60"
-                role="progressbar"
-                aria-label={label}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={used}
-              >
-                <div
-                  className="h-full rounded-full"
-                  style={{
-                    width: `${used}%`,
-                    backgroundColor: used >= 90 ? "var(--color-error)" : usageAccentColor,
-                  }}
+        <div className="grid grid-cols-[minmax(0,6rem)_1fr_2.25rem_auto] items-center gap-x-2 gap-y-1">
+          {limits?.windows.map((window) => {
+            const used = Math.max(0, Math.min(100, window.usedPercent));
+            const countdown = formatResetsIn(window, now)?.replace(/^resets /, "") ?? null;
+            const resetAt = window.resetsAt
+              ? formatChatTimestampTooltip(window.resetsAt, timestampFormat)
+              : null;
+            const label =
+              window.kind === "session" && window.windowDurationMins === 300
+                ? "5-hour"
+                : window.label;
+            return (
+              <div key={window.id} className="contents">
+                <span className="truncate">{label}</span>
+                <UsageBar
+                  label={label}
+                  percent={used}
+                  color={used >= 90 ? "var(--color-error)" : usageAccentColor}
                 />
+                <span className="text-right tabular-nums text-muted-foreground">
+                  {Math.round(used)}%
+                </span>
+                {countdown && resetAt ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <time
+                          dateTime={window.resetsAt}
+                          className="text-right tabular-nums text-muted-foreground"
+                        >
+                          {countdown}
+                        </time>
+                      }
+                    />
+                    <TooltipPopup side="top">Resets {resetAt}</TooltipPopup>
+                  </Tooltip>
+                ) : (
+                  <span className="text-right tabular-nums text-muted-foreground">
+                    {countdown ?? "—"}
+                  </span>
+                )}
               </div>
-              {resetAt && countdown ? (
-                <div className="flex flex-wrap justify-between gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-                  <time dateTime={window.resetsAt}>Resets {resetAt}</time>
-                  <span className="tabular-nums">{countdown.replace(/^resets /, "")}</span>
-                </div>
-              ) : (
-                <span className="text-[11px] text-muted-foreground">Reset time not reported</span>
-              )}
-            </div>
-          );
-        })
+            );
+          })}
+        </div>
       )}
-      <Link
-        to="/usage"
-        search={{ view: "limits" }}
-        className="border-t border-border pt-3 text-muted-foreground hover:text-foreground"
-      >
-        See detailed breakdown
-      </Link>
     </div>
   );
 }
