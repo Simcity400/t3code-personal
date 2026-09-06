@@ -1225,6 +1225,64 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
+  it("ignores a delayed exit from a replaced provider account", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const replacementInstanceId = ProviderInstanceId.make("codex-work");
+
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-session-replacement-account"),
+      threadId,
+      session: {
+        threadId,
+        status: "ready",
+        providerName: "codex",
+        providerInstanceId: replacementInstanceId,
+        runtimeMode: "approval-required",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: "2026-01-01T00:00:02.000Z",
+      },
+      createdAt: "2026-01-01T00:00:02.000Z",
+    });
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-task-started-replacement-account"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: replacementInstanceId,
+      threadId,
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: {
+        taskId: RuntimeTaskId.make("task-replacement-account"),
+        taskType: "local_agent",
+        title: "Replacement account work",
+      },
+    });
+    await harness.drain();
+    expect((await harness.readThreadShell()).backgroundLiveness).toBe("working");
+
+    // The old account's process exits late; the thread already belongs to the
+    // replacement, so nothing about the live session may change.
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-session-exited-previous-account"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex-personal"),
+      threadId,
+      createdAt: "2026-01-01T00:00:03.000Z",
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("ready");
+    expect(thread?.session?.providerInstanceId).toBe(replacementInstanceId);
+    const shell = await harness.readThreadShell();
+    expect(shell.backgroundLiveness).toBe("working");
+    expect(shell.backgroundWait).toMatchObject({ label: "Replacement account work" });
+  });
+
   it("settles the session when a provider reports only turn.aborted after an interrupt", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

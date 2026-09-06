@@ -518,6 +518,15 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         providerSettingsForm: { placeholder: "~/.claude", clearWhenEmpty: "omit" },
       }),
     ),
+    sharedHomePath: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Shared conversation home",
+        description:
+          "Another Claude config directory whose conversations this account can continue. Keeps this account's login separate while sharing its projects folder.",
+        providerSettingsForm: { placeholder: "~/.claude", clearWhenEmpty: "omit" },
+      }),
+    ),
     customModels: Schema.Array(CustomModelSetting).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
@@ -549,7 +558,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs"],
+    order: ["binaryPath", "homePath", "sharedHomePath", "autoCompactWindow", "launchArgs"],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -1070,6 +1079,7 @@ const ClaudeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),
+  sharedHomePath: Schema.optionalKey(TrimmedString),
   customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
   launchArgs: Schema.optionalKey(TrimmedString),
   // Validated at the patch boundary so a typo fails the one update with a

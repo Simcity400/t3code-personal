@@ -78,6 +78,18 @@ export function canCommitPendingModel(
  * Primary and selected providers start open; all other catalogs start closed.
  * A user's disclosure tap inverts that default until the picker is dismissed.
  */
+/** Keep sibling account headers visible instead of burying them under several model catalogs. */
+export function providerSectionStartsExpanded(input: {
+  readonly isPrimary: boolean;
+  readonly containsAppliedSelection: boolean;
+  readonly sameDriverProviderCount: number;
+}): boolean {
+  if (input.sameDriverProviderCount > 1) {
+    return false;
+  }
+  return input.isPrimary || input.containsAppliedSelection;
+}
+
 export function providerSectionIsCollapsed(input: {
   readonly defaultExpanded: boolean;
   readonly hasExpansionOverride: boolean;

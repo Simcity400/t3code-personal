@@ -60,6 +60,7 @@ import {
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
 import { makeClaudeCapabilitiesCacheKey, makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
+import { materializeClaudeSharedHome, resolveClaudeHomeLayout } from "./ClaudeSharedHome.ts";
 import { discoverClaudeSkills } from "./ClaudeSkills.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -133,6 +134,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
+        ),
+      );
+      const homeLayout = yield* resolveClaudeHomeLayout(effectiveConfig);
+      yield* materializeClaudeSharedHome(homeLayout).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.mapError(
+          (cause) =>
+            new ProviderDriverError({
+              driver: DRIVER_KIND,
+              instanceId,
+              detail: cause.message,
+              cause,
+            }),
         ),
       );
       const continuationGroupKey = yield* makeClaudeContinuationGroupKey(effectiveConfig);

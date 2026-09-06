@@ -231,6 +231,17 @@ machine.
   and fork-mobile-preview.yml. Upstream-only workflows require its runners and secrets,
   so sync removes them inside the merge commit. A collision with a fork-owned workflow
   stops the run for review. The packaged updater offers complete releases.
+- **Claude accounts that continue one thread** (2026-09-06): Claude instances gained a
+  **Shared conversation home** setting (`sharedHomePath`), the Claude counterpart of
+  Codex's shadow home. `apps/server/src/provider/Drivers/ClaudeSharedHome.ts` links the
+  instance's `projects` folder to the shared account's directory (moving any existing
+  conversations in first) and keys continuation to the shared directory, so the existing
+  instance-switch path resumes the same Claude session on the other account. Credentials
+  and `.claude.json` stay per account. Verified 2026-09-06 against Claude Code 2.1.263 by
+  resuming a session through a linked `projects` folder from a second config directory.
+  Came out of branch `t3code/cc74d163`, whose remaining pieces (a guard ignoring a
+  replaced account's late `session.exited`, and sibling account catalogs starting folded
+  in the mobile picker) landed alongside.
 - **Native Codex goals** (2026-09-06): upstream PR pingdotgg/t3code#7935 (stekman08,
   "feat(codex): add native Goal lifecycle controls") merged on top of nightly 1292 with
   conflict resolution only, plus its provider-service tests pointed at temp workspaces so

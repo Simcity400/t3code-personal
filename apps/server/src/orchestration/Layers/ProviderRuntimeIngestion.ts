@@ -1820,6 +1820,17 @@ const make = Effect.gen(function* () {
 
       const thread = yield* resolveThreadRuntimeContext(event.threadId);
       if (!thread) return;
+      if (
+        event.type === "session.exited" &&
+        event.providerInstanceId !== undefined &&
+        thread.session?.providerInstanceId !== undefined &&
+        event.providerInstanceId !== thread.session.providerInstanceId
+      ) {
+        // A previous account's process can report its exit after a compatible
+        // replacement has already become active. Ignore the event completely
+        // so it cannot stop the new session or clear its turn/liveness state.
+        return;
+      }
 
       let loadedThreadDetail: OrchestrationThread | null | undefined;
       const getLoadedThreadDetail = () =>
