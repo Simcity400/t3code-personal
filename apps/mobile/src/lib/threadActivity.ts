@@ -431,8 +431,8 @@ function isTerminalTaskUpdate(activity: OrchestrationThreadActivity): boolean {
  * Quiet-timeline guarantee (mirrors web's session-logic): agent-internal
  * activity lives in the Agents screen, not the work log. Agent lifecycle rows
  * pass even when bypassed or owned by another agent, because they fold into
- * their spawn batch rather than rendering on their own (the same rule as
- * web's session-logic); that is how Codex children (all bypassed) and Claude
+ * their spawn batch rather than rendering on their own (mirroring web's
+ * session-logic); that is how Codex children (all bypassed) and Claude
  * workflow members reach the batch row. The Agents screen keeps the full
  * transcript, so nothing an agent did is lost by folding.
  */

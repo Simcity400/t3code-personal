@@ -104,8 +104,9 @@ machine.
   `forkFromThreadId`.
 - **Mobile Agents screen & durable transcripts** (2026-08-15):
   `apps/mobile/src/features/agents/` renders the same roster and transcripts on the
-  phone, which is why `threadActivity.ts` re-homes nested agent rows out of the chat feed
-  instead of showing them there the way upstream does.
+  phone. Since the 2026-09-06 sync, `threadActivity.ts` follows upstream's fold rule:
+  agent lifecycle rows collapse into one batch row per spawn in the chat feed, and the
+  Agents screen holds each agent's transcript.
 - **Mobile composer that opens at one line** (2026-08-15): `composerEditorHeight.ts`
   measures the draft and sizes the editor to it, and `markSubmitted()` /
   `composerEditorRevision.ts` keep a post-submit clear from being overwritten by native
