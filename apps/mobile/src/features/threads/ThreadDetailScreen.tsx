@@ -49,6 +49,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import {
   Alert,
@@ -133,6 +134,16 @@ export interface ThreadDetailScreenProps {
   readonly activeWorkStartedAt: string | null;
   readonly liveAgentCount?: number;
   readonly onOpenAgents?: () => void;
+  /**
+   * Thread-level controls that must stay reachable regardless of scroll
+   * position (side-chat actions, attached side chats). Rendered inside the
+   * composer overlay, above the composer, so the feed's bottom inset already
+   * accounts for their height and nothing has to know about the translucent
+   * header. In-flow siblings above the feed do not work here: a bare
+   * ScrollView grows to share the screen with the feed, and anything at the
+   * top sits under the iOS glass header.
+   */
+  readonly composerAccessory?: ReactNode;
   readonly isCompacting: boolean;
   readonly activePendingApproval: PendingApproval | null;
   readonly respondingApprovalId: ApprovalRequestId | null;
@@ -1193,6 +1204,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               {/* Hidden (not unmounted) while a user-input request owns the
                 composer slot, so composer drafts and editor state survive. */}
               <View style={activeUserInputRequestId !== null ? { display: "none" } : undefined}>
+                {props.composerAccessory ?? null}
                 {codexGoal !== null ? (
                   <View className="mx-3 mb-2 rounded-xl border border-blue-500/20 bg-blue-500/10 px-3 py-2">
                     <Text className="text-xs font-t3-bold text-foreground">

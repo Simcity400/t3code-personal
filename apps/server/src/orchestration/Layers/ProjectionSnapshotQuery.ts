@@ -1741,18 +1741,20 @@ pending_approval_requests AS (
             AND kind = 'user-input.requested'
           UNION
           SELECT activity_id FROM projection_thread_activities
-          WHERE thread_id = ${threadId} AND (
-            kind = 'task.state'
-            OR (kind IN ('task.started', 'task.updated', 'task.progress') AND json_type(payload_json, '$.prompt') = 'text')
-            OR (kind IN ('tool.started', 'tool.updated', 'tool.completed') AND (
-              json_extract(payload_json, '$.itemType') = 'collab_agent_tool_call'
-              OR (json_extract(payload_json, '$.itemType') = 'user_message' AND json_type(payload_json, '$.agentId') = 'text')
-            ))
-          )
+          WHERE thread_id = ${threadId} AND kind = 'task.state'
         )
   `;
 
-  // Current task records are independent of the paginated work log.
+  // Current task records are independent of the paginated work log: one
+  // compact row per task keeps the roster (identity, status, usage) complete
+  // no matter which turns are loaded. No other task-related row is pinned
+  // (blocking approval and user-input requests above have their own pins).
+  // The transcript rows behind a task (its launch prompt, collaboration tool
+  // calls, the child's own user message) stay in the paginated work log and
+  // arrive through "load earlier" like every other row; pinning them shipped the
+  // entire agent history — tens of thousands of rows on agent-heavy threads —
+  // with every windowed snapshot, which blew the first-paint budget mobile
+  // clients depend on and made resumes time out.
   const listPinnedThreadActivityRowsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadActivityDbRowSchema,
