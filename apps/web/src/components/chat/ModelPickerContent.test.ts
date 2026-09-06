@@ -8,6 +8,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
+  describeLockedOutInstance,
   resolveModelPickerSelectedModel,
   shouldIncludeModelPickerOption,
   shouldOfferModelPickerSetup,
@@ -211,5 +212,51 @@ describe("shouldOfferModelPickerSetup", () => {
         [],
       ),
     ).toBe(true);
+  });
+});
+
+describe("describeLockedOutInstance", () => {
+  it("sends another provider to a new thread", () => {
+    expect(
+      describeLockedOutInstance({
+        entry: { displayName: "Crisi August", driverKind: ProviderDriverKind.make("codex") },
+        lockedProvider: ProviderDriverKind.make("claudeAgent"),
+        lockedDisplayName: "August121",
+      }),
+    ).toBe("Crisi August is unavailable in this thread. Start a new thread to switch providers.");
+  });
+
+  it("names the shared conversation home setting for a second Claude account", () => {
+    expect(
+      describeLockedOutInstance({
+        entry: { displayName: "aaugust7788", driverKind: ProviderDriverKind.make("claudeAgent") },
+        lockedProvider: ProviderDriverKind.make("claudeAgent"),
+        lockedDisplayName: "August121",
+      }),
+    ).toBe(
+      "aaugust7788 keeps its conversations in a different home. Set its Shared conversation home to the directory that holds the conversations of August121 in Settings > Providers to continue this thread.",
+    );
+  });
+
+  it("names the CODEX_HOME setting for a second Codex account without a known owner", () => {
+    expect(
+      describeLockedOutInstance({
+        entry: { displayName: "Fortis", driverKind: ProviderDriverKind.make("codex") },
+        lockedProvider: ProviderDriverKind.make("codex"),
+        lockedDisplayName: undefined,
+      }),
+    ).toBe(
+      "Fortis uses a different CODEX_HOME path. Give it the same CODEX_HOME path as the account that started it, with its own shadow home, in Settings > Providers to continue this thread.",
+    );
+  });
+
+  it("offers no setting for providers keyed to the instance itself", () => {
+    expect(
+      describeLockedOutInstance({
+        entry: { displayName: "Cursor Work", driverKind: ProviderDriverKind.make("cursor") },
+        lockedProvider: ProviderDriverKind.make("cursor"),
+        lockedDisplayName: "Cursor Personal",
+      }),
+    ).toBe("Cursor Work cannot continue this thread. Start a new thread to switch accounts.");
   });
 });
