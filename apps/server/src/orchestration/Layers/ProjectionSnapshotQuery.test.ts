@@ -3210,14 +3210,20 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
       assert.equal(snapshot._tag, "Some");
       if (raw._tag !== "Some" || snapshot._tag !== "Some") return;
       for (const activities of [raw.value.activities, snapshot.value.thread.activities]) {
-        assert.deepEqual(
-          selectSubagentTranscriptMessages([], activities, "reviewer").map((row) => row.text),
-          ["Review security.", "Check recovery too."],
-        );
-        assert.equal(activities.filter((row) => row.kind === "tool.completed").length, 502);
+        // The current task record survives trimming in both reads, and the
+        // superseded lifecycle rows never come back.
         assert.deepEqual(
           activities.filter((row) => row.kind.startsWith("task.")).map((row) => row.id),
           ["agent-state"],
+        );
+        // No other task row is pinned: the launch and follow-up collaboration
+        // rows sit outside the work-log window and only arrive when that
+        // window is widened, which keeps the first paint bounded on
+        // agent-heavy threads.
+        assert.equal(activities.filter((row) => row.kind === "tool.completed").length, 500);
+        assert.deepEqual(
+          selectSubagentTranscriptMessages([], activities, "reviewer").map((row) => row.text),
+          [],
         );
       }
     }),
