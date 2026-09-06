@@ -1,12 +1,14 @@
 import type { ClaudeSettings } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { expandHomePath } from "../../pathExpansion.ts";
-import { resolveClaudeHomePath } from "./ClaudeHome.ts";
+import { resolveClaudeConfigDirPath } from "./ClaudeHome.ts";
 
 /**
  * Two Claude accounts continuing one thread (fork feature, 2026-09-06).
@@ -24,7 +26,7 @@ import { resolveClaudeHomePath } from "./ClaudeHome.ts";
  */
 export interface ClaudeHomeLayout {
   readonly mode: "direct" | "sharedConversations";
-  /** The instance's own config directory (CLAUDE_CONFIG_DIR). */
+  /** The instance's own config directory, as the spawned CLI resolves it. */
   readonly homePath: string;
   /** Where `projects` lives; equals homePath in direct mode. */
   readonly conversationHomePath: string;
@@ -39,7 +41,16 @@ export class ClaudeSharedHomePathConflictError extends Schema.TaggedErrorClass<C
   { homePath: Schema.String, sharedHomePath: Schema.String },
 ) {
   override get message(): string {
-    return `Claude shared conversation home '${this.sharedHomePath}' must be different from this instance's CLAUDE_CONFIG_DIR '${this.homePath}'.`;
+    return `Claude shared conversation home '${this.sharedHomePath}' is the same directory as this instance's CLAUDE_CONFIG_DIR '${this.homePath}'. Point it at the other account's directory.`;
+  }
+}
+
+export class ClaudeSharedHomeVolumeError extends Schema.TaggedErrorClass<ClaudeSharedHomeVolumeError>()(
+  "ClaudeSharedHomeVolumeError",
+  { homePath: Schema.String, sharedHomePath: Schema.String },
+) {
+  override get message(): string {
+    return `Claude shared conversation home '${this.sharedHomePath}' must be on the same drive as '${this.homePath}' so existing conversations can be moved across.`;
   }
 }
 
@@ -50,6 +61,7 @@ export class ClaudeSharedHomeFileSystemError extends Schema.TaggedErrorClass<Cla
     sharedHomePath: Schema.String,
     operation: Schema.Literals([
       "readLink",
+      "realPath",
       "makeDirectory",
       "readDirectory",
       "rename",
@@ -67,13 +79,15 @@ export class ClaudeSharedHomeFileSystemError extends Schema.TaggedErrorClass<Cla
 
 export type ClaudeSharedHomeError =
   | ClaudeSharedHomePathConflictError
+  | ClaudeSharedHomeVolumeError
   | ClaudeSharedHomeFileSystemError;
 
 export const resolveClaudeHomeLayout = Effect.fn("resolveClaudeHomeLayout")(function* (
   config: Pick<ClaudeSettings, "homePath" | "sharedHomePath">,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<ClaudeHomeLayout, never, Path.Path> {
   const path = yield* Path.Path;
-  const homePath = yield* resolveClaudeHomePath(config);
+  const homePath = yield* resolveClaudeConfigDirPath(config, environment);
   const shared = config.sharedHomePath.trim();
   if (shared.length === 0) {
     return {
@@ -97,6 +111,7 @@ type LinkState =
   | { readonly _tag: "Symlink"; readonly target: string }
   | { readonly _tag: "Directory" };
 
+/** `readlink` on a real directory: EINVAL on every platform Node supports. */
 function isNotSymlinkError(error: PlatformError.PlatformError): boolean {
   const cause = error.reason.cause;
   return (
@@ -104,28 +119,32 @@ function isNotSymlinkError(error: PlatformError.PlatformError): boolean {
     typeof cause === "object" &&
     cause !== null &&
     "code" in cause &&
-    (cause.code === "EINVAL" || cause.code === "UNKNOWN")
+    cause.code === "EINVAL"
   );
+}
+
+/** Windows paths differ only by case for the same directory. */
+function samePathOn(platform: NodeJS.Platform) {
+  return (left: string, right: string): boolean =>
+    platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
 /**
  * Links `<home>/projects` to `<shared>/projects`. An account that already has
- * conversations of its own is not silently cut off from them: its project
- * folders are moved into the shared directory first (session files carry
- * unique ids, so entries never collide), then the link replaces the folder.
+ * conversations of its own is not cut off from them: its project folders are
+ * moved into the shared directory first. Session transcripts carry unique
+ * ids, but a project folder also holds non-unique entries (auto-memory,
+ * checkpoints), so anything that would overwrite a shared entry is left
+ * behind and the remainder is set aside as `projects.migrated-<time>` rather
+ * than deleted. Nothing of the user's is ever removed.
  */
 export const materializeClaudeSharedHome = Effect.fn("materializeClaudeSharedHome")(function* (
   layout: ClaudeHomeLayout,
 ): Effect.fn.Return<void, ClaudeSharedHomeError, FileSystem.FileSystem | Path.Path> {
   if (layout.mode !== "sharedConversations") return;
-  if (layout.conversationHomePath === layout.homePath) {
-    return yield* new ClaudeSharedHomePathConflictError({
-      homePath: layout.homePath,
-      sharedHomePath: layout.conversationHomePath,
-    });
-  }
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const samePath = samePathOn(yield* HostProcessPlatform);
   const fail =
     (operation: ClaudeSharedHomeFileSystemError["operation"], target: string) => (cause: unknown) =>
       new ClaudeSharedHomeFileSystemError({
@@ -135,15 +154,47 @@ export const materializeClaudeSharedHome = Effect.fn("materializeClaudeSharedHom
         path: target,
         cause,
       });
+  const conflict = new ClaudeSharedHomePathConflictError({
+    homePath: layout.homePath,
+    sharedHomePath: layout.conversationHomePath,
+  });
+  if (samePath(layout.conversationHomePath, layout.homePath)) {
+    return yield* conflict;
+  }
+  if (
+    samePath(path.parse(layout.conversationHomePath).root, path.parse(layout.homePath).root) ===
+    false
+  ) {
+    return yield* new ClaudeSharedHomeVolumeError({
+      homePath: layout.homePath,
+      sharedHomePath: layout.conversationHomePath,
+    });
+  }
+
+  // Only the two base directories exist before the real-path comparison; a
+  // case variant or a junction to the same place must not pass the guard, and
+  // nothing may be created inside either until it has.
+  yield* fileSystem
+    .makeDirectory(layout.homePath, { recursive: true })
+    .pipe(Effect.mapError(fail("makeDirectory", layout.homePath)));
+  yield* fileSystem
+    .makeDirectory(layout.conversationHomePath, { recursive: true })
+    .pipe(Effect.mapError(fail("makeDirectory", layout.conversationHomePath)));
+  const [realHome, realShared] = yield* Effect.all([
+    fileSystem.realPath(layout.homePath).pipe(Effect.mapError(fail("realPath", layout.homePath))),
+    fileSystem
+      .realPath(layout.conversationHomePath)
+      .pipe(Effect.mapError(fail("realPath", layout.conversationHomePath))),
+  ]);
+  if (samePath(realHome, realShared)) {
+    return yield* conflict;
+  }
 
   const sharedProjects = path.join(layout.conversationHomePath, CLAUDE_SHARED_ENTRY);
   const link = path.join(layout.homePath, CLAUDE_SHARED_ENTRY);
   yield* fileSystem
     .makeDirectory(sharedProjects, { recursive: true })
     .pipe(Effect.mapError(fail("makeDirectory", sharedProjects)));
-  yield* fileSystem
-    .makeDirectory(layout.homePath, { recursive: true })
-    .pipe(Effect.mapError(fail("makeDirectory", layout.homePath)));
 
   const state: LinkState = yield* fileSystem.readLink(link).pipe(
     Effect.map((target): LinkState => ({ _tag: "Symlink", target })),
@@ -158,13 +209,21 @@ export const materializeClaudeSharedHome = Effect.fn("materializeClaudeSharedHom
   );
 
   if (state._tag === "Symlink") {
-    if (path.resolve(path.dirname(link), state.target) === sharedProjects) return;
+    if (samePath(path.resolve(path.dirname(link), state.target), sharedProjects)) return;
     yield* fileSystem.remove(link).pipe(Effect.mapError(fail("remove", link)));
   } else if (state._tag === "Directory") {
+    const realLink = yield* fileSystem.realPath(link).pipe(Effect.mapError(fail("realPath", link)));
+    const realSharedProjects = yield* fileSystem
+      .realPath(sharedProjects)
+      .pipe(Effect.mapError(fail("realPath", sharedProjects)));
+    if (samePath(realLink, realSharedProjects)) {
+      return yield* conflict;
+    }
     // Carry this account's existing conversations into the shared home.
     const projectNames = yield* fileSystem
       .readDirectory(link)
       .pipe(Effect.mapError(fail("readDirectory", link)));
+    let leftBehind = false;
     for (const projectName of projectNames) {
       const source = path.join(link, projectName);
       const destination = path.join(sharedProjects, projectName);
@@ -184,13 +243,29 @@ export const materializeClaudeSharedHome = Effect.fn("materializeClaudeSharedHom
         const taken = yield* fileSystem
           .exists(entryDestination)
           .pipe(Effect.mapError(fail("readDirectory", entryDestination)));
-        if (taken) continue;
+        if (taken) {
+          leftBehind = true;
+          continue;
+        }
         yield* fileSystem
           .rename(entrySource, entryDestination)
           .pipe(Effect.mapError(fail("rename", entrySource)));
       }
+      if (!leftBehind) {
+        yield* fileSystem
+          .remove(source, { recursive: true })
+          .pipe(Effect.mapError(fail("remove", source)));
+      }
     }
-    yield* fileSystem.remove(link, { recursive: true }).pipe(Effect.mapError(fail("remove", link)));
+    if (leftBehind) {
+      const now = yield* DateTime.now;
+      const aside = `${link}.migrated-${DateTime.formatIso(now).replace(/[:.]/g, "-")}`;
+      yield* fileSystem.rename(link, aside).pipe(Effect.mapError(fail("rename", link)));
+    } else {
+      yield* fileSystem
+        .remove(link, { recursive: true })
+        .pipe(Effect.mapError(fail("remove", link)));
+    }
   }
 
   yield* fileSystem.symlink(sharedProjects, link).pipe(Effect.mapError(fail("symlink", link)));

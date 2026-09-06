@@ -52,6 +52,9 @@ switching resumes the same conversation on the other account.
 Leave the shared conversation home empty to keep an account's conversations
 isolated. Such an instance cannot continue threads from another directory.
 
+On Windows the link needs Developer Mode or an elevated T3 Code server, the same
+requirement as a Codex shadow home. Both directories must be on the same drive.
+
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.
 
