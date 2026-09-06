@@ -102,7 +102,7 @@ export function ContextWindowMeter(props: {
         {...composerFloatingLayerProps}
         side="top"
         align="end"
-        className="w-64 max-w-[calc(100vw-2rem)] p-2.5 text-left whitespace-normal"
+        className="w-72 max-w-[calc(100vw-2rem)] p-2.5 text-left whitespace-normal"
       >
         <div className="flex flex-col gap-1.5 text-[11px] leading-4">
           <div className="flex items-center gap-2">
@@ -196,7 +196,7 @@ export function ContextUsageLimits({
       {notice ? (
         <p className="text-muted-foreground">{notice}</p>
       ) : (
-        <div className="grid grid-cols-[minmax(0,6rem)_1fr_2.25rem_auto] items-center gap-x-2 gap-y-1">
+        <div className="grid grid-cols-[minmax(0,5rem)_minmax(2.5rem,1fr)_2.25rem_auto] items-center gap-x-2 gap-y-1">
           {limits?.windows.map((window) => {
             const used = Math.max(0, Math.min(100, window.usedPercent));
             const countdown = formatResetsIn(window, now)?.replace(/^resets /, "") ?? null;
