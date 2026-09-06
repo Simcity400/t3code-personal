@@ -17,12 +17,14 @@ const forkWorkflows = new Set(["fork-sync.yml", "fork-release.yml", "fork-mobile
 export const SYNC_BLOCKED_BRANCH = "needs-merge-help";
 export const SYNC_BLOCKED_FILE = "fork-sync-status.json";
 
+// No parameter properties: CI runs this file through Node type stripping.
 export class NightlyMergeConflict extends Error {
-  constructor(
-    readonly tag: string,
-    readonly conflicts: ReadonlyArray<string>,
-  ) {
+  readonly tag: string;
+  readonly conflicts: ReadonlyArray<string>;
+  constructor(tag: string, conflicts: ReadonlyArray<string>) {
     super(`Official ${tag} needs a merge review:\n${conflicts.join("\n")}`);
+    this.tag = tag;
+    this.conflicts = conflicts;
   }
 }
 
