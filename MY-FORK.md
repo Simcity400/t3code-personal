@@ -441,6 +441,15 @@ machine.
   `usagePagePreferences.ts`); the deep link overrides the remembered metric for that visit
   only and does not overwrite the saved preference. Without `view`, the page opens on
   upstream's remembered choice.
+- **Compact context popover** (2026-09-06): the composer's context-meter popover
+  (`apps/web/src/components/chat/ContextWindowMeter.tsx`) is a 16rem glance instead of a
+  24rem card: one line for the context reading with its bar inline, one small line for the
+  running total, and one row per plan limit (label, bar, percent, time to reset; the absolute
+  reset time is a tooltip on the countdown, and "Details" opens Usage → Limits). Upstream's
+  "Compact context" button and its disabled-reason text were removed from the popover along
+  with the `onCompact` / `compactDisabled` / `compactDisabledReason` props the composer threaded
+  to it; `/compact` in the composer and the "Resume with less context" banner in `ChatView`
+  still compact. Expect a conflict here whenever upstream touches that popover.
 - **Nightly integration marker**: fork-upstream.json records the last integrated official
   release tag and its commit. Source package versions remain upstream-owned. The release
   pipeline stamps the personal nightly version only while building, avoiding four permanent
