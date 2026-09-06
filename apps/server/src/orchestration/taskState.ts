@@ -141,6 +141,7 @@ export function updateTaskState(
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) state[key] = value;
   }
   if (state.taskType === "local_workflow") state.kind = "workflow";
+  else if (state.taskType === "subagent_batch") state.kind = "subagent_batch";
   else if (state.workflowName || state.agentIndex !== null || state.phaseIndex !== null)
     state.kind = "workflow_agent";
   if (isPhases(payload.phases)) state.phases = payload.phases;
@@ -215,6 +216,11 @@ export function updateTaskState(
     if (state.status === "failed") state.error ??= bounded(summary);
     else state.result ??= bounded(summary);
   } else if (activity.kind === "task.progress" && summary) state.progress = bounded(summary);
+  else if (activity.kind === "task.updated" && text(payload.detail)) {
+    // A status-only update explains itself through `detail` (e.g. a batch
+    // whose members went quiet when the turn ended); show it as progress.
+    state.progress = bounded(text(payload.detail)!);
+  }
   const error = text(payload.error);
   if (error) state.error = bounded(error);
   const toolName = text(payload.lastToolName) ?? text(payload.toolName);

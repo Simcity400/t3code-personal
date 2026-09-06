@@ -13,7 +13,6 @@ import {
   type ThreadSortInput,
 } from "../lib/threadSort";
 import type { SidebarThreadSummary, Thread } from "../types";
-import type { ThreadRouteTarget } from "../threadRoutes";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 import { resolveThreadWorkState } from "@t3tools/shared/threadWorkState";
@@ -187,6 +186,18 @@ export type ThreadStatusPillKind =
   | "approval"
   | "input"
   | "plan-ready";
+
+/**
+ * Bulk unpin follows the same "count only what the action will touch" rule
+ * as title regeneration: on a mixed selection the label counts the pinned
+ * rows alone, and the item disappears when nothing selected is pinned.
+ */
+export function buildBulkUnpinContextMenuItem(input: {
+  pinnedCount: number;
+}): ContextMenuItem<"unpin"> | null {
+  if (input.pinnedCount === 0) return null;
+  return { id: "unpin", label: `Unpin (${input.pinnedCount})` };
+}
 
 export interface ThreadStatusPill {
   /** What the pill means; the rollup and any styling switch on this. */
@@ -406,17 +417,6 @@ export function orderItemsByPreferredIds<TItem, TId>(input: {
   return [...ordered, ...remaining];
 }
 
-export function getVisibleSidebarThreadIds<TThreadId>(
-  renderedProjects: readonly {
-    shouldShowThreadPanel?: boolean;
-    renderedThreadIds: readonly TThreadId[];
-  }[],
-): TThreadId[] {
-  return renderedProjects.flatMap((renderedProject) =>
-    renderedProject.shouldShowThreadPanel === false ? [] : renderedProject.renderedThreadIds,
-  );
-}
-
 export function getSidebarThreadIdsToPrewarm<TThreadId>(
   visibleThreadIds: readonly TThreadId[],
   limit = SIDEBAR_THREAD_PREWARM_LIMIT,
@@ -449,28 +449,6 @@ export function resolveAdjacentThreadId<T>(input: {
   }
 
   return currentIndex < threadIds.length - 1 ? (threadIds[currentIndex + 1] ?? null) : null;
-}
-
-export function shouldNavigateAfterProjectRemoval(input: {
-  routeTarget: ThreadRouteTarget | null;
-  projectThreads: readonly {
-    environmentId: string;
-    id: string;
-  }[];
-  projectDraftId: string | null;
-}): boolean {
-  const { projectDraftId, projectThreads, routeTarget } = input;
-  if (routeTarget?.kind === "draft") {
-    return projectDraftId === routeTarget.draftId;
-  }
-  if (routeTarget?.kind !== "server") {
-    return false;
-  }
-  return projectThreads.some(
-    (thread) =>
-      thread.environmentId === routeTarget.threadRef.environmentId &&
-      thread.id === routeTarget.threadRef.threadId,
-  );
 }
 
 export function isContextMenuPointerDown(input: {
@@ -524,6 +502,21 @@ export function resolveThreadRowClassName(input: {
 // Unread completion is tracked separately: it describes whether a ready
 // thread needs attention, not what the thread is currently doing.
 export type SidebarThreadStatus = "approval" | "input" | "working" | "waiting" | "failed" | "ready";
+
+export function shouldRecedeSidebarThread(input: {
+  status: SidebarThreadStatus;
+  isUnread: boolean;
+  isWoke: boolean;
+  isActive: boolean;
+  isSelected: boolean;
+}): boolean {
+  if (input.isActive || input.isSelected) return false;
+  if (input.status === "working" || input.status === "waiting") return true;
+  if (input.status === "ready" || input.status === "approval" || input.status === "input") {
+    return !input.isUnread && !input.isWoke;
+  }
+  return false;
+}
 
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
@@ -841,54 +834,6 @@ export function resolveProjectStatusIndicator(
   }
 
   return highestPriorityStatus;
-}
-
-export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input: {
-  threads: readonly T[];
-  activeThreadId: T["id"] | undefined;
-  isThreadListExpanded: boolean;
-  previewLimit: number;
-}): {
-  hasHiddenThreads: boolean;
-  visibleThreads: T[];
-  hiddenThreads: T[];
-} {
-  const { activeThreadId, isThreadListExpanded, previewLimit, threads } = input;
-  const hasHiddenThreads = threads.length > previewLimit;
-
-  if (!hasHiddenThreads || isThreadListExpanded) {
-    return {
-      hasHiddenThreads,
-      hiddenThreads: [],
-      visibleThreads: [...threads],
-    };
-  }
-
-  const previewThreads = threads.slice(0, previewLimit);
-  if (!activeThreadId || previewThreads.some((thread) => thread.id === activeThreadId)) {
-    return {
-      hasHiddenThreads: true,
-      hiddenThreads: threads.slice(previewLimit),
-      visibleThreads: previewThreads,
-    };
-  }
-
-  const activeThread = threads.find((thread) => thread.id === activeThreadId);
-  if (!activeThread) {
-    return {
-      hasHiddenThreads: true,
-      hiddenThreads: threads.slice(previewLimit),
-      visibleThreads: previewThreads,
-    };
-  }
-
-  const visibleThreadIds = new Set([...previewThreads, activeThread].map((thread) => thread.id));
-
-  return {
-    hasHiddenThreads: true,
-    hiddenThreads: threads.filter((thread) => !visibleThreadIds.has(thread.id)),
-    visibleThreads: threads.filter((thread) => visibleThreadIds.has(thread.id)),
-  };
 }
 
 export function getFallbackThreadIdAfterDelete<

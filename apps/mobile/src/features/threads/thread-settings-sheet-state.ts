@@ -1,6 +1,5 @@
 import type { ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
-import { providerNeedsSetup } from "../settings/provider-setup-state";
 
 /** Match the server's continuation guard when switching an existing thread's account. */
 export function compatibleProviderInstanceIdsForThread(input: {
@@ -34,35 +33,6 @@ export function compatibleProviderInstanceIdsForThread(input: {
   return compatible;
 }
 
-/** Read setup choices from this environment, not the selectable model list. */
-export function providerSetupCandidates(input: {
-  readonly providers: ReadonlyArray<ServerProvider>;
-  readonly instanceId?: ProviderInstanceId;
-  readonly providerDriver?: string | null;
-  readonly providerFilter: string | null;
-  readonly query: string;
-}): ReadonlyArray<ServerProvider> {
-  const query = input.query.trim().toLocaleLowerCase();
-  const compatibleInstanceIds =
-    input.instanceId !== undefined
-      ? compatibleProviderInstanceIdsForThread({
-          providers: input.providers,
-          instanceId: input.instanceId,
-          driver: input.providerDriver,
-        })
-      : null;
-  return input.providers.filter(
-    (provider) =>
-      providerNeedsSetup(provider) &&
-      (compatibleInstanceIds === null || compatibleInstanceIds.has(provider.instanceId)) &&
-      (input.providerFilter === null || provider.instanceId === input.providerFilter) &&
-      (query.length === 0 ||
-        [provider.displayName ?? "", provider.driver, provider.instanceId].some((label) =>
-          label.toLocaleLowerCase().includes(query),
-        )),
-  );
-}
-
 /** Match the terms a user can actually see or recognize in the model picker. */
 export function modelMatchesCatalogQuery(input: {
   readonly model: ModelOption;
@@ -94,7 +64,7 @@ export function pendingModelAfterPress(input: {
   return input.current?.key === input.pressed.key ? input.current : input.pressed;
 }
 
-/** A model can disappear while its setup page is open inside the picker. */
+/** A model can disappear while the picker is open. */
 export function canCommitPendingModel(
   pending: ModelOption,
   groups: ReadonlyArray<ProviderGroup>,

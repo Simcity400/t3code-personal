@@ -74,6 +74,11 @@ export interface ProviderAdapterShape<TError> {
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
+  readonly compactThread?: (
+    threadId: ThreadId,
+    modelSelection?: ProviderSendTurnInput["modelSelection"],
+  ) => Effect.Effect<void, TError>;
+
   /**
    * Interrupt an active turn, including the native descendants this session
    * owns. Cross-provider children run as separate adapter sessions and are
