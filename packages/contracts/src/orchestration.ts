@@ -23,6 +23,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { CodexGoal } from "./codexGoal.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -476,6 +477,14 @@ export const ThreadTitleRegeneration = Schema.Struct({
 });
 export type ThreadTitleRegeneration = typeof ThreadTitleRegeneration.Type;
 
+export const OrchestrationThreadGoal = Schema.Struct({
+  ...CodexGoal.fields,
+  // The provider turn that produced the latest update. When the goal is
+  // blocked, this is the turn whose final message explains the blocker.
+  turnId: Schema.NullOr(TurnId),
+});
+export type OrchestrationThreadGoal = typeof OrchestrationThreadGoal.Type;
+
 export const ThreadLinkedPullRequest = Schema.Struct({
   projectId: ProjectId,
   repository: TrimmedNonEmptyString,
@@ -536,6 +545,10 @@ export const OrchestrationThread = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
+  // The provider's native long-running goal for this thread, projected from
+  // its notifications so it stays visible after the provider session stops.
+  // Optional so payloads from pre-goal servers still decode.
+  goal: Schema.optional(Schema.NullOr(OrchestrationThreadGoal)),
 });
 export type OrchestrationThread = typeof OrchestrationThread.Type;
 
@@ -1238,6 +1251,14 @@ const ThreadActivityAppendCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadGoalSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.goal.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  goal: Schema.NullOr(OrchestrationThreadGoal),
+  createdAt: IsoDateTime,
+});
+
 const ThreadRevertCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.revert.complete"),
   commandId: CommandId,
@@ -1263,6 +1284,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
+  ThreadGoalSetCommand,
   ThreadRevertCompleteCommand,
   ThreadTitleRegenerationCompleteCommand,
 ]);
@@ -1304,6 +1326,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.goal-set",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1549,6 +1572,11 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
   activity: OrchestrationThreadActivity,
 });
 
+export const ThreadGoalSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  goal: Schema.NullOr(OrchestrationThreadGoal),
+});
+
 /**
  * Which client connection dispatched the command that produced an event.
  * Stamped by the orchestration engine on client-dispatched commands; absent on
@@ -1729,6 +1757,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.goal-set"),
+    payload: ThreadGoalSetPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

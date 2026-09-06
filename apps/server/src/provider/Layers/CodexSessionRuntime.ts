@@ -219,10 +219,6 @@ export interface CodexSessionRuntimeShape {
   readonly uploadFeedback: (
     reason?: string,
   ) => Effect.Effect<EffectCodexSchema.V2FeedbackUploadResponse, CodexSessionRuntimeError>;
-  readonly getGoal: Effect.Effect<
-    EffectCodexSchema.V2ThreadGoalGetResponse,
-    CodexSessionRuntimeError
-  >;
   readonly setGoal: (
     input: Omit<EffectCodexSchema.V2ThreadGoalSetParams, "threadId">,
   ) => Effect.Effect<EffectCodexSchema.V2ThreadGoalSetResponse, CodexSessionRuntimeError>;
@@ -257,7 +253,6 @@ export const makeCodexGoalRequests = <E>(
   const threadId = readProviderThreadId;
   const request = client.request;
   return {
-    getGoal: Effect.flatMap(threadId, (id) => request("thread/goal/get", { threadId: id })),
     setGoal: (input: Parameters<CodexSessionRuntimeShape["setGoal"]>[0]) =>
       Effect.flatMap(threadId, (id) => request("thread/goal/set", { threadId: id, ...input })),
     clearGoal: Effect.flatMap(threadId, (id) => request("thread/goal/clear", { threadId: id })),

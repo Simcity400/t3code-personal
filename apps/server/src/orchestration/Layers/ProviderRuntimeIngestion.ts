@@ -16,7 +16,9 @@ import {
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
+  type CodexGoal,
   type OrchestrationThread,
+  type OrchestrationThreadGoal,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
   RuntimeRequestId,
@@ -476,6 +478,23 @@ function taskPromptActivityId(input: {
 }): EventId {
   const suffix = typeof input.promptId === "string" ? input.promptId : input.eventId;
   return EventId.make(`task-prompt:${input.threadId}:${input.taskId}:${suffix}`);
+}
+
+/**
+ * Whether a provider goal snapshot carries anything the projection lacks.
+ * Compares Codex's own record only: the turn id is T3's annotation and a
+ * resume snapshot may omit it.
+ */
+function sameCodexGoalRecord(current: CodexGoal, next: CodexGoal): boolean {
+  return (
+    current.objective === next.objective &&
+    current.status === next.status &&
+    (current.tokenBudget ?? null) === (next.tokenBudget ?? null) &&
+    current.tokensUsed === next.tokensUsed &&
+    current.timeUsedSeconds === next.timeUsedSeconds &&
+    current.createdAt === next.createdAt &&
+    current.updatedAt === next.updatedAt
+  );
 }
 
 /**
@@ -1843,6 +1862,41 @@ const make = Effect.gen(function* () {
           loadedThreadDetail = (yield* resolveThreadDetail(thread.id)) ?? null;
           return loadedThreadDetail;
         });
+
+      if (event.type === "thread.goal.updated" || event.type === "thread.goal.cleared") {
+        // A child agent's goal is its own; only the root thread's goal is
+        // projected onto the T3 thread.
+        if (event.bridgeAgentId !== undefined) return;
+        const currentGoal = (yield* getLoadedThreadDetail())?.goal ?? null;
+        let nextGoal: OrchestrationThreadGoal | null = null;
+        if (event.type === "thread.goal.updated") {
+          const record = event.payload.goal;
+          // Codex re-sends the goal snapshot on every resume; an unchanged
+          // record is not a new event.
+          if (currentGoal !== null && sameCodexGoalRecord(currentGoal, record)) return;
+          // A usage refresh without a turn keeps pointing at the turn that
+          // set the current status, so a stalled goal keeps its explanation.
+          const eventTurnId = toTurnId(event.turnId) ?? null;
+          nextGoal = {
+            ...record,
+            turnId:
+              eventTurnId ??
+              (currentGoal !== null && currentGoal.status === record.status
+                ? currentGoal.turnId
+                : null),
+          };
+        } else if (currentGoal === null) {
+          return;
+        }
+        yield* orchestrationEngine.dispatch({
+          type: "thread.goal.set",
+          commandId: yield* providerCommandId(event, "thread-goal-set"),
+          threadId: thread.id,
+          goal: nextGoal,
+          createdAt: event.createdAt,
+        });
+        return;
+      }
 
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);

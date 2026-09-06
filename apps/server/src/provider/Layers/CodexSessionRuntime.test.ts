@@ -55,12 +55,10 @@ describe("makeCodexGoalRequests", () => {
       };
       const requests = makeCodexGoalRequests(client, Effect.succeed("provider-thread-42"));
 
-      yield* requests.getGoal;
       yield* requests.setGoal({ objective: "Steer Goal", status: "paused", tokenBudget: 42 });
       yield* requests.clearGoal;
 
       NodeAssert.deepStrictEqual(calls, [
-        { method: "thread/goal/get", payload: { threadId: "provider-thread-42" } },
         {
           method: "thread/goal/set",
           payload: {

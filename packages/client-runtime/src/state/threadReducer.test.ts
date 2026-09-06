@@ -280,6 +280,48 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread.goal-set", () => {
+    it("replaces the projected goal and clears it with null", () => {
+      const goal = {
+        objective: "Ship it",
+        status: "blocked" as const,
+        tokenBudget: null,
+        tokensUsed: 12,
+        timeUsedSeconds: 3,
+        createdAt: 1_777_000_000,
+        updatedAt: 1_777_000_003,
+        turnId: TurnId.make("turn-1"),
+      };
+      const set = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 5,
+        occurredAt: "2026-04-01T05:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.goal-set",
+        payload: { threadId: ThreadId.make("thread-1"), goal },
+      });
+      expect(set.kind).toBe("updated");
+      if (set.kind !== "updated") return;
+      expect(set.thread.goal).toEqual(goal);
+      // Goal bookkeeping never reorders the thread list.
+      expect(set.thread.updatedAt).toBe(baseThread.updatedAt);
+
+      const cleared = applyThreadDetailEvent(set.thread, {
+        ...baseEventFields,
+        sequence: 6,
+        occurredAt: "2026-04-01T06:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.goal-set",
+        payload: { threadId: ThreadId.make("thread-1"), goal: null },
+      });
+      expect(cleared.kind).toBe("updated");
+      if (cleared.kind !== "updated") return;
+      expect(cleared.thread.goal).toBeNull();
+    });
+  });
+
   describe("thread.meta-updated", () => {
     it("patches title and branch", () => {
       const result = applyThreadDetailEvent(baseThread, {

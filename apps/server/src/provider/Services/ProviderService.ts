@@ -131,14 +131,6 @@ export interface ProviderServiceShape {
     readonly numTurns: number;
   }) => Effect.Effect<void, ProviderServiceError>;
 
-  readonly getCodexGoal: (
-    threadId: ThreadId,
-    options?: {
-      readonly allowRecovery?: boolean;
-      readonly failIfInactive?: boolean;
-    },
-  ) => Effect.Effect<CodexGoal | null, ProviderServiceError>;
-
   readonly setCodexGoal: (
     input: CodexGoalSetInput,
   ) => Effect.Effect<CodexGoal, ProviderServiceError>;

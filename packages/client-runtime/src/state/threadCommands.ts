@@ -2,18 +2,19 @@ import {
   type CodexGoal,
   type CodexGoalSetInput,
   type CodexGoalStatus,
-  type CodexGoalStreamEvent,
+  type CodexGoalUserStatus,
+  type OrchestrationMessage,
+  type OrchestrationThread,
+  type OrchestrationThreadGoal,
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
-import * as Stream from "effect/Stream";
 import { Atom } from "effect/unstable/reactivity";
 
 import {
   createAtomCommandScheduler,
   createEnvironmentCommand,
   createEnvironmentRpcCommand,
-  createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
 import {
   type ArchiveThreadInput,
@@ -61,33 +62,137 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 
 export type CodexGoalCommand =
   | { readonly action: "status" }
-  | { readonly action: "set"; readonly objective?: string; readonly status?: "active" | "paused" }
+  | { readonly action: "edit" }
+  | {
+      readonly action: "set";
+      readonly objective?: string;
+      readonly status?: CodexGoalUserStatus;
+    }
   | { readonly action: "clear" }
   | { readonly action: "invalid"; readonly message: string };
 
 const GOAL_USAGE =
-  "Usage: /goal [status | create <objective> | steer <objective> | pause | resume | clear | reset]";
+  "Usage: /goal [status | create <objective> | steer <objective> | edit | pause | resume | clear]";
+
+/** "7h 54m", "12m", or "45s": how long Codex has spent on the goal. */
+export function formatCodexGoalDuration(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${Math.max(0, Math.floor(seconds))}s`;
+}
 
 export function formatCodexGoalUsage(goal: CodexGoal): string {
   const budget = goal.tokenBudget == null ? "" : ` / ${goal.tokenBudget.toLocaleString()}`;
-  return `${goal.tokensUsed.toLocaleString()} tokens${budget}, ${goal.timeUsedSeconds.toLocaleString()} seconds`;
+  return `${goal.tokensUsed.toLocaleString()}${budget} tokens · ${formatCodexGoalDuration(goal.timeUsedSeconds)}`;
 }
 
 export function formatCodexGoalDescription(goal: CodexGoal): string {
   return `${goal.objective} - ${formatCodexGoalUsage(goal)}`;
 }
 
+// Codex's own wording: its terminal shows a blocked goal as "stalled".
 const CODEX_GOAL_STATUS_LABELS: Record<CodexGoalStatus, string> = {
   active: "active",
   paused: "paused",
-  budgetLimited: "budget limited",
+  blocked: "stalled",
   usageLimited: "usage limited",
+  budgetLimited: "budget limited",
   complete: "complete",
-  blocked: "blocked",
 };
 
 export function formatCodexGoalStatus(status: CodexGoalStatus): string {
   return CODEX_GOAL_STATUS_LABELS[status];
+}
+
+/** Whether the provider session that would run goal turns is live right now. */
+export type CodexGoalSessionActivity = "running" | "idle" | "stopped";
+
+export function codexGoalSessionActivity(
+  session: OrchestrationThread["session"],
+): CodexGoalSessionActivity {
+  if (session === null || session.status === "stopped" || session.status === "error") {
+    return "stopped";
+  }
+  // A starting session is about to work, not resting between goal turns.
+  return session.status === "running" || session.status === "starting" ? "running" : "idle";
+}
+
+/**
+ * Plain-language account of what Codex is doing with the goal, so a status
+ * word alone never has to carry the explanation.
+ */
+export function describeCodexGoalStatus(
+  goal: CodexGoal,
+  activity: CodexGoalSessionActivity,
+): string {
+  switch (goal.status) {
+    case "active":
+      if (activity === "running") return "Codex is working toward this goal now.";
+      if (activity === "idle") {
+        return "Codex starts the next goal turn on its own while the thread is idle.";
+      }
+      return "The thread is stopped. Continue to let Codex pick the goal back up.";
+    case "paused":
+      return "Codex will not start goal turns until you resume.";
+    case "blocked":
+      return "Codex hit the same blocker three turns in a row and needs your input or an outside change. Its last message says what it needs.";
+    case "usageLimited":
+      return "Your usage limit stopped this goal. Resume once the limit resets.";
+    case "budgetLimited":
+      return goal.tokenBudget == null
+        ? "The token budget is used up. Raise it to continue."
+        : `The ${goal.tokenBudget.toLocaleString()} token budget is used up. Raise it to continue.`;
+    case "complete":
+      return "Codex verified the objective and marked the goal complete.";
+  }
+}
+
+/**
+ * The one status control the goal offers besides edit and clear. Continue
+ * re-asserts an active goal on a stopped thread, which wakes the provider
+ * session; Codex then resumes the goal on its own.
+ */
+export function codexGoalStatusAction(
+  goal: CodexGoal,
+  activity: CodexGoalSessionActivity,
+): "pause" | "resume" | "continue" | null {
+  switch (goal.status) {
+    case "active":
+      return activity === "stopped" ? "continue" : "pause";
+    case "paused":
+    case "blocked":
+    case "usageLimited":
+    case "budgetLimited":
+      return "resume";
+    case "complete":
+      return null;
+  }
+}
+
+/**
+ * The assistant message that ended the turn Codex last reported the goal
+ * from: for a blocked goal, the message explaining the blocker.
+ */
+export function findCodexGoalReportMessage(
+  messages: ReadonlyArray<OrchestrationMessage>,
+  goal: OrchestrationThreadGoal,
+): OrchestrationMessage | null {
+  if (goal.turnId === null) return null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message !== undefined &&
+      message.role === "assistant" &&
+      message.agentId === undefined &&
+      message.turnId === goal.turnId &&
+      message.text.trim() !== ""
+    ) {
+      return message;
+    }
+  }
+  return null;
 }
 
 export function formatCodexGoalError(error: unknown): string {
@@ -101,34 +206,26 @@ export function parseCodexGoalCommand(value: string): CodexGoalCommand | null {
   if (match === null) return null;
 
   const argument = match[1]?.trim() ?? "";
-  if (argument === "" || argument.toLowerCase() === "status") return { action: "status" };
+  if (argument === "") return { action: "edit" };
 
   const [rawAction = "", ...rest] = argument.split(/\s+/);
   const action = rawAction.toLowerCase();
   const objective = rest.join(" ").trim();
-  if (action === "create" || action === "steer") {
-    if (objective === "") return { action: "invalid", message: GOAL_USAGE };
-    return action === "create"
-      ? { action: "set", objective, status: "active" }
-      : { action: "set", objective };
+  const invalid = { action: "invalid", message: GOAL_USAGE } as const;
+  if (action === "status") return objective === "" ? { action: "status" } : invalid;
+  if (action === "create") {
+    return objective === "" ? invalid : { action: "set", objective, status: "active" };
   }
-  if (action === "edit") {
-    return objective === ""
-      ? {
-          action: "invalid",
-          message: "T3 does not open Codex's Goal editor. Use /goal steer <objective>.",
-        }
-      : { action: "set", objective };
-  }
+  if (action === "steer") return objective === "" ? invalid : { action: "set", objective };
+  if (action === "edit")
+    return objective === "" ? { action: "edit" } : { action: "set", objective };
   if (action === "pause" || action === "resume") {
-    if (objective !== "") return { action: "invalid", message: GOAL_USAGE };
+    if (objective !== "") return invalid;
     return { action: "set", status: action === "pause" ? "paused" : "active" };
   }
   if (action === "clear" || action === "reset") {
-    if (objective !== "") return { action: "invalid", message: GOAL_USAGE };
-    return { action: "clear" };
+    return objective === "" ? { action: "clear" } : invalid;
   }
-  if (action === "status") return { action: "invalid", message: GOAL_USAGE };
 
   return { action: "set", objective: argument, status: "active" };
 }
@@ -139,11 +236,6 @@ export function toCodexGoalSetInput(
 ): CodexGoalSetInput {
   const { action: _action, ...input } = command;
   return { threadId, ...input };
-}
-
-export function applyCodexGoalStreamEvent(event: CodexGoalStreamEvent): CodexGoal | null {
-  if (event.type === "snapshot" || event.type === "updated") return event.goal;
-  return null;
 }
 
 export type {
@@ -178,20 +270,7 @@ export function createThreadEnvironmentAtoms<R, E>(
     key: ({ environmentId, input }: { environmentId: string; input: { threadId: string } }) =>
       JSON.stringify([environmentId, input.threadId]),
   };
-  const codexGoal = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-    label: "environment-data:codex-goal",
-    tag: WS_METHODS.subscribeCodexGoal,
-    idleTtlMs: 0,
-    transform: (events) => events.pipe(Stream.map(applyCodexGoalStreamEvent)),
-  });
   return {
-    codexGoal,
-    getCodexGoal: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:codex-goal:get",
-      tag: WS_METHODS.codexGoalGet,
-      scheduler,
-      concurrency,
-    }),
     setCodexGoal: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:codex-goal:set",
       tag: WS_METHODS.codexGoalSet,

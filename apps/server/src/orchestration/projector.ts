@@ -28,6 +28,7 @@ import {
   ThreadSettledPayload,
   ThreadPinnedPayload,
   ThreadPinReorderedPayload,
+  ThreadGoalSetPayload,
   ThreadSnoozedPayload,
   ThreadUnpinnedPayload,
   ThreadUnarchivedPayload,
@@ -853,6 +854,16 @@ export function projectEvent(
             }),
           };
         }),
+      );
+
+    case "thread.goal-set":
+      return decodeForEvent(ThreadGoalSetPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            goal: payload.goal,
+          }),
+        })),
       );
 
     case "thread.activity-appended":

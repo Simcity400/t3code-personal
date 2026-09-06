@@ -2402,11 +2402,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     ),
   );
 
+  // Goal mutations recover a stopped Codex session on purpose: resuming with
+  // an active goal is exactly how Codex picks the goal back up, and the
+  // resumed session re-emits the goal snapshot that keeps the projection
+  // current. Reads never hit the provider; clients use the projected thread.
   const resolveCodexGoalRoute = Effect.fn("resolveCodexGoalRoute")(function* (
     threadId: ThreadId,
-    operation: "get" | "set" | "clear",
-    allowRecovery = true,
-    recoveryLockHeld = false,
+    operation: "set" | "clear",
   ) {
     const operationName = `ProviderService.${operation}CodexGoal`;
     const routeInput = { threadId, operation: operationName };
@@ -2417,11 +2419,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         `Provider '${routed.adapter.provider}' does not support native Codex Goals.`,
       );
     if (!routed.adapter.codexGoal) return yield* unsupported();
-    if (!routed.isActive && allowRecovery) {
+    if (!routed.isActive) {
       routed = yield* resolveRoutableSession({
         ...routeInput,
         allowRecovery: true,
-        recoveryLockHeld,
+        recoveryLockHeld: true,
       });
     }
     const goal = routed.adapter.codexGoal;
@@ -2429,30 +2431,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return { routed, goal } as const;
   });
 
-  const getCodexGoal: ProviderServiceMethod<"getCodexGoal"> = Effect.fn("getCodexGoal")(
-    function* (threadId, options) {
-      const { routed, goal } = yield* resolveCodexGoalRoute(
-        threadId,
-        "get",
-        options?.allowRecovery !== false,
-      );
-      if (!routed.isActive) {
-        if (options?.failIfInactive === true) {
-          return yield* toValidationError(
-            "ProviderService.getCodexGoal",
-            `Cannot read the native Codex Goal for inactive thread '${threadId}' without recovering its provider session.`,
-          );
-        }
-        return null;
-      }
-      return yield* goal.get(routed.threadId);
-    },
-  );
-
   const setCodexGoal: ProviderServiceMethod<"setCodexGoal"> = Effect.fn("setCodexGoal")(
     function* (input) {
       return yield* Effect.gen(function* () {
-        const { goal } = yield* resolveCodexGoalRoute(input.threadId, "set", true, true);
+        const { goal } = yield* resolveCodexGoalRoute(input.threadId, "set");
         return yield* goal.set(input);
       }).pipe((set) => withRecoveryLock(input.threadId, set));
     },
@@ -2461,7 +2443,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const clearCodexGoal: ProviderServiceMethod<"clearCodexGoal"> = Effect.fn("clearCodexGoal")(
     function* (threadId) {
       return yield* Effect.gen(function* () {
-        const { routed, goal } = yield* resolveCodexGoalRoute(threadId, "clear", true, true);
+        const { routed, goal } = yield* resolveCodexGoalRoute(threadId, "clear");
         return yield* goal.clear(routed.threadId);
       }).pipe((clear) => withRecoveryLock(threadId, clear));
     },
@@ -2484,7 +2466,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     assertConversationRollbackSupported,
     rollbackConversation,
     uploadFeedback,
-    getCodexGoal,
     setCodexGoal,
     clearCodexGoal,
     // Each access creates a fresh PubSub subscription so that multiple

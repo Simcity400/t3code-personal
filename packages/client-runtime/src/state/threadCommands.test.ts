@@ -1,9 +1,14 @@
-import { ThreadId, type CodexGoal, type CodexGoalStreamEvent } from "@t3tools/contracts";
+import { MessageId, ThreadId, TurnId } from "@t3tools/contracts";
+import type { CodexGoal, OrchestrationMessage, OrchestrationThreadGoal } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
 import {
-  applyCodexGoalStreamEvent,
+  codexGoalSessionActivity,
+  codexGoalStatusAction,
+  describeCodexGoalStatus,
+  findCodexGoalReportMessage,
   formatCodexGoalDescription,
+  formatCodexGoalDuration,
   formatCodexGoalError,
   formatCodexGoalStatus,
   formatCodexGoalUsage,
@@ -12,9 +17,9 @@ import {
 } from "./threadCommands.ts";
 
 const threadId = ThreadId.make("thread-1");
-const goal = (objective: string): CodexGoal => ({
+const goal = (objective: string, status: CodexGoal["status"] = "active"): CodexGoal => ({
   objective,
-  status: "active",
+  status,
   tokenBudget: 100_000,
   tokensUsed: 12_000,
   timeUsedSeconds: 90,
@@ -25,7 +30,8 @@ const goal = (objective: string): CodexGoal => ({
 describe("parseCodexGoalCommand", () => {
   it("maps all supported Goal commands to native mutations", () => {
     const cases = [
-      ["/goal", { action: "status" }],
+      ["/goal", { action: "edit" }],
+      ["/goal edit", { action: "edit" }],
       ["/goal status", { action: "status" }],
       ["/goal create Ship it", { action: "set", objective: "Ship it", status: "active" }],
       ["/goal Ship it", { action: "set", objective: "Ship it", status: "active" }],
@@ -35,17 +41,16 @@ describe("parseCodexGoalCommand", () => {
       ["/goal resume", { action: "set", status: "active" }],
       ["/goal clear", { action: "clear" }],
       ["/goal reset", { action: "clear" }],
-      [
-        "/goal edit",
-        {
-          action: "invalid",
-          message: "T3 does not open Codex's Goal editor. Use /goal steer <objective>.",
-        },
-      ],
       ["please create a goal", null],
     ] as const;
     for (const [command, expected] of cases) {
       expect(parseCodexGoalCommand(command)).toEqual(expected);
+    }
+  });
+
+  it("rejects arguments the native commands do not take", () => {
+    for (const command of ["/goal pause now", "/goal clear it", "/goal create", "/goal steer"]) {
+      expect(parseCodexGoalCommand(command)?.action).toBe("invalid");
     }
   });
 });
@@ -59,14 +64,24 @@ describe("toCodexGoalSetInput", () => {
   });
 });
 
-describe("applyCodexGoalStreamEvent", () => {
+describe("goal formatting", () => {
   it("formats native usage consistently for clients", () => {
+    expect(formatCodexGoalUsage(goal("Ship it"))).toBe("12,000 / 100,000 tokens · 1m");
+    expect(formatCodexGoalUsage({ ...goal("Ship it"), tokenBudget: null })).toBe(
+      "12,000 tokens · 1m",
+    );
     expect(formatCodexGoalDescription(goal("Ship it"))).toBe(
-      "Ship it - 12,000 tokens / 100,000, 90 seconds",
+      "Ship it - 12,000 / 100,000 tokens · 1m",
     );
   });
 
-  it("formats native statuses as user-facing labels", () => {
+  it("formats elapsed time at the coarsest useful unit", () => {
+    expect(formatCodexGoalDuration(28_458)).toBe("7h 54m");
+    expect(formatCodexGoalDuration(125)).toBe("2m");
+    expect(formatCodexGoalDuration(45)).toBe("45s");
+  });
+
+  it("uses Codex's own status wording", () => {
     const statuses = [
       "active",
       "paused",
@@ -81,29 +96,82 @@ describe("applyCodexGoalStreamEvent", () => {
       "budget limited",
       "usage limited",
       "complete",
-      "blocked",
+      "stalled",
     ]);
   });
+});
 
-  it("applies native updated and cleared notifications", () => {
-    const updated = applyCodexGoalStreamEvent({
-      type: "updated",
-      threadId,
-      goal: goal("Updated asynchronously"),
-    });
-    expect(updated?.objective).toBe("Updated asynchronously");
-    expect(applyCodexGoalStreamEvent({ type: "cleared", threadId })).toBeNull();
+describe("goal status controls", () => {
+  it("derives session activity from the provider session", () => {
+    expect(codexGoalSessionActivity(null)).toBe("stopped");
+    expect(codexGoalSessionActivity({ status: "stopped" } as never)).toBe("stopped");
+    expect(codexGoalSessionActivity({ status: "running" } as never)).toBe("running");
+    expect(codexGoalSessionActivity({ status: "starting" } as never)).toBe("running");
+    expect(codexGoalSessionActivity({ status: "ready" } as never)).toBe("idle");
   });
 
-  it("accepts the authoritative snapshot after reconnect", () => {
-    const reconnectSnapshot: CodexGoalStreamEvent = {
-      type: "snapshot",
-      threadId,
-      goal: goal("Changed while disconnected"),
-    };
-    expect(applyCodexGoalStreamEvent(reconnectSnapshot)?.objective).toBe(
-      "Changed while disconnected",
+  it("offers pause while active, continue once the thread stopped, resume when halted", () => {
+    expect(codexGoalStatusAction(goal("x"), "running")).toBe("pause");
+    expect(codexGoalStatusAction(goal("x"), "idle")).toBe("pause");
+    expect(codexGoalStatusAction(goal("x"), "stopped")).toBe("continue");
+    for (const status of ["paused", "blocked", "usageLimited", "budgetLimited"] as const) {
+      expect(codexGoalStatusAction(goal("x", status), "stopped")).toBe("resume");
+    }
+    expect(codexGoalStatusAction(goal("x", "complete"), "stopped")).toBeNull();
+  });
+
+  it("explains every status in plain language", () => {
+    expect(describeCodexGoalStatus(goal("x"), "running")).toContain("working toward this goal");
+    expect(describeCodexGoalStatus(goal("x"), "idle")).toContain("on its own");
+    expect(describeCodexGoalStatus(goal("x"), "stopped")).toContain("Continue");
+    expect(describeCodexGoalStatus(goal("x", "blocked"), "stopped")).toContain(
+      "three turns in a row",
     );
+    expect(describeCodexGoalStatus(goal("x", "budgetLimited"), "stopped")).toContain("100,000");
+  });
+});
+
+describe("findCodexGoalReportMessage", () => {
+  const message = (
+    id: string,
+    role: OrchestrationMessage["role"],
+    turnId: string | null,
+    text = "text",
+    agentId?: string,
+  ): OrchestrationMessage => ({
+    id: MessageId.make(id),
+    role,
+    text,
+    turnId: turnId === null ? null : TurnId.make(turnId),
+    streaming: false,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...(agentId === undefined ? {} : { agentId }),
+  });
+  const blockedGoal: OrchestrationThreadGoal = {
+    ...goal("x", "blocked"),
+    turnId: TurnId.make("turn-2"),
+  };
+
+  it("returns the root assistant message that ended the reporting turn", () => {
+    const messages = [
+      message("m1", "assistant", "turn-1", "earlier"),
+      message("m2", "user", "turn-2", "go"),
+      message("m3", "assistant", "turn-2", "progress"),
+      message("m4", "assistant", "turn-2", "child", "agent-1"),
+      message("m5", "assistant", "turn-2", "Blocked on credentials"),
+      message("m6", "assistant", "turn-2", "   "),
+    ];
+    expect(findCodexGoalReportMessage(messages, blockedGoal)?.id).toBe("m5");
+  });
+
+  it("returns nothing when the update was not tied to a turn", () => {
+    expect(
+      findCodexGoalReportMessage([message("m1", "assistant", "turn-2")], {
+        ...blockedGoal,
+        turnId: null,
+      }),
+    ).toBeNull();
   });
 });
 
@@ -118,31 +186,12 @@ describe("formatCodexGoalError", () => {
   });
 
   it("falls back to the wrapper message when the cause carries no reason", () => {
-    expect(formatCodexGoalError(new Error("Codex Goal get failed for thread thread-1"))).toBe(
-      "Codex Goal get failed for thread thread-1",
+    expect(formatCodexGoalError(new Error("Codex Goal set failed for thread thread-1"))).toBe(
+      "Codex Goal set failed for thread thread-1",
     );
   });
 
   it("handles non-error failures", () => {
     expect(formatCodexGoalError("boom")).toBe("Codex Goal operation failed.");
-  });
-});
-
-describe("formatCodexGoalUsage", () => {
-  it("renders the budget when one is set", () => {
-    expect(formatCodexGoalUsage(goal("Ship it"))).toBe("12,000 tokens / 100,000, 90 seconds");
-  });
-
-  it("omits the budget when there is none", () => {
-    expect(formatCodexGoalUsage({ ...goal("Ship it"), tokenBudget: null })).toBe(
-      "12,000 tokens, 90 seconds",
-    );
-  });
-
-  it("is the usage half of the full description", () => {
-    const withBudget = goal("Ship it");
-    expect(formatCodexGoalDescription(withBudget)).toBe(
-      `Ship it - ${formatCodexGoalUsage(withBudget)}`,
-    );
   });
 });

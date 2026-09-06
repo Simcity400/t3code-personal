@@ -26,6 +26,7 @@ import {
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
+  TurnId,
   taskAssignmentTitle,
   type RuntimeTaskUsage,
   type TurnTokenUsage,
@@ -1748,10 +1749,14 @@ function mapToRuntimeEvents(
     if (!payload) {
       return [];
     }
+    // Codex stamps the turn that changed the goal (null for user-driven
+    // edits); T3 keeps it so a blocked goal can point at the explaining turn.
+    const goalTurnId = trimText(payload.turnId ?? undefined);
     return [
       {
         type: "thread.goal.updated",
         ...runtimeEventBase(event, canonicalThreadId),
+        ...(goalTurnId ? { turnId: TurnId.make(goalTurnId) } : {}),
         payload: { goal: toCodexGoal(payload.goal) },
       },
     ];
@@ -2828,12 +2833,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
   const codexGoal: NonNullable<CodexAdapterShape["codexGoal"]> = {
-    get: (threadId) =>
-      requireSession(threadId).pipe(
-        Effect.flatMap((session) => session.runtime.getGoal),
-        Effect.map((response) => (response.goal ? toCodexGoal(response.goal) : null)),
-        mapSessionRuntimeError(threadId, "thread/goal/get"),
-      ),
     set: (input) => {
       const { threadId, ...params } = input;
       return requireSession(threadId).pipe(
