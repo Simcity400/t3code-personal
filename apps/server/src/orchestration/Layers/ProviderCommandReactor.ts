@@ -24,7 +24,6 @@ import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -976,19 +975,15 @@ const make = Effect.gen(function* () {
         const { textGenerationModelSelection: modelSelection } =
           yield* serverSettingsService.getSettings;
 
-        const generated = yield* textGeneration
-          .generateThreadTitle({
-            cwd: input.cwd,
-            message: input.messageText,
-            ...(attachments.length > 0 ? { attachments } : {}),
-            modelSelection,
-          })
-          .pipe(
-            Effect.retry({
-              times: 2,
-              schedule: Schedule.exponential("2 seconds"),
-            }),
-          );
+        // No retry here: TextGeneration already tries every other signed-in
+        // instance when the selected one fails, so a retry would only repeat
+        // that whole fan-out against an account that is still over its limit.
+        const generated = yield* textGeneration.generateThreadTitle({
+          cwd: input.cwd,
+          message: input.messageText,
+          ...(attachments.length > 0 ? { attachments } : {}),
+          modelSelection,
+        });
         if (!generated) return;
 
         const thread = yield* resolveThreadShell(input.threadId);
