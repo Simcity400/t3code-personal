@@ -62,6 +62,11 @@ import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
+import {
+  readUsagePagePreferences,
+  saveUsagePagePreferences,
+  type UsagePagePreferences,
+} from "./usagePagePreferences";
 
 type UsageMetric = UsageChartMetric | "limits";
 const METRIC_OPTIONS = [
@@ -81,12 +86,35 @@ const WINDOW_OPTIONS = [
   { days: 90, label: "90 days" },
 ] as const;
 
-export function UsagePage({ initialMetric = "cost" }: { initialMetric?: UsageMetric }) {
+function isUsageWindowDays(value: number): value is UsagePagePreferences["windowDays"] {
+  return WINDOW_OPTIONS.some((option) => option.days === value);
+}
+
+/**
+ * `initialMetric` is the fork's deep link (`/usage?view=limits` from the
+ * composer's context meter): when set it wins over the remembered metric for
+ * this mount only, and the saved preference is left alone until the user
+ * picks a metric here.
+ */
+export function UsagePage({
+  initialMetric,
+}: {
+  initialMetric?: UsageMetric | undefined;
+} = {}) {
+  const [preferences, setPreferences] = useState(
+    initialMetric === undefined
+      ? readUsagePagePreferences
+      : () => ({ ...readUsagePagePreferences(), metric: initialMetric }),
+  );
   const [windowSelection, setWindowSelection] = useState(() => ({
-    days: 30,
-    window: makeWindow(30),
+    days: preferences.windowDays,
+    window: makeWindow(
+      preferences.windowDays,
+      undefined,
+      preferences.windowDays === 1 ? "hour" : "day",
+    ),
   }));
-  const [metric, setMetric] = useState<UsageMetric>(initialMetric);
+  const metric = preferences.metric;
   const showingLimits = metric === "limits";
   const [isRefreshing, setIsRefreshing] = useState(false);
   const refreshingRef = useRef(false);
@@ -134,10 +162,19 @@ export function UsagePage({ initialMetric = "cost" }: { initialMetric?: UsageMet
   const timeValueColumnWidth = `${60 / (activeProviders.length + 2)}%`;
 
   const selectWindow = (days: number) => {
+    if (!isUsageWindowDays(days)) return;
+    const nextPreferences = { metric, windowDays: days };
+    setPreferences(nextPreferences);
+    saveUsagePagePreferences(nextPreferences);
     setWindowSelection({
       days,
       window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
     });
+  };
+  const selectMetric = (nextMetric: UsageMetric) => {
+    const nextPreferences = { metric: nextMetric, windowDays };
+    setPreferences(nextPreferences);
+    saveUsagePagePreferences(nextPreferences);
   };
   const refreshWindow = () => {
     if (refreshingRef.current) return;
@@ -210,7 +247,7 @@ export function UsagePage({ initialMetric = "cost" }: { initialMetric?: UsageMet
           value={[metric]}
           onValueChange={(next) => {
             const value = next[0];
-            if (isUsageMetric(value)) setMetric(value);
+            if (isUsageMetric(value)) selectMetric(value);
           }}
         >
           {METRIC_OPTIONS.map((option) => (
@@ -252,7 +289,7 @@ export function UsagePage({ initialMetric = "cost" }: { initialMetric?: UsageMet
         <Select
           value={metric}
           onValueChange={(value) => {
-            if (isUsageMetric(value)) setMetric(value);
+            if (isUsageMetric(value)) selectMetric(value);
           }}
         >
           <SelectTrigger

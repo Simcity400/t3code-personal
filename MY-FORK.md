@@ -435,6 +435,12 @@ machine.
   the two-value field so auto-settlement and the reaper keep meaning "background
   TASKS are alive".
 
+- **Usage page deep link** (2026-09-06 sync): the composer's context meter opens
+  `/usage?view=limits`, which the fork's route passes to `UsagePage` as `initialMetric`.
+  Upstream now remembers the last chosen metric and window (#10189,
+  `usagePagePreferences.ts`); the deep link overrides the remembered metric for that visit
+  only and does not overwrite the saved preference. Without `view`, the page opens on
+  upstream's remembered choice.
 - **Nightly integration marker**: fork-upstream.json records the last integrated official
   release tag and its commit. Source package versions remain upstream-owned. The release
   pipeline stamps the personal nightly version only while building, avoiding four permanent

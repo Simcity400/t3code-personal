@@ -32,6 +32,7 @@ import {
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { resolveProjectAgentBrowserAccess } from "@t3tools/shared/serverSettings";
 import * as DateTime from "effect/DateTime";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -83,6 +84,7 @@ import {
   isCrossProviderSessionId,
 } from "../CrossProviderAgentBridge.ts";
 import { makeCrossProviderAgentRecoveryStore } from "../CrossProviderAgentRecovery.ts";
+import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 const isModelSelection = Schema.is(ModelSelection);
 const isManuallyStopped = Schema.is(Schema.Struct({ manualStopped: Schema.Literal(true) }));
 const ROOT_STOP_TIMEOUT_MS = 5_000;
@@ -337,6 +339,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const projectionQuery = yield* Effect.serviceOption(
+    ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+  );
   const issueMcpCredential =
     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
   const revokeMcpCredential =
@@ -728,8 +733,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
    * "off" silently becoming "on" would violate the user's stated choice,
    * whereas the reverse costs an agent one toolset and is visible immediately.
    */
-  const agentBrowserAccessEnabled = serverSettings.getSettings.pipe(
-    Effect.map((settings) => settings.enableAgentBrowserAccess),
+  const agentBrowserAccessEnabled = Effect.fn("ProviderService.agentBrowserAccessEnabled")(
+    function* (threadId: ThreadId) {
+      const settings = yield* serverSettings.getSettings;
+      if (Object.keys(settings.projectAgentBrowserAccessOverrides).length === 0) {
+        return settings.enableAgentBrowserAccess;
+      }
+      // Provider-only runtimes may omit orchestration. An unresolved project
+      // must not bypass an explicit browser override.
+      if (Option.isNone(projectionQuery)) return false;
+      const thread = yield* projectionQuery.value.getThreadShellById(threadId);
+      if (Option.isNone(thread)) return false;
+      return resolveProjectAgentBrowserAccess(settings, thread.value.projectId);
+    },
     Effect.catch((cause) =>
       Effect.logWarning(
         "Could not read server settings; withholding agent browser access for this session.",
@@ -744,7 +760,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     visibleThreadId?: ThreadId,
   ) =>
     Effect.gen(function* () {
-      if (!(yield* agentBrowserAccessEnabled)) {
+      // A cross-provider child prepares under its hidden id, which has no
+      // projection row; its project (and so its browser-access override) is
+      // the root thread's.
+      if (!(yield* agentBrowserAccessEnabled(visibleThreadId ?? threadId))) {
         // Revoke as well as clear. Every other prepare path reaches
         // `issueActiveMcpCredential`, which revokes the thread first, so
         // skipping it here would leave a previously issued bearer token valid
