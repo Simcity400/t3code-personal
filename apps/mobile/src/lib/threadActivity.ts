@@ -2518,7 +2518,7 @@ export function buildThreadFeed(
   // Reports this conversation RECEIVED from its subagents. Same persisted rows
   // as web, so both clients show the same exchange.
   const subagentReplies = selectSubagentRepliesFor(
-    deriveSubagentReplies(thread.activities, sourceMessages),
+    getSubagentReplies(thread.activities),
     transcriptAgentId ?? null,
   );
   const oldestLoadedMessageCreatedAt =
@@ -2599,6 +2599,23 @@ function getThreadFeedActivityEntries(activities: ReadonlyArray<OrchestrationThr
   const entries = deriveWorkLogEntries(activities).map(toThreadFeedActivityEntry);
   activityEntriesCache.set(activities, entries);
   return entries;
+}
+
+// Keyed by the activities array like the work-log entries above: the
+// derivation walks the whole array three times, and the feed rebuilds on
+// every streamed event, so without this a long agent-heavy thread pays that
+// scan per delta on the phone.
+const subagentRepliesCache = new WeakMap<
+  ReadonlyArray<OrchestrationThreadActivity>,
+  ReturnType<typeof deriveSubagentReplies>
+>();
+
+function getSubagentReplies(activities: ReadonlyArray<OrchestrationThreadActivity>) {
+  const cached = subagentRepliesCache.get(activities);
+  if (cached) return cached;
+  const replies = deriveSubagentReplies(activities);
+  subagentRepliesCache.set(activities, replies);
+  return replies;
 }
 
 function toThreadFeedActivityEntry(

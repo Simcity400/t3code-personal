@@ -77,20 +77,58 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
       { readonly identity: string; readonly assertedAtMs: number }
     >();
 
-    const refreshExpoPushRegistration = () => {
-      expoPushRegistration = undefined;
-      expoPushRegistrationGeneration += 1;
-      // The per-environment map records "this server already has this token".
-      // Keeping it across a refresh would let Settings report "registered"
-      // against a server that no longer holds the registration.
+    // The per-environment map records "this server already has this token".
+    // Dropping it makes the next pass send the registration to every
+    // environment again, which is what a return to the foreground needs: the
+    // server may have deleted the registration while the app was away, and
+    // keeping the map would let Settings keep reporting "registered". The
+    // token itself stays cached — it only changes through the push-token
+    // listener, and re-reading it is a network round-trip to Expo.
+    const reassertExpoPushRegistrations = () => {
       expoPushRegistrationByEnvironment.clear();
       requestReport();
     };
+    const refreshExpoPushRegistration = () => {
+      expoPushRegistration = undefined;
+      expoPushRegistrationGeneration += 1;
+      reassertExpoPushRegistrations();
+    };
+
+    const reportPresence = (
+      environmentId: EnvironmentId,
+      input: { readonly active: boolean; readonly observedAtMs: number },
+    ) =>
+      registry
+        .run(
+          environmentId,
+          request(WS_METHODS.serverReportClientActivity, {
+            environmentId,
+            clientId,
+            clientKind: "mobile",
+            visible: input.active,
+            focused: input.active,
+            recentlyInteracted: input.active,
+            appState: normalizeAppState(appState),
+            scopes: [...BASELINE_SCOPES, ...retainedMobileBackgroundScopes(environmentId)],
+            ttlMs: LEASE_TTL_MS,
+            observedAt: DateTime.makeUnsafe(input.observedAtMs),
+          }),
+        )
+        .pipe(Effect.ignore);
 
     const report = Effect.gen(function* () {
       const observedAtMs = yield* Clock.currentTimeMillis;
       const active = appState === "active";
       const entries = yield* SubscriptionRef.get(registry.entries);
+      // Presence goes out first and never waits on the push-token read below.
+      // The server leases visibility-gated streams (sidebar and provider
+      // status) off this report, so a slow Expo round-trip in front of it
+      // would hold every return to the foreground for up to its timeout.
+      yield* Effect.forEach(
+        entries.keys(),
+        (environmentId) => reportPresence(environmentId as EnvironmentId, { active, observedAtMs }),
+        { concurrency: "unbounded", discard: true },
+      );
       if (expoPushRegistration === undefined) {
         const generation = expoPushRegistrationGeneration;
         setPersonalExpoPushRegistrationStatus(entries.size > 0 ? "pending" : "unknown");
@@ -133,31 +171,11 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
       // form the denominator.
       let reachableExpoEnvironments = 0;
       let successfulExpoRegistrations = 0;
+      if (registration === undefined) return;
       yield* Effect.forEach(
         entries.keys(),
         (environmentId) =>
           Effect.gen(function* () {
-            yield* registry
-              .run(
-                environmentId,
-                request(WS_METHODS.serverReportClientActivity, {
-                  environmentId: environmentId as EnvironmentId,
-                  clientId,
-                  clientKind: "mobile",
-                  visible: active,
-                  focused: active,
-                  recentlyInteracted: active,
-                  appState: normalizeAppState(appState),
-                  scopes: [
-                    ...BASELINE_SCOPES,
-                    ...retainedMobileBackgroundScopes(environmentId as EnvironmentId),
-                  ],
-                  ttlMs: LEASE_TTL_MS,
-                  observedAt: DateTime.makeUnsafe(observedAtMs),
-                }),
-              )
-              .pipe(Effect.ignore);
-            if (registration === undefined) return;
             const registrationIdentity = registration.enabled
               ? `enabled:${registration.token}`
               : "disabled";
@@ -212,15 +230,13 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
           }),
         { concurrency: "unbounded", discard: true },
       );
-      if (registration !== undefined) {
-        setPersonalExpoPushRegistrationStatus(
-          resolvePersonalExpoPushRegistrationStatus({
-            enabled: registration.enabled,
-            reachableCount: reachableExpoEnvironments,
-            acceptedCount: successfulExpoRegistrations,
-          }),
-        );
-      }
+      setPersonalExpoPushRegistrationStatus(
+        resolvePersonalExpoPushRegistrationStatus({
+          enabled: registration.enabled,
+          reachableCount: reachableExpoEnvironments,
+          acceptedCount: successfulExpoRegistrations,
+        }),
+      );
     }).pipe(Effect.withSpan("mobile.backgroundActivity.report"));
 
     yield* Effect.acquireRelease(
@@ -234,13 +250,11 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
         );
         const subscription = AppState.addEventListener("change", (nextState) => {
           appState = nextState;
-          // Foregrounding is the main moment a stale registration surfaces, so
-          // it must go through the same refresh as the push-token and Settings
-          // paths: dropping only the cached token would leave the
-          // per-environment "already registered" map asserting a registration
-          // the server may have deleted while the app was away.
+          // Foregrounding is the main moment a stale registration surfaces:
+          // re-assert with every environment, but keep the cached token so
+          // the pass does not start with a round-trip to Expo.
           if (nextState === "active") {
-            refreshExpoPushRegistration();
+            reassertExpoPushRegistrations();
             return;
           }
           requestReport();

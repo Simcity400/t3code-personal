@@ -30,7 +30,7 @@ import {
   projectScriptRuntimeEnv,
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
-import { Alert, Platform, Pressable, ScrollView, View } from "react-native";
+import { Alert, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { useEnvironmentQuery } from "../../state/query";
@@ -39,6 +39,7 @@ import { vcsEnvironment } from "../../state/vcs";
 
 import { EmptyState } from "../../components/EmptyState";
 import { AppText as Text } from "../../components/AppText";
+import { ControlPill } from "../../components/ControlPill";
 import {
   AndroidScreenHeader,
   type AndroidHeaderAction,
@@ -928,6 +929,79 @@ function ThreadRouteContent(
     connectionState: routeConnectionState,
   });
   const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
+  // Side-chat controls live in the composer overlay (see
+  // ThreadDetailScreen.composerAccessory): a side chat keeps its way back,
+  // out, and up; the original thread lists the side chats attached to it.
+  // Memoized so the element identity only changes with its inputs; the
+  // detail screen is memo'd and would otherwise re-render on every route
+  // update (git polling, inspector state) while a side chat is present.
+  const sideChatAccessory = useMemo(
+    () =>
+      isUnpromotedSideChat || attachedSideChats.length > 0 ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          // A ScrollView grows by default; as a strip it must only take its
+          // content height.
+          style={{ flexGrow: 0, flexShrink: 0 }}
+          className="mb-2"
+          contentContainerStyle={{ alignItems: "center", gap: 8, paddingHorizontal: 12 }}
+        >
+          <Text className="text-xs font-t3-medium text-foreground-muted">
+            {isUnpromotedSideChat ? "Side chat" : "Side chats"}
+          </Text>
+          {isUnpromotedSideChat ? (
+            <>
+              <ControlPill
+                label="Original thread"
+                accessibilityLabel="Open the original thread"
+                variant="pill"
+                onPress={handleOpenOriginalThread}
+              />
+              <ControlPill
+                label={sideChatAction === "promoting" ? "Adding…" : "Add to main threads"}
+                accessibilityLabel="Add side chat to main threads"
+                variant="pill"
+                disabled={sideChatAction !== null}
+                onPress={() => void handlePromoteSideChat()}
+              />
+              <ControlPill
+                label={sideChatAction === "closing" ? "Closing…" : "Close"}
+                accessibilityLabel="Close side chat"
+                variant="pill"
+                disabled={sideChatAction !== null}
+                onPress={handleCloseSideChat}
+              />
+            </>
+          ) : (
+            attachedSideChats.map((sideChat) => (
+              <ControlPill
+                key={String(sideChat.id)}
+                label={sideChat.title}
+                accessibilityLabel={`Open side chat ${sideChat.title}`}
+                variant="pill"
+                onPress={() =>
+                  navigation.navigate("Thread", {
+                    environmentId: String(sideChat.environmentId),
+                    threadId: String(sideChat.id),
+                  })
+                }
+              />
+            ))
+          )}
+        </ScrollView>
+      ) : null,
+    [
+      attachedSideChats,
+      handleCloseSideChat,
+      handleOpenOriginalThread,
+      handlePromoteSideChat,
+      isUnpromotedSideChat,
+      navigation,
+      sideChatAction,
+    ],
+  );
   const renderThreadRouteBody = (showActionControls: boolean) => (
     <>
       <ThreadGitControls {...threadGitControlProps} showActionControls={showActionControls} />
@@ -945,6 +1019,7 @@ function ThreadRouteContent(
           activeWorkStartedAt={composer.activeWorkStartedAt}
           liveAgentCount={liveAgentCount}
           onOpenAgents={handleOpenAgents}
+          composerAccessory={sideChatAccessory}
           isCompacting={composer.isCompacting}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
@@ -1038,82 +1113,6 @@ function ThreadRouteContent(
           onBack={layout.usesSplitView ? undefined : () => navigation.goBack()}
           actions={androidHeaderActions}
         />
-      ) : null}
-
-      {isUnpromotedSideChat ? (
-        <View className="border-border bg-surface border-b px-4 py-2">
-          <Text className="text-muted mb-2 text-xs">
-            Side chat · saved with the original thread until you close it
-          </Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ alignItems: "center", gap: 8 }}
-          >
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Back to original thread"
-              className="border-border bg-screen rounded-full border px-3 py-1.5"
-              onPress={handleOpenOriginalThread}
-            >
-              <Text className="text-foreground text-xs font-t3-medium">Back to original</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close side chat"
-              disabled={sideChatAction !== null}
-              className="border-border bg-screen rounded-full border px-3 py-1.5 disabled:opacity-50"
-              onPress={handleCloseSideChat}
-            >
-              <Text className="text-foreground text-xs font-t3-medium">
-                {sideChatAction === "closing" ? "Closing…" : "Close"}
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Add side chat to main threads"
-              disabled={sideChatAction !== null}
-              className="bg-accent rounded-full px-3 py-1.5 disabled:opacity-50"
-              onPress={() => void handlePromoteSideChat()}
-            >
-              <Text className="text-accent-foreground text-xs font-t3-medium">
-                {sideChatAction === "promoting" ? "Adding…" : "Add to main threads"}
-              </Text>
-            </Pressable>
-          </ScrollView>
-        </View>
-      ) : null}
-
-      {attachedSideChats.length > 0 ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          className="border-border bg-surface border-b"
-          contentContainerStyle={{
-            alignItems: "center",
-            gap: 8,
-            paddingHorizontal: 16,
-            paddingVertical: 8,
-          }}
-        >
-          <Text className="text-muted text-xs">Side chats</Text>
-          {attachedSideChats.map((sideChat) => (
-            <Pressable
-              key={String(sideChat.id)}
-              accessibilityRole="button"
-              accessibilityLabel={`Open side chat ${sideChat.title}`}
-              className="border-border bg-screen rounded-full border px-3 py-1.5"
-              onPress={() =>
-                navigation.navigate("Thread", {
-                  environmentId: String(sideChat.environmentId),
-                  threadId: String(sideChat.id),
-                })
-              }
-            >
-              <Text className="text-foreground text-xs font-t3-medium">{sideChat.title}</Text>
-            </Pressable>
-          ))}
-        </ScrollView>
       ) : null}
 
       {/* Android surfaces the git/files/inspector actions in its in-flow

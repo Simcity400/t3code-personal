@@ -43,5 +43,6 @@ threads.
 
 ## On mobile
 
-`/side` works the same way on the phone. The side chat opens as its own screen rather than a panel,
-with **Add to main threads** and **Close** in the header.
+`/side` works the same way on the phone. The side chat opens as its own screen rather than a panel.
+Its controls sit just above the composer: **Original thread**, **Add to main threads**, and
+**Close**. The original thread shows its open side chats in the same spot.
