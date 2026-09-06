@@ -177,7 +177,7 @@ export const makeCrossProviderAgentBridge = Effect.fn("makeCrossProviderAgentBri
     touch: (thread: ThreadId) => Effect.Effect<void>;
     root: (thread: ThreadId) => Effect.Effect<Root, ProviderServiceError>;
     rootStopped: (thread: ThreadId) => Effect.Effect<boolean, ProviderServiceError>;
-    enabled: Effect.Effect<boolean>;
+    enabled: (threadId: ThreadId) => Effect.Effect<boolean>;
     recovery: CrossProviderAgentRecoveryStore;
   }) {
     const scope = yield* Effect.scope;
@@ -341,7 +341,11 @@ export const makeCrossProviderAgentBridge = Effect.fn("makeCrossProviderAgentBri
       });
     const authorize = (caller: McpInvocationScope) =>
       Effect.gen(function* () {
-        if (!(yield* deps.enabled)) return yield* invalid("Agent Browser access is disabled.");
+        // Browser access is a per-project decision; a child's project is its
+        // root's, and a hidden child id has no projection row of its own.
+        const owner = hidden.get(caller.threadId);
+        if (!(yield* deps.enabled(owner?.root ?? caller.threadId)))
+          return yield* invalid("Agent Browser access is disabled.");
         const issued = readMcpProviderSession(caller.threadId);
         if (
           !issued ||
@@ -352,7 +356,6 @@ export const makeCrossProviderAgentBridge = Effect.fn("makeCrossProviderAgentBri
             "The calling provider session has expired. Resume it before using agent tools.",
           );
         }
-        const owner = hidden.get(caller.threadId);
         const callingAdapter =
           owner?.adapter ?? (yield* deps.registry.getByInstance(caller.providerInstanceId));
         if (callingAdapter.capabilities.crossProviderAgents === false)

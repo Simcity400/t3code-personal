@@ -10,5 +10,6 @@ export const Route = createFileRoute("/usage")({
 
 function UsageRoute() {
   const { view } = Route.useSearch();
-  return <UsagePage key={view ?? "cost"} initialMetric={view ?? "cost"} />;
+  // No `view` means the page opens on the metric the user last chose there.
+  return <UsagePage key={view ?? "default"} initialMetric={view} />;
 }

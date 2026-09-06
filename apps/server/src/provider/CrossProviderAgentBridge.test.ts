@@ -325,7 +325,7 @@ const makeHarness = Effect.fn("test.makeHarness")(function* (records = new Map<s
         interactionMode: "default",
       }),
     rootStopped: (threadId: ThreadId) => Effect.sync(() => stoppedRoots.has(threadId)),
-    enabled: Effect.succeed(true),
+    enabled: () => Effect.succeed(true),
   } satisfies Parameters<typeof makeCrossProviderAgentBridge>[0];
   const bridge = yield* makeCrossProviderAgentBridge(dependencies).pipe(
     Effect.provideService(Scope.Scope, bridgeScope),
