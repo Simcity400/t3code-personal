@@ -221,7 +221,31 @@ export interface DesktopUpdateState {
   message: string | null;
   errorContext: "check" | "download" | "install" | null;
   canRetry: boolean;
+  upstreamMerge: DesktopUpstreamMergeStatus | null;
 }
+
+/**
+ * A personal-fork nightly sync that stopped and needs a hand: the merge of
+ * `tag` conflicted in `conflicts`, or the run failed for `reason`. Read from
+ * the fork's marker branch by the desktop updater; null when nothing is blocked.
+ */
+export interface DesktopUpstreamMergeStatus {
+  tag: string;
+  commit: string | null;
+  conflicts: ReadonlyArray<string>;
+  reason: string | null;
+  runUrl: string | null;
+  at: string;
+}
+
+export const DesktopUpstreamMergeStatusSchema = Schema.Struct({
+  tag: Schema.String,
+  commit: Schema.NullOr(Schema.String),
+  conflicts: Schema.Array(Schema.String),
+  reason: Schema.NullOr(Schema.String),
+  runUrl: Schema.NullOr(Schema.String),
+  at: Schema.String,
+});
 
 export interface DesktopUpdateReleaseNote {
   version: string;
@@ -252,6 +276,7 @@ export const DesktopUpdateStateSchema = Schema.Struct({
   message: Schema.NullOr(Schema.String),
   errorContext: Schema.NullOr(Schema.Literals(["check", "download", "install"])),
   canRetry: Schema.Boolean,
+  upstreamMerge: Schema.NullOr(DesktopUpstreamMergeStatusSchema),
 });
 
 export interface DesktopUpdateActionResult {

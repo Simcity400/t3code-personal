@@ -30,6 +30,7 @@ const baseState: DesktopUpdateState = {
   downloadedVersion: null,
   releaseNotes: [],
   omittedReleaseCount: 0,
+  upstreamMerge: null,
   downloadPercent: null,
   checkedAt: null,
   message: null,
@@ -104,6 +105,7 @@ describe("SidebarUpdateReleaseNotes", () => {
         ...baseState,
         releaseNotes: [{ version: "0.0.36-nightly.3", items: ["Change 3"], totalItems: 1 }],
         omittedReleaseCount: 1,
+        upstreamMerge: null,
       }),
     );
 
@@ -117,6 +119,7 @@ describe("SidebarUpdateReleaseNotes", () => {
         ...baseState,
         releaseNotes: [{ version: "0.0.36-nightly.3", items: ["Change 3"], totalItems: 1 }],
         omittedReleaseCount: 3,
+        upstreamMerge: null,
       }),
     );
 

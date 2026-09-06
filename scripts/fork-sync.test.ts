@@ -8,7 +8,11 @@ import {
   hasDesktopAssets,
   hasReleaseChanges,
   latestNightly,
+  markSyncBlocked,
+  NightlyMergeConflict,
   planSync,
+  SYNC_BLOCKED_BRANCH,
+  SYNC_BLOCKED_FILE,
   syncNightly,
 } from "./fork-sync.ts";
 
@@ -94,12 +98,43 @@ describe("published nightly sync", () => {
     write(upstream, "feature.txt", "changed upstream behavior\n");
     commit(upstream);
     git(upstream, "tag", TAG);
-    expect(() => syncNightly(fork, upstream, TAG)).toThrow("feature.txt");
+    let conflict: unknown;
+    try {
+      syncNightly(fork, upstream, TAG);
+    } catch (error) {
+      conflict = error;
+    }
+    expect(conflict).toBeInstanceOf(NightlyMergeConflict);
+    expect((conflict as NightlyMergeConflict).conflicts).toEqual(["feature.txt"]);
     expect(git(fork, "rev-parse", "HEAD")).toBe(original);
     expect(git(fork, "status", "--porcelain")).toBe("");
     expect(NodeFS.readFileSync(NodePath.join(fork, "fork-upstream.json"), "utf8")).toContain(
       "older",
     );
+  });
+  it("publishes the blocked marker on origin and leaves the checkout where it was", () => {
+    const main = git(fork, "rev-parse", "HEAD");
+    const status = {
+      tag: TAG,
+      commit: "0123456789abcdef0123456789abcdef01234567",
+      conflicts: ["feature.txt"],
+      reason: null,
+      runUrl: "https://example.invalid/run/1",
+      at: "2026-09-06T00:00:00.000Z",
+    };
+    const marker = markSyncBlocked(fork, status);
+    expect(git(fork, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(git(fork, "rev-parse", "HEAD")).toBe(main);
+    expect(git(fork, "status", "--porcelain")).toBe("");
+    expect(git(upstream, "rev-parse", SYNC_BLOCKED_BRANCH)).toBe(marker);
+    expect(git(upstream, "rev-parse", `${SYNC_BLOCKED_BRANCH}^`)).toBe(main);
+    expect(
+      JSON.parse(git(upstream, "show", `${SYNC_BLOCKED_BRANCH}:${SYNC_BLOCKED_FILE}`)),
+    ).toEqual(status);
+    // A later stop replaces the marker instead of stacking on it.
+    const replaced = markSyncBlocked(fork, { ...status, conflicts: [] });
+    expect(git(upstream, "rev-parse", SYNC_BLOCKED_BRANCH)).toBe(replaced);
+    expect(git(upstream, "rev-parse", `${SYNC_BLOCKED_BRANCH}^`)).toBe(main);
   });
   it("does not overwrite a fork-owned workflow", () => {
     write(upstream, ".github/workflows/fork-release.yml", "name: Collision\n");

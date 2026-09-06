@@ -27,6 +27,7 @@ const baseState: DesktopUpdateState = {
   downloadedVersion: null,
   releaseNotes: [],
   omittedReleaseCount: 0,
+  upstreamMerge: null,
   downloadPercent: null,
   checkedAt: null,
   message: null,

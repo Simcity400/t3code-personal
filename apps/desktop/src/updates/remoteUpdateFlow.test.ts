@@ -29,6 +29,7 @@ function makeState(overrides: Partial<DesktopUpdateState> = {}): DesktopUpdateSt
     errorContext: null,
     canRetry: false,
     omittedReleaseCount: 0,
+    upstreamMerge: null,
     ...overrides,
   };
 }

@@ -16,9 +16,36 @@ integration without rebuilding documentation-only commits. An incomplete visible
 also triggers recovery, even if it names the current main commit. GitHub
 may delay scheduled jobs, and compilation/publication takes additional time.
 Real code conflicts stop the sync. They cannot be safely resolved by always taking
-either side without losing fork features or upstream fixes. The failed Actions run
-contains the conflicting paths. A reviewed resolution followed by a successful
-build makes the update available through the normal installed-app update button.
+either side without losing fork features or upstream fixes. A stopped run publishes a
+`needs-merge-help` branch holding `fork-sync-status.json` (the blocked tag, its
+conflicting paths or the failure reason, and the run URL). The desktop updater reads
+that file with the private-feed token on every update check and the sidebar shows an
+"Official update needs a merge" notice whose button opens a new thread with the merge
+prompt already written. The next successful sync deletes the branch, which clears the
+notice; a successful build then reaches the normal installed-app update button.
+
+## Finishing a blocked sync
+
+This is the recipe the notice's prompt points at. Work in a clean worktree of the
+fork with its `main` checked out and current.
+
+1. Fetch the blocked tag from the official repository and merge it without committing:
+   `git fetch --no-tags https://github.com/pingdotgg/t3code.git refs/tags/<tag>` then
+   `git merge --no-commit --no-ff FETCH_HEAD`.
+2. Delete upstream-only workflows inside the merge (`git rm` everything under
+   `.github/workflows` except `fork-sync.yml`, `fork-release.yml` and
+   `fork-mobile-preview.yml`). The push is refused if a workflow file changes.
+3. Resolve each conflict so both sides survive: upstream's fix plus the fork
+   customization MY-FORK.md describes for that area. When the fork retired a feature
+   on purpose, drop upstream's additions to it rather than reviving it.
+4. Take upstream's `pnpm-lock.yaml` and run `vp i`; the fork's manifest differences
+   re-resolve into it.
+5. Typecheck every package the merge touched and run the tests for the files you
+   resolved by hand. Hand-resolved code has never compiled; expect dropped
+   definitions and stubs behind new interfaces, and fix them rather than skipping.
+6. Write the tag and its commit to `fork-upstream.json`, commit as
+   `chore(fork): sync <tag>`, get a review pass, and push `main`. Fork Sync then
+   clears the marker and builds the release.
 
 The release workflow runs focused fork regression tests and requires both Windows
 architectures. Assets upload into a draft with prerelease disabled, because authenticated

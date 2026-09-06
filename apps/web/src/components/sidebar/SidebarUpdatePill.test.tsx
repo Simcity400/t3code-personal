@@ -19,6 +19,7 @@ const nightlyState: DesktopUpdateState = {
   downloadedVersion: null,
   releaseNotes: [{ version: "0.0.36-nightly.3", items: ["Newest change"], totalItems: 1 }],
   omittedReleaseCount: 0,
+  upstreamMerge: null,
   downloadPercent: null,
   checkedAt: null,
   message: null,
