@@ -115,18 +115,6 @@ export function detectComposerTrigger(
   };
 }
 
-export function parseStandaloneComposerSlashCommand(
-  text: string,
-): Exclude<ComposerSlashCommand, "model" | "side"> | null {
-  const match = /^\/(plan|default)\s*$/i.exec(text.trim());
-  if (!match) {
-    return null;
-  }
-  const command = match[1]?.toLowerCase();
-  if (command === "plan") return "plan";
-  return "default";
-}
-
 export function parseSideChatSlashCommand(text: string): { readonly prompt: string } | null {
   const match = /^\/side(?:\s+([\s\S]*))?$/i.exec(text.trim());
   return match ? { prompt: (match[1] ?? "").trim() } : null;
