@@ -29,10 +29,28 @@ custom setting changes `CLAUDE_CONFIG_DIR`, leaving `HOME` and the system keycha
 location intact. Use the same variable for the login command. Setting `HOME`
 instead can put credentials where this provider will not find them.
 
-Check the account reported in provider settings after signing in. Existing
-threads can switch only between Claude instances with the same config directory.
-Separate account directories stay isolated, including their local conversation
-state. Claude does not have Codex's shared-home and shadow-home arrangement.
+Check the account reported in provider settings after signing in.
+
+## Continue one thread with another account
+
+Two accounts can continue the same thread when they share a conversation home.
+Claude keeps each conversation under the config directory that started it, so
+T3 Code links the second account's `projects` folder to the first account's
+directory while the login stays in its own directory:
+
+| Instance        | CLAUDE_CONFIG_DIR path | Shared conversation home |
+| --------------- | ---------------------- | ------------------------ |
+| Claude Work     | Leave empty            | Leave empty              |
+| Claude Personal | `~/.claude_personal`   | `~/.claude`              |
+
+Point the shared conversation home at the directory that already holds your
+threads. Conversations the second account started on its own are moved into the
+shared folder the first time the instance starts, so nothing is lost. Instances
+with the same shared home appear together in a thread's model picker, and
+switching resumes the same conversation on the other account.
+
+Leave the shared conversation home empty to keep an account's conversations
+isolated. Such an instance cannot continue threads from another directory.
 
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.

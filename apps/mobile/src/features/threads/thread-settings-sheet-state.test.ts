@@ -14,6 +14,8 @@ import {
   compatibleProviderInstanceIdsForThread,
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
+  providerSectionIsCollapsed,
+  providerSectionStartsExpanded,
 } from "./thread-settings-sheet-state";
 
 function modelOption(
@@ -234,5 +236,37 @@ describe("compatibleProviderInstanceIdsForThread", () => {
         driver: ProviderDriverKind.make("antigravity"),
       }),
     ).toEqual(new Set([missing]));
+  });
+});
+
+describe("provider section disclosure", () => {
+  it("starts a single primary provider expanded", () => {
+    expect(
+      providerSectionStartsExpanded({
+        isPrimary: true,
+        containsAppliedSelection: false,
+        sameDriverProviderCount: 1,
+      }),
+    ).toBe(true);
+  });
+
+  it("starts sibling account catalogs collapsed so every account header stays visible", () => {
+    expect(
+      providerSectionStartsExpanded({
+        isPrimary: true,
+        containsAppliedSelection: true,
+        sameDriverProviderCount: 3,
+      }),
+    ).toBe(false);
+  });
+
+  it("expands a collapsed account after its header is pressed", () => {
+    expect(
+      providerSectionIsCollapsed({
+        defaultExpanded: false,
+        hasExpansionOverride: true,
+        isNarrowed: false,
+      }),
+    ).toBe(false);
   });
 });

@@ -34,8 +34,20 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   };
 });
 
+/**
+ * Threads continue across instances that share this key. A shared conversation
+ * home (see ClaudeSharedHome.ts) makes two accounts report the same key, since
+ * both resume from the same `projects` folder.
+ */
 export const makeClaudeContinuationGroupKey = Effect.fn("makeClaudeContinuationGroupKey")(
-  function* (config: Pick<ClaudeSettings, "homePath">): Effect.fn.Return<string, never, Path.Path> {
+  function* (
+    config: Pick<ClaudeSettings, "homePath"> & Partial<Pick<ClaudeSettings, "sharedHomePath">>,
+  ): Effect.fn.Return<string, never, Path.Path> {
+    const path = yield* Path.Path;
+    const sharedHomePath = config.sharedHomePath?.trim() ?? "";
+    if (sharedHomePath.length > 0) {
+      return `claude:home:${path.resolve(expandHomePath(sharedHomePath))}`;
+    }
     const resolvedHomePath = yield* resolveClaudeHomePath(config);
     return `claude:home:${resolvedHomePath}`;
   },
