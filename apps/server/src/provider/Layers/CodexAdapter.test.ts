@@ -130,8 +130,6 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     Promise.resolve({ threadId: "provider-thread-1" }),
   );
 
-  public readonly getGoalImpl = vi.fn(() => Promise.resolve({ goal: makeNativeGoal() }));
-
   public readonly setGoalImpl = vi.fn((input: CodexSessionRuntimeGoalSetInput) =>
     Promise.resolve({
       goal: makeNativeGoal({
@@ -187,11 +185,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     return Effect.promise(() => this.uploadFeedbackImpl(reason));
   }
 
-  getGoal: CodexSessionRuntimeShape["getGoal"] = Effect.promise(() => this.getGoalImpl());
-
-  setGoal(input: CodexSessionRuntimeGoalSetInput) {
-    return Effect.promise(() => this.setGoalImpl(input));
-  }
+  setGoal: CodexSessionRuntimeShape["setGoal"] = (input) =>
+    Effect.promise(() => this.setGoalImpl(input));
 
   clearGoal = Effect.promise(() => this.clearGoalImpl());
 
@@ -556,9 +551,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     Effect.gen(function* () {
       const { goal, runtime, threadId } = yield* startGoalSession("goal-thread");
 
-      const current = yield* goal.get(threadId);
-      NodeAssert.equal(current?.objective, "Ship native Goal controls");
-      yield* goal.set({
+      const created = yield* goal.set({
         threadId,
         objective: "Create the native Goal",
         status: "active",
@@ -577,7 +570,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
           { objective: "Steer the active Goal" },
         ],
       );
-      NodeAssert.equal(runtime.getGoalImpl.mock.calls.length, 1);
+      NodeAssert.equal(created.objective, "Create the native Goal");
       NodeAssert.equal(runtime.clearGoalImpl.mock.calls.length, 1);
       NodeAssert.deepStrictEqual(cleared, { cleared: true });
     }),
@@ -586,19 +579,20 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
   it.effect("maps native Goal request rejection to an adapter request error", () =>
     Effect.gen(function* () {
       const { goal, runtime, threadId } = yield* startGoalSession("goal-rejection-thread");
-      runtime.getGoal = Effect.fail(
-        new CodexErrors.CodexAppServerRequestError({
-          code: -32603,
-          errorMessage: "native Goal rejected",
-          method: "thread/goal/get",
-        }),
-      );
+      runtime.setGoal = () =>
+        Effect.fail(
+          new CodexErrors.CodexAppServerRequestError({
+            code: -32603,
+            errorMessage: "native Goal rejected",
+            method: "thread/goal/set",
+          }),
+        );
 
-      const result = yield* goal.get(threadId).pipe(Effect.result);
+      const result = yield* goal.set({ threadId, status: "paused" }).pipe(Effect.result);
       NodeAssert.equal(result._tag, "Failure");
       NodeAssert.equal(result.failure._tag, "ProviderAdapterRequestError");
       if (result.failure._tag === "ProviderAdapterRequestError") {
-        NodeAssert.equal(result.failure.method, "thread/goal/get");
+        NodeAssert.equal(result.failure.method, "thread/goal/set");
       }
     }),
   );

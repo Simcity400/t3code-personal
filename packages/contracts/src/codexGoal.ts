@@ -1,7 +1,6 @@
 import * as Schema from "effect/Schema";
 
 import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const CODEX_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
 const CodexGoalObjective = TrimmedNonEmptyString.check(
@@ -34,15 +33,16 @@ export const CodexGoalThreadInput = Schema.Struct({
   threadId: ThreadId,
 });
 export type CodexGoalThreadInput = typeof CodexGoalThreadInput.Type;
-export const CodexGoalSubscriptionInput = Schema.Struct({
-  threadId: ThreadId,
-  providerInstanceId: ProviderInstanceId,
-});
-export type CodexGoalSubscriptionInput = typeof CodexGoalSubscriptionInput.Type;
+/**
+ * Only pause and resume are user-driven status changes: Codex itself marks
+ * a goal blocked, usage-limited, budget-limited, or complete.
+ */
+export const CodexGoalUserStatus = Schema.Literals(["active", "paused"]);
+export type CodexGoalUserStatus = typeof CodexGoalUserStatus.Type;
 export const CodexGoalSetInput = Schema.Struct({
   threadId: ThreadId,
   objective: Schema.optionalKey(CodexGoalObjective),
-  status: Schema.optionalKey(CodexGoalStatus),
+  status: Schema.optionalKey(CodexGoalUserStatus),
   tokenBudget: Schema.optionalKey(Schema.NullOr(PositiveInt)),
 });
 export type CodexGoalSetInput = typeof CodexGoalSetInput.Type;
@@ -50,24 +50,7 @@ export const CodexGoalClearResult = Schema.Struct({
   cleared: Schema.Boolean,
 });
 export type CodexGoalClearResult = typeof CodexGoalClearResult.Type;
-export const CodexGoalStreamEvent = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("snapshot"),
-    threadId: ThreadId,
-    goal: Schema.NullOr(CodexGoal),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("updated"),
-    threadId: ThreadId,
-    goal: CodexGoal,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("cleared"),
-    threadId: ThreadId,
-  }),
-]);
-export type CodexGoalStreamEvent = typeof CodexGoalStreamEvent.Type;
-export const CodexGoalOperation = Schema.Literals(["get", "set", "clear", "subscribe"]);
+export const CodexGoalOperation = Schema.Literals(["set", "clear"]);
 export type CodexGoalOperation = typeof CodexGoalOperation.Type;
 
 export class CodexGoalOperationError extends Schema.TaggedErrorClass<CodexGoalOperationError>()(

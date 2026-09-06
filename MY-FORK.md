@@ -242,17 +242,24 @@ machine.
   Came out of branch `t3code/cc74d163`, whose remaining pieces (a guard ignoring a
   replaced account's late `session.exited`, and sibling account catalogs starting folded
   in the mobile picker) landed alongside.
-- **Native Codex goals** (2026-09-06): upstream PR pingdotgg/t3code#7935 (stekman08,
-  "feat(codex): add native Goal lifecycle controls") merged on top of nightly 1292 with
-  conflict resolution only, plus its provider-service tests pointed at temp workspaces so
-  they pass on Windows. `/goal <objective>`, `status`, `steer`, `pause`, `resume` and
-  `clear` drive Codex App Server's `thread/goal/*` API; T3 keeps no goal state of its own
-  and the banner is a projection of Codex's notifications. Nothing here is fork-invented,
-  so a later upstream merge of the same PR should be a no-op; if upstream lands a
-  different design, drop this in favour of theirs. Claude Code's `/goal` is not available
-  through the Agent SDK's headless mode (verified 2026-09-06: no `active_goal` events, no
-  stop-hook loop; upstream issue #9266), so no Claude goal path exists yet and none is
-  emulated.
+- **Native Codex goals** (2026-09-06): started from upstream PR pingdotgg/t3code#7935
+  (stekman08, "feat(codex): add native Goal lifecycle controls"), then reworked for
+  parity with the Codex app. Codex App Server's `thread/goal/*` API stays the only
+  source of truth, but T3 now projects each `thread/goal/updated` / `cleared`
+  notification onto the thread (`thread.goal-set` event, `OrchestrationThread.goal`,
+  `goal_json` column) so the goal survives the provider session being stopped or
+  reaped; the per-thread subscription RPC and the `thread/goal/get` read are gone.
+  The banner above the composer carries Codex's own status wording ("stalled" for
+  blocked), the objective, a plain-language explanation of what Codex is doing,
+  usage, and Pause / Resume / Continue, Edit (objective + token budget dialog) and
+  Clear; a stalled goal quotes the turn-ending message that explains the blocker
+  (via the notification's `turnId`). `/goal` opens the editor. Verified against the
+  real app-server: `set` echoes a `thread/goal/updated` to the caller, any status can
+  be set by a client (T3 only sends active/paused), and Codex resumes an active goal
+  on its own when the thread is resumed. Claude Code's `/goal` is not available
+  through the Agent SDK's headless mode (verified 2026-09-06: no `active_goal` events,
+  no stop-hook loop; upstream issue #9266), so no Claude goal path exists yet and
+  none is emulated.
 - **Blocked-sync notice** (2026-09-06): when Fork Sync cannot merge a nightly it pushes
   the `needs-merge-help` branch with `fork-sync-status.json`; the desktop updater
   reads it with the private-feed token and the sidebar shows "Official update needs a

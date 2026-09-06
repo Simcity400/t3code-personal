@@ -11,7 +11,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
-import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
@@ -27,7 +26,6 @@ import {
   ClientWebDeployment,
   type CodexGoalOperation,
   CodexGoalOperationError,
-  type CodexGoalStreamEvent,
   CommandId,
   type DiscoveredLocalServerList,
   EventId,
@@ -204,8 +202,6 @@ function codexGoalOperationError(operation: CodexGoalOperation, threadId: Thread
     new CodexGoalOperationError({ operation, threadId, cause });
 }
 
-type BufferedCodexGoalEvent = CodexGoalStreamEvent & { readonly updatedAt: number };
-
 function projectEntriesFailureContext(error: WorkspaceEntries.WorkspaceEntriesError): {
   readonly failure: ProjectEntriesFailure;
   readonly normalizedCwd?: string;
@@ -332,7 +328,8 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.activity-appended"
       | "thread.turn-diff-completed"
       | "thread.reverted"
-      | "thread.session-set";
+      | "thread.session-set"
+      | "thread.goal-set";
   }
 > {
   return (
@@ -341,7 +338,8 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.activity-appended" ||
     event.type === "thread.turn-diff-completed" ||
     event.type === "thread.reverted" ||
-    event.type === "thread.session-set"
+    event.type === "thread.session-set" ||
+    event.type === "thread.goal-set"
   );
 }
 
@@ -788,6 +786,9 @@ const makeWsRpcLayer = (
             );
           case "thread.unarchived":
             return threadUpsertOrRemove(ThreadId.make(event.aggregateId), event.sequence);
+          case "thread.goal-set":
+            // Shells do not carry the goal; the thread subscription does.
+            return Effect.succeed(Option.none());
           default:
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());
@@ -2652,17 +2653,6 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "terminal" },
           ),
-        [WS_METHODS.codexGoalGet]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.codexGoalGet,
-            providerService
-              .getCodexGoal(input.threadId, {
-                allowRecovery: false,
-                failIfInactive: true,
-              })
-              .pipe(Effect.mapError(codexGoalOperationError("get", input.threadId))),
-            { "rpc.aggregate": "codex-goal" },
-          ),
         [WS_METHODS.codexGoalSet]: (input) =>
           observeRpcEffect(
             WS_METHODS.codexGoalSet,
@@ -2677,71 +2667,6 @@ const makeWsRpcLayer = (
             providerService
               .clearCodexGoal(input.threadId)
               .pipe(Effect.mapError(codexGoalOperationError("clear", input.threadId))),
-            { "rpc.aggregate": "codex-goal" },
-          ),
-        [WS_METHODS.subscribeCodexGoal]: (input) =>
-          observeRpcStreamEffect(
-            WS_METHODS.subscribeCodexGoal,
-            Effect.gen(function* () {
-              const snapshotLoaded = yield* Ref.make(false);
-              const liveGoalEvents = yield* Stream.toQueue(
-                providerService.streamEvents.pipe(
-                  Stream.filterMap((event) => {
-                    if (
-                      event.threadId !== input.threadId ||
-                      event.providerInstanceId !== input.providerInstanceId
-                    ) {
-                      return Result.failVoid;
-                    }
-                    if (event.type === "thread.goal.updated") {
-                      return Result.succeed<BufferedCodexGoalEvent>({
-                        type: "updated",
-                        threadId: input.threadId,
-                        goal: event.payload.goal,
-                        updatedAt: event.payload.goal.updatedAt,
-                      });
-                    }
-                    if (event.type === "thread.goal.cleared") {
-                      return Result.succeed<BufferedCodexGoalEvent>({
-                        type: "cleared",
-                        threadId: input.threadId,
-                        updatedAt: Math.floor(Date.parse(event.createdAt) / 1000),
-                      });
-                    }
-                    return Result.failVoid;
-                  }),
-                  Stream.mapEffect((event) =>
-                    Ref.get(snapshotLoaded).pipe(
-                      Effect.map((loaded) => ({ ...event, buffered: !loaded })),
-                    ),
-                  ),
-                ),
-                { capacity: 1, strategy: "sliding" },
-              );
-              const goal = yield* providerService
-                .getCodexGoal(input.threadId, { allowRecovery: false })
-                .pipe(Effect.mapError(codexGoalOperationError("subscribe", input.threadId)));
-              const snapshot: CodexGoalStreamEvent = {
-                type: "snapshot",
-                threadId: input.threadId,
-                goal,
-              };
-              yield* Ref.set(snapshotLoaded, true);
-              const snapshotUpdatedAt = goal?.updatedAt ?? Number.NEGATIVE_INFINITY;
-              const liveGoalStream = Stream.fromQueue(liveGoalEvents).pipe(
-                Stream.filter(
-                  ({ buffered, type, updatedAt }) =>
-                    !buffered ||
-                    updatedAt > snapshotUpdatedAt ||
-                    (type === "updated" && updatedAt === snapshotUpdatedAt),
-                ),
-                Stream.map(({ buffered: _, updatedAt: __, ...event }) => event),
-              ) as Stream.Stream<
-                CodexGoalStreamEvent,
-                CodexGoalOperationError | EnvironmentAuthorizationError
-              >;
-              return Stream.concat(Stream.make(snapshot), liveGoalStream);
-            }),
             { "rpc.aggregate": "codex-goal" },
           ),
         [WS_METHODS.previewOpen]: (input) =>

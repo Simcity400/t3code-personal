@@ -138,7 +138,6 @@ function createProviderServiceHarness(
       }),
     rollbackConversation,
     uploadFeedback: () => unsupported(),
-    getCodexGoal: () => unsupported(),
     setCodexGoal: () => unsupported(),
     clearCodexGoal: () => unsupported(),
     get streamEvents() {

@@ -72,4 +72,21 @@ with OpenAI support.
 
 ## Manage a Codex Goal
 
-In a started Codex thread, use `/goal` to create, inspect, steer, pause, resume, or clear its native Goal.
+A Goal gives Codex a long-running objective. Codex keeps starting turns on its own
+until it can verify the objective is done, and stops to ask you when it is stuck.
+
+Send `/goal` in a started Codex thread to open the goal editor, or
+`/goal <objective>` to start one straight away. The banner above the composer shows
+the goal status, the objective, what Codex is doing about it, and the tokens and
+time used, with Pause, Resume, Edit, and Clear. The goal stays visible after the
+thread stops; Continue wakes the thread so Codex picks the goal back up.
+
+- **Stalled**: Codex hit the same blocker on three turns in a row and needs your
+  input or an outside change. The banner quotes the message that explains the
+  blocker. Reply in the thread, or Resume once the blocker is gone.
+- **Usage limited**: your usage limit stopped the goal. Resume once it resets.
+- **Budget limited**: the token budget is used up. Raise it in Edit, then Resume.
+- **Complete**: Codex verified the objective. Clear the goal to finish.
+
+`/goal status`, `/goal pause`, `/goal resume`, `/goal steer <objective>`, and
+`/goal clear` do the same from the composer.

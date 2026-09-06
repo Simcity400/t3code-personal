@@ -27,6 +27,7 @@ import {
   type OrchestrationThreadShell,
   ModelSelection,
   ProjectId,
+  OrchestrationThreadGoal,
   ThreadLinkedPullRequest,
   ThreadId,
   TrimmedNonEmptyString,
@@ -114,6 +115,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
+    goal: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadGoal)),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -496,6 +498,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           forked_from_thread_id AS "forkedFromThreadId",
           side_chat_promoted_at AS "sideChatPromotedAt",
           linked_pull_request_json AS "linkedPullRequest",
+          goal_json AS "goal",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -536,6 +539,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           forked_from_thread_id AS "forkedFromThreadId",
           side_chat_promoted_at AS "sideChatPromotedAt",
           linked_pull_request_json AS "linkedPullRequest",
+          goal_json AS "goal",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -578,6 +582,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           forked_from_thread_id AS "forkedFromThreadId",
           side_chat_promoted_at AS "sideChatPromotedAt",
           linked_pull_request_json AS "linkedPullRequest",
+          goal_json AS "goal",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1071,6 +1076,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           forked_from_thread_id AS "forkedFromThreadId",
           side_chat_promoted_at AS "sideChatPromotedAt",
           linked_pull_request_json AS "linkedPullRequest",
+          goal_json AS "goal",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1513,7 +1519,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             'thread.activity-appended',
             'thread.turn-diff-completed',
             'thread.reverted',
-            'thread.session-set'
+            'thread.session-set',
+            'thread.goal-set'
           )
       `,
   });
@@ -2135,6 +2142,7 @@ pending_approval_requests AS (
                 ...(row.linkedPullRequest === null
                   ? {}
                   : { linkedPullRequest: row.linkedPullRequest }),
+                ...(row.goal === null ? {} : { goal: row.goal }),
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -2354,6 +2362,7 @@ pending_approval_requests AS (
                   ...(row.linkedPullRequest === null
                     ? {}
                     : { linkedPullRequest: row.linkedPullRequest }),
+                  ...(row.goal === null ? {} : { goal: row.goal }),
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -3250,6 +3259,7 @@ pending_approval_requests AS (
         ...(threadRow.value.linkedPullRequest === null
           ? {}
           : { linkedPullRequest: threadRow.value.linkedPullRequest }),
+        ...(threadRow.value.goal === null ? {} : { goal: threadRow.value.goal }),
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,

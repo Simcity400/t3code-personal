@@ -637,6 +637,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             forkedFromThreadId: event.payload.forkedFromThreadId ?? null,
             sideChatPromotedAt: event.payload.sideChatPromotedAt ?? null,
             linkedPullRequest: null,
+            goal: null,
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -922,6 +923,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               (previousLatest === null || event.payload.createdAt > previousLatest)
                 ? event.payload.createdAt
                 : previousLatest,
+          });
+          return;
+        }
+
+        case "thread.goal-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          // Goal bookkeeping is not user-visible thread activity: leave
+          // updatedAt alone so the list order does not churn on every turn.
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            goal: event.payload.goal,
           });
           return;
         }
