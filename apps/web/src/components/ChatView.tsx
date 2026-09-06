@@ -4186,10 +4186,10 @@ export default function ChatView(props: ChatViewProps) {
     useRightPanelStore.getState().open(activeThreadRef, "agents");
   }, [activeThreadRef]);
   // Side chats open beside their parent as panel tabs. Reopening an existing
-  // one from the strip activates its tab; creating one lives with `onSend`,
-  // which owns the thread-creation inputs.
+  // one from the panel's + menu activates its tab; creating one lives with
+  // `onSend`, which owns the thread-creation inputs.
   const openSideChatSurface = useCallback(
-    (sideChatThreadId: ThreadId) => {
+    (sideChatThreadId: string) => {
       if (!activeThreadRef) return;
       useRightPanelStore.getState().openSideChat(activeThreadRef, sideChatThreadId);
     },
@@ -8725,22 +8725,6 @@ export default function ChatView(props: ChatViewProps) {
             </div>
           </div>
         ) : null}
-        {attachedSideChats.length > 0 ? (
-          <div className="flex items-center gap-2 overflow-x-auto border-b border-border/60 bg-muted/25 px-4 py-2 text-sm">
-            <span className="shrink-0 text-muted-foreground">Side chats</span>
-            {attachedSideChats.map((sideChat) => (
-              <Button
-                key={sideChat.id}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => openSideChatSurface(sideChat.id)}
-              >
-                {sideChat.title}
-              </Button>
-            ))}
-          </div>
-        ) : null}
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
@@ -9186,6 +9170,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurface}
           onAddAgents={addAgentsSurface}
           onAddSideChat={addSideChatSurface}
+          onOpenSideChat={openSideChatSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           terminalAvailable={activeProject !== null}
           diffAvailable={isServerThread && isGitRepo}
@@ -9239,6 +9224,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequest={addPullRequestSurface}
             onAddAgents={addAgentsSurface}
             onAddSideChat={addSideChatSurface}
+            onOpenSideChat={openSideChatSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             terminalAvailable={activeProject !== null}
             diffAvailable={isServerThread && isGitRepo}
