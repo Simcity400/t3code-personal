@@ -43,7 +43,7 @@ export type SubagentRunHandles = TaskRunHandles;
 
 export interface RuntimeSubagent {
   readonly id: string;
-  readonly kind: "subagent" | "workflow" | "workflow_agent";
+  readonly kind: "subagent" | "subagent_batch" | "workflow" | "workflow_agent";
   readonly title: string;
   readonly role: string | null;
   readonly model: string | null;

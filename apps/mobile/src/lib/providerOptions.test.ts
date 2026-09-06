@@ -64,7 +64,7 @@ describe("mobile provider options", () => {
     expect(applyProviderOptionSelection(descriptors, { id: "unknown", value: "high" })).toBeNull();
   });
 
-  it("treats an unspecified boolean capability as off", () => {
+  it("updates generic boolean options", () => {
     const descriptors = resolveProviderOptionDescriptors({
       capabilities: {
         optionDescriptors: [{ id: "fastMode", label: "Fast Mode", type: "boolean" }],

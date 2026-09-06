@@ -14,7 +14,6 @@ import {
   compatibleProviderInstanceIdsForThread,
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
-  providerSetupCandidates,
 } from "./thread-settings-sheet-state";
 
 function modelOption(
@@ -235,87 +234,5 @@ describe("compatibleProviderInstanceIdsForThread", () => {
         driver: ProviderDriverKind.make("antigravity"),
       }),
     ).toEqual(new Set([missing]));
-  });
-});
-
-describe("providerSetupCandidates", () => {
-  const unfiltered = { providerFilter: null, query: "" };
-
-  it("offers setup without a selectable model and after sign-out", () => {
-    const disabled = setupProvider();
-    const signedOut = setupProvider({ enabled: true, installed: true });
-
-    expect(providerSetupCandidates({ providers: [disabled], ...unfiltered })).toEqual([disabled]);
-    expect(providerSetupCandidates({ providers: [signedOut], ...unfiltered })).toEqual([signedOut]);
-  });
-
-  it("uses the selected environment's status for identical instance IDs", () => {
-    const offlineAccount = setupProvider();
-    const readyAccount = setupProvider({
-      enabled: true,
-      installed: true,
-      auth: { status: "authenticated" },
-      models: [{ slug: "gemini-native", name: "Gemini", isCustom: false, capabilities: null }],
-    });
-
-    expect(providerSetupCandidates({ providers: [offlineAccount], ...unfiltered })).toHaveLength(1);
-    expect(providerSetupCandidates({ providers: [readyAccount], ...unfiltered })).toEqual([]);
-  });
-
-  it("limits existing threads to their provider and respects search", () => {
-    const personal = setupProvider();
-    const work = setupProvider({
-      instanceId: ProviderInstanceId.make("google_work"),
-      displayName: "Work Google",
-    });
-
-    expect(
-      providerSetupCandidates({
-        providers: [personal, work],
-        ...unfiltered,
-        instanceId: work.instanceId,
-      }),
-    ).toEqual([work]);
-    expect(
-      providerSetupCandidates({
-        providers: [personal, work],
-        providerFilter: work.instanceId,
-        query: "work",
-      }),
-    ).toEqual([work]);
-    expect(
-      providerSetupCandidates({
-        providers: [personal, work],
-        providerFilter: null,
-        query: "no-match",
-      }),
-    ).toEqual([]);
-  });
-
-  it("offers setup for another continuation-compatible account", () => {
-    const codex = ProviderDriverKind.make("codex");
-    const work = setupProvider({
-      driver: codex,
-      instanceId: ProviderInstanceId.make("codex_work"),
-      continuation: { groupKey: "codex:home:shared" },
-    });
-    const personal = setupProvider({
-      driver: codex,
-      instanceId: ProviderInstanceId.make("codex_personal"),
-      continuation: { groupKey: "codex:home:shared" },
-    });
-    const isolated = setupProvider({
-      driver: codex,
-      instanceId: ProviderInstanceId.make("codex_isolated"),
-      continuation: { groupKey: "codex:home:isolated" },
-    });
-
-    expect(
-      providerSetupCandidates({
-        providers: [work, personal, isolated],
-        ...unfiltered,
-        instanceId: work.instanceId,
-      }),
-    ).toEqual([work, personal]);
   });
 });

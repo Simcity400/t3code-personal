@@ -1,3 +1,4 @@
+import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { GlassContainer, GlassView } from "expo-glass-effect";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text as SystemText, View } from "react-native";
@@ -53,7 +54,8 @@ export type FloatingWorkingStatus =
    * the composer below is live, so this is information, not progress.
    */
   | { readonly kind: "waiting"; readonly label: string; readonly since: string | null }
-  | { readonly kind: "syncing"; readonly label: string };
+  | { readonly kind: "syncing"; readonly label: string }
+  | { readonly kind: "compacting" };
 
 export function FloatingWorkingControl(props: {
   readonly colorScheme: "light" | "dark";
@@ -217,6 +219,24 @@ function StopBackgroundWorkButton(props: {
   );
 }
 
+function CompactingLabel() {
+  return (
+    <View
+      accessible
+      accessibilityLabel="Compacting"
+      className="h-11 flex-row items-center gap-1.5 px-4"
+    >
+      <SymbolView
+        name="arrow.down.right.and.arrow.up.left"
+        size={13}
+        tintColorClassName="foreground"
+        type="monochrome"
+      />
+      <Text className="font-t3-medium text-xs text-foreground">Compacting…</Text>
+    </View>
+  );
+}
+
 function FloatingStatusLabel(props: { readonly status: FloatingWorkingStatus }) {
   if (props.status.kind === "syncing") {
     return (
@@ -232,6 +252,9 @@ function FloatingStatusLabel(props: { readonly status: FloatingWorkingStatus }) 
   }
   if (props.status.kind === "waiting") {
     return <WaitingLabel label={props.status.label} since={props.status.since} />;
+  }
+  if (props.status.kind === "compacting") {
+    return <CompactingLabel />;
   }
   return <WorkingDuration startedAt={props.status.startedAt} />;
 }
@@ -305,6 +328,9 @@ function formatWorkingDuration(startedAt: string, nowMs: number): string {
   const totalSeconds = Math.floor((nowMs - startedAtMs) / 1_000);
   if (totalSeconds < 60) {
     return `${totalSeconds}s`;
+  }
+  if (totalSeconds >= 3_600) {
+    return formatDuration(totalSeconds * 1_000);
   }
 
   const minutes = Math.floor(totalSeconds / 60);

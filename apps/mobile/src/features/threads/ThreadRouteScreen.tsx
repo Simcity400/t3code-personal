@@ -931,6 +931,7 @@ function ThreadRouteContent(
           activeWorkStartedAt={composer.activeWorkStartedAt}
           liveAgentCount={liveAgentCount}
           onOpenAgents={handleOpenAgents}
+          isCompacting={composer.isCompacting}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
           activePendingUserInput={requests.activePendingUserInput}
