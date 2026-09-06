@@ -7160,6 +7160,83 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect(
+    "ends a running session on clean stream closure without discarding unresolved permissions",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-stream-closed");
+        const endStream = promiseWithResolvers<unknown>();
+        const request = permissionRequest("per_disconnect", "http://127.0.0.1:9999/session");
+        runtimeMock.state.pendingPermissions = [request];
+        runtimeMock.state.subscribedEvents = [endStream.promise];
+        const openedFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId && event.type === "request.opened"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        const session = yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "approval-required",
+        });
+        yield* Fiber.join(openedFiber);
+        yield* adapter.sendTurn({
+          threadId,
+          input: "Work",
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("opencode"),
+            "opencode/kimi-k3",
+          ),
+        });
+        const exitedFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.takeUntil((event) => event.type === "session.exited"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        runtimeMock.state.endEventStream = true;
+        runtimeMock.state.abortImplementation = async () => {
+          throw new Error("server unreachable");
+        };
+        endStream.resolve({
+          id: "evt-busy",
+          type: "session.status",
+          properties: { sessionID: request.sessionID, status: { type: "busy" } },
+        });
+        const exited = yield* Fiber.join(exitedFiber);
+        NodeAssert.equal(
+          exited.some((event) => event.type === "request.resolved"),
+          false,
+        );
+        NodeAssert.match(
+          exited.find((event) => event.type === "runtime.error")?.payload.message ?? "",
+          /event stream ended/,
+        );
+        NodeAssert.equal(yield* adapter.hasSession(threadId), false);
+        runtimeMock.state.endEventStream = false;
+        runtimeMock.state.subscribedEvents = [];
+        runtimeMock.state.abortImplementation = null;
+        const recoveredFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId && event.type === "request.opened"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "approval-required",
+          resumeCursor: session.resumeCursor,
+        });
+        NodeAssert.equal(
+          Option.getOrThrow(yield* Fiber.join(recoveredFiber)).requestId,
+          request.id,
+        );
+        yield* adapter.respondToRequest(threadId, ApprovalRequestId.make(request.id), "accept");
+        yield* adapter.stopSession(threadId);
+      }),
+  );
+
   it.effect("lets OpenCode own session title generation and emits title metadata updates", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
