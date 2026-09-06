@@ -230,6 +230,8 @@ export interface DesktopUpdateState {
  * the fork's marker branch by the desktop updater; null when nothing is blocked.
  */
 export interface DesktopUpstreamMergeStatus {
+  /** The fork repository the marker came from, as owner/name. */
+  repository: string;
   tag: string;
   commit: string | null;
   conflicts: ReadonlyArray<string>;
@@ -239,6 +241,7 @@ export interface DesktopUpstreamMergeStatus {
 }
 
 export const DesktopUpstreamMergeStatusSchema = Schema.Struct({
+  repository: Schema.String,
   tag: Schema.String,
   commit: Schema.NullOr(Schema.String),
   conflicts: Schema.Array(Schema.String),

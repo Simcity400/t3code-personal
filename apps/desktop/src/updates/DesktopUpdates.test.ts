@@ -124,6 +124,7 @@ describe("DesktopUpdates", () => {
           "provider: github\nowner: Simcity400\nrepo: t3code-personal\nprivate: true\n",
         );
         const upstreamMerge = {
+          repository: "Simcity400/t3code-personal",
           tag: "v0.0.39-nightly.20260906.1291",
           commit: "bd16b86d50c1df49afeb7c0a7568a4908ade4048",
           conflicts: ["apps/web/src/components/ChatView.tsx"],
@@ -173,6 +174,7 @@ describe("DesktopUpdates", () => {
           resourcesPath,
           mockUpdates: false,
           upstreamMerge: {
+            repository: "Simcity400/t3code-personal",
             tag: "v0.0.39-nightly.20260906.1291",
             commit: null,
             conflicts: [],
