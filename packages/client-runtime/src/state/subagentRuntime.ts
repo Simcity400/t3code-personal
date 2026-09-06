@@ -755,6 +755,8 @@ function deriveSubagentPromptCandidates(
     if (toolUseId) launchingToolIds.add(toolUseId);
     const pathAlias = agentPathLeaf(payload.agentPath);
     if (pathAlias) agentAliases.add(pathAlias.toLowerCase());
+    const nickname = asString(payload.nickname);
+    if (nickname) agentAliases.add(nickname.toLowerCase());
     const prompt = asPrompt(payload.prompt);
     const encryptedPrompt = asEncryptedPrompt(payload.prompt);
     if (prompt || encryptedPrompt) {
@@ -1266,6 +1268,8 @@ export function deriveSubagentReplies(
     knownAgentIds.add(taskId);
     const pathAlias = agentPathLeaf(payload.agentPath);
     if (pathAlias) agentIdByAlias.set(pathAlias.toLowerCase(), taskId);
+    const nickname = asString(payload.nickname);
+    if (nickname) agentIdByAlias.set(nickname.toLowerCase(), taskId);
     if (title) agentIdByAlias.set(title.toLowerCase(), taskId);
     const parentAgentId = asString(payload.parentAgentId);
     if (parentAgentId) parentAgentIdByAgentId.set(taskId, parentAgentId);

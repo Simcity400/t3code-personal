@@ -20,6 +20,7 @@ import {
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
   RuntimeRequestId,
+  isUnnamedTask,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -446,6 +447,7 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     "runHandles",
     "outputFile",
     "agentPath",
+    "nickname",
     "timelineBypass",
     "typedUsage",
     "status",
@@ -2499,8 +2501,12 @@ const make = Effect.gen(function* () {
             // Whatever the provider called this work, in the order the panel
             // uses: an agent's title, else its description (a shell's is its
             // command line), else the workflow it belongs to. Absent on thin
-            // rows, which the registry treats as "keep the name I have".
-            label: payload.title ?? payload.description ?? payload.workflowName,
+            // rows, which the registry treats as "keep the name I have". A
+            // bare task id (Codex progress rows) is not a name; the generated
+            // one arrives through the task-title reactor instead.
+            label: [payload.title, payload.description, payload.workflowName].find(
+              (candidate) => candidate !== undefined && !isUnnamedTask(candidate, payload.taskId),
+            ),
             at: event.createdAt,
             kind:
               event.type === "task.started"

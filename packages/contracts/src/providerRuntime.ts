@@ -768,6 +768,12 @@ const taskAgentLinkageFields = {
   /** Codex agent hierarchy path, e.g. "/root/marlow". */
   agentPath: Schema.optional(TrimmedNonEmptyStringSchema),
   /**
+   * Provider-assigned nickname (Codex children). An address, not a name: the
+   * parent can send follow-ups `to` it, so clients keep it as an alias, but
+   * it says nothing about the work and never labels the roster.
+   */
+  nickname: Schema.optional(TrimmedNonEmptyStringSchema),
+  /**
    * Set on provider-synthesized child-agent events (Codex) whose activity
    * belongs in the Agents surface, never the parent timeline.
    */
