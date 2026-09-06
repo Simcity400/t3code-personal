@@ -33,6 +33,24 @@ it.layer(NodeServices.layer)("ClaudeSharedHome", (it) => {
       }),
     );
 
+    it.effect("pairs the default instance with one that shares ~/.claude", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const home = path.resolve(process.env.HOME ?? process.env.USERPROFILE ?? "", ".claude");
+        const work = yield* resolveClaudeHomeLayout({ homePath: "", sharedHomePath: "" }, {});
+        const personal = yield* resolveClaudeHomeLayout(
+          { homePath: "~/.claude_personal", sharedHomePath: "~/.claude" },
+          {},
+        );
+        expect(work.homePath).toBe(home);
+        expect(work.continuationKey).toBe(personal.continuationKey);
+        // Never the OS home directory: linking ~/projects would be a disaster.
+        expect(work.homePath).not.toBe(
+          path.resolve(process.env.HOME ?? process.env.USERPROFILE ?? ""),
+        );
+      }),
+    );
+
     it.effect("keys both accounts to the shared conversation home", () =>
       Effect.gen(function* () {
         const layout = yield* resolveClaudeHomeLayout({
@@ -79,6 +97,83 @@ it.layer(NodeServices.layer)("ClaudeSharedHome", (it) => {
         }).pipe(Effect.flip);
         expect(result._tag).toBe("ClaudeSharedHomePathConflictError");
       }).pipe(Effect.scoped),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "rejects a shared home that only looks different from the instance's directory",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* makeTempDirectory("t3-claude-alias-");
+          const alias = path.join(yield* makeTempDirectory("t3-claude-alias-link-"), "shared");
+          yield* fileSystem.symlink(home, alias);
+          const result = yield* materializeClaudeSharedHome({
+            mode: "sharedConversations",
+            homePath: home,
+            conversationHomePath: alias,
+            continuationKey: `claude:home:${alias}`,
+          }).pipe(Effect.flip);
+          expect(result._tag).toBe("ClaudeSharedHomePathConflictError");
+          expect(yield* fileSystem.exists(path.join(home, "projects"))).toBe(false);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "sets aside entries it cannot move instead of deleting them",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const shared = yield* makeTempDirectory("t3-claude-shared-");
+          const home = yield* makeTempDirectory("t3-claude-home-");
+          // Both accounts keep auto-memory for the same project.
+          for (const [root, note] of [
+            [shared, "shared memory"],
+            [home, "own memory"],
+          ] as const) {
+            yield* fileSystem.makeDirectory(path.join(root, "projects", "C--repo", "memory"), {
+              recursive: true,
+            });
+            yield* fileSystem.writeFileString(
+              path.join(root, "projects", "C--repo", "memory", "MEMORY.md"),
+              note,
+            );
+          }
+          yield* fileSystem.writeFileString(
+            path.join(home, "projects", "C--repo", "own-session.jsonl"),
+            "{}\n",
+          );
+
+          yield* materializeClaudeSharedHome({
+            mode: "sharedConversations",
+            homePath: home,
+            conversationHomePath: shared,
+            continuationKey: `claude:home:${shared}`,
+          });
+
+          const link = path.join(home, "projects");
+          expect(path.resolve(home, yield* fileSystem.readLink(link))).toBe(
+            path.join(shared, "projects"),
+          );
+          expect(
+            yield* fileSystem.readFileString(
+              path.join(shared, "projects", "C--repo", "memory", "MEMORY.md"),
+            ),
+          ).toBe("shared memory");
+          expect(
+            yield* fileSystem.exists(path.join(shared, "projects", "C--repo", "own-session.jsonl")),
+          ).toBe(true);
+          const aside = (yield* fileSystem.readDirectory(home)).find((entry) =>
+            entry.startsWith("projects.migrated-"),
+          );
+          expect(aside).toBeDefined();
+          expect(
+            yield* fileSystem.readFileString(
+              path.join(home, aside ?? "", "C--repo", "memory", "MEMORY.md"),
+            ),
+          ).toBe("own memory");
+        }).pipe(Effect.scoped),
     );
 
     it.effect.skipIf(!symlinksSupported)(
