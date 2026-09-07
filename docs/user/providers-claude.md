@@ -13,8 +13,8 @@ conversations with your default Claude account. You can choose a different accou
 to share conversations with when multiple accounts are configured.
 
 Complete the Claude sign-in. T3 verifies the account when the sign-in finishes.
-If Claude Code is missing, the setup panel installs it with npm first; that computer
-needs npm available. When signing in remotely, follow the link on your device and
+If Claude Code is missing, the setup panel runs its standalone installer first.
+When signing in remotely, follow the link on your device and
 enter the returned code in the setup panel if prompted.
 
 Choose the new account in an existing thread's model picker to continue with it.

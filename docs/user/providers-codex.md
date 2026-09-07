@@ -13,8 +13,8 @@ shares conversations with your default Codex account. If you already have separa
 conversation groups, choose which account's conversations to continue.
 
 Complete the ChatGPT sign-in. T3 checks the account when the sign-in finishes.
-If Codex is missing, the setup panel installs it with npm first; that computer
-needs npm available. For a remote computer, select the device-code option.
+If Codex is missing, the setup panel runs its standalone installer first.
+For a remote computer, select the device-code option.
 
 The account appears in the model picker for compatible existing threads. Account
 setup belongs to the selected computer; repeat sign-in when adding the same account
