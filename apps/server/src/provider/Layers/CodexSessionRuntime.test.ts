@@ -1184,27 +1184,128 @@ describe("openCodexThread", () => {
     }),
   );
 
+  it.effect("resumes metadata when historical turns contain unknown error values", () =>
+    Effect.gen(function* () {
+      const response = makeThreadOpenResponse("saved-thread");
+      const calls: unknown[] = [];
+      const opened = yield* openCodexThread({
+        client: {
+          request: () => Effect.die("A valid resumed thread must not start fresh"),
+          raw: {
+            request: (method, payload) => {
+              calls.push({ method, payload });
+              return Effect.succeed({
+                ...response,
+                thread: {
+                  ...response.thread,
+                  turns: [
+                    {
+                      id: "old-turn",
+                      status: "failed",
+                      items: [],
+                      error: {
+                        message: "Historical provider error",
+                        codexErrorInfo: "misalignment_policy_violation",
+                      },
+                    },
+                  ],
+                },
+              });
+            },
+          },
+        },
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "auto",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: "fast",
+        resumeThreadId: "saved-thread",
+      });
+
+      NodeAssert.equal(opened.cwd, response.cwd);
+      NodeAssert.equal(opened.model, response.model);
+      NodeAssert.equal(opened.thread.id, "saved-thread");
+      // The undecodable historical turn is dropped instead of failing the resume.
+      NodeAssert.deepStrictEqual(opened.thread.turns, []);
+      NodeAssert.deepStrictEqual(calls, [
+        {
+          method: "thread/resume",
+          payload: {
+            threadId: "saved-thread",
+            cwd: "/tmp/project",
+            model: "gpt-5.3-codex",
+            serviceTier: "fast",
+            approvalPolicy: "on-request",
+            sandbox: "workspace-write",
+            approvalsReviewer: "auto_review",
+            excludeTurns: true,
+          },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("rejects malformed required resume metadata without starting a fresh thread", () =>
+    Effect.gen(function* () {
+      for (const invalidMetadata of [
+        { cwd: null },
+        { model: 42 },
+        { thread: { id: null } },
+        { thread: {} },
+      ]) {
+        const error = yield* openCodexThread({
+          client: {
+            request: () => Effect.die("Invalid resume metadata must not start a fresh thread"),
+            raw: {
+              request: () =>
+                Effect.succeed({ ...makeThreadOpenResponse("saved-thread"), ...invalidMetadata }),
+            },
+          },
+          threadId: ThreadId.make("thread-1"),
+          runtimeMode: "full-access",
+          cwd: "/tmp/project",
+          requestedModel: "gpt-5.3-codex",
+          serviceTier: undefined,
+          resumeThreadId: "saved-thread",
+        }).pipe(Effect.flip);
+
+        NodeAssert.ok(isCodexAppServerRequestError(error));
+        NodeAssert.equal(error.operation, "decode-payload");
+        NodeAssert.equal(error.method, "thread/resume");
+      }
+    }),
+  );
+
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
       const calls: Array<{ method: string; payload: unknown }> = [];
       const started = makeThreadOpenResponse("fresh-thread");
       const client = {
-        request: (method: string, payload: unknown) => {
-          calls.push({ method, payload });
-          if (method === "thread/resume") {
+        raw: {
+          request: (
+            method: "thread/resume",
+            payload: CodexRpc.ClientRequestParamsByMethod["thread/resume"],
+          ) => {
+            calls.push({ method, payload });
             return Effect.fail(
               new CodexErrors.CodexAppServerRequestError({
                 code: -32603,
                 errorMessage: "thread not found",
               }),
             );
-          }
+          },
+        },
+        request: (
+          method: "thread/start",
+          payload: CodexRpc.ClientRequestParamsByMethod["thread/start"],
+        ) => {
+          calls.push({ method, payload });
           return Effect.succeed(started);
         },
       };
 
       const opened = yield* openCodexThread({
-        client: { ...client, raw: client },
+        client,
         threadId: ThreadId.make("thread-1"),
         runtimeMode: "full-access",
         cwd: "/tmp/project",
@@ -1224,21 +1325,20 @@ describe("openCodexThread", () => {
   it.effect("propagates non-recoverable resume failures", () =>
     Effect.gen(function* () {
       const client = {
-        request: (method: string, _payload: unknown) => {
-          if (method === "thread/resume") {
-            return Effect.fail(
+        request: () => Effect.die("Non-recoverable resume failures must not start a fresh thread"),
+        raw: {
+          request: () =>
+            Effect.fail(
               new CodexErrors.CodexAppServerRequestError({
                 code: -32603,
                 errorMessage: "timed out waiting for server",
               }),
-            );
-          }
-          return Effect.succeed(makeThreadOpenResponse("fresh-thread"));
+            ),
         },
       };
 
       const error = yield* openCodexThread({
-        client: { ...client, raw: client },
+        client,
         threadId: ThreadId.make("thread-1"),
         runtimeMode: "full-access",
         cwd: "/tmp/project",

@@ -83,10 +83,16 @@ describe("Stop all while a child needs input after Main Stop", () => {
       act(() => {
         renderer = create(
           createElement(PendingUserInputCard, {
-            pendingUserInput: { requestId, questions: [], createdAt: "2026-09-05T00:00:00.000Z" },
+            pendingUserInput: {
+              requestId,
+              questions: [],
+              createdAt: "2026-09-05T00:00:00.000Z",
+              dismissible: false,
+            },
             maxHeight: 400,
             collapsed,
             onToggleCollapsed: vi.fn(),
+            onDismiss: vi.fn(),
             drafts: {},
             answers: null,
             respondingUserInputId: requestId,

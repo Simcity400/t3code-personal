@@ -46,9 +46,6 @@ import {
 } from "../CodexCollabPromptHistory.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 const decodeThreadForkResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2ThreadForkResponse);
-const decodeThreadResumeResponse = Schema.decodeUnknownEffect(
-  EffectCodexSchema.V2ThreadResumeResponse,
-);
 
 const PROVIDER = ProviderDriverKind.make("codex");
 
@@ -720,9 +717,36 @@ export function isRecoverableThreadResumeError(error: unknown): boolean {
   return RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS.some((snippet) => message.includes(snippet));
 }
 
+// Only the session metadata is required to resume. Older app-servers may still
+// return history despite excludeTurns, and a historical turn the generated
+// schema rejects (for example an unknown error value) must not prevent
+// resuming a valid provider thread, so turns are decoded one by one and the
+// undecodable ones are dropped.
+const CodexThreadResumeMetadata = Schema.Struct({
+  cwd: Schema.String,
+  model: Schema.String,
+  thread: Schema.Struct({
+    id: Schema.String,
+    path: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
+    turns: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+  }),
+});
+const decodeCodexThreadResumeMetadata = Schema.decodeUnknownEffect(CodexThreadResumeMetadata);
+const isCodexResumedTurn = Schema.is(EffectCodexSchema.V2ThreadResumeResponse__Turn);
+
+interface CodexThreadResumedMetadata {
+  readonly cwd: string;
+  readonly model: string;
+  readonly thread: {
+    readonly id: string;
+    readonly path?: string | null;
+    readonly turns: ReadonlyArray<typeof EffectCodexSchema.V2ThreadResumeResponse__Turn.Type>;
+  };
+}
+
 type CodexThreadOpenResponse =
   | CodexRpc.ClientRequestResponsesByMethod["thread/start"]
-  | CodexRpc.ClientRequestResponsesByMethod["thread/resume"]
+  | CodexThreadResumedMetadata
   | CodexRpc.ClientRequestResponsesByMethod["thread/fork"];
 
 type CodexThreadOpenMethod = "thread/start";
@@ -785,6 +809,9 @@ export const openCodexThread = (input: {
   // T3 owns its transcript. Recent app-server versions cannot list turns on
   // resume; the generated request encoder also drops the legacy excludeTurns
   // flag. Use the raw transport and validate the response at this boundary.
+  // Older providers may still return history despite excludeTurns. Only the
+  // session metadata is required here, so an unrelated historical item cannot
+  // prevent resuming a valid provider thread.
   return input.client.raw
     .request("thread/resume", {
       threadId: resumeThreadId,
@@ -793,7 +820,14 @@ export const openCodexThread = (input: {
     })
     .pipe(
       Effect.flatMap((response) =>
-        decodeThreadResumeResponse(response).pipe(
+        decodeCodexThreadResumeMetadata(response).pipe(
+          Effect.map((metadata): CodexThreadResumedMetadata => ({
+            ...metadata,
+            thread: {
+              ...metadata.thread,
+              turns: (metadata.thread.turns ?? []).filter(isCodexResumedTurn),
+            },
+          })),
           Effect.mapError((error) =>
             CodexErrors.CodexAppServerRequestError.invalidPayload(
               "thread/resume",

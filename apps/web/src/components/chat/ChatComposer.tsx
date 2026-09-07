@@ -1266,6 +1266,7 @@ export interface ChatComposerProps {
   ) => Promise<unknown>;
   onSelectActivePendingUserInputOption: (questionId: string, optionValue: string) => void;
   onAdvanceActivePendingUserInput: () => void;
+  onDismissActivePendingUserInput: (requestId: ApprovalRequestId) => void;
   onPreviousActivePendingUserInputQuestion: () => void;
   onChangeActivePendingUserInputCustomAnswer: (
     questionId: string,
@@ -1365,6 +1366,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onRespondToApproval,
     onSelectActivePendingUserInputOption,
     onAdvanceActivePendingUserInput,
+    onDismissActivePendingUserInput,
     onPreviousActivePendingUserInputQuestion,
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
@@ -1781,7 +1783,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isComposerScrollCollapsed,
     setIsComposerScrollCollapsed,
     restoreAfterTimelineReachedEnd,
-  } = useComposerFocusState(isMobileViewport);
+  } = useComposerFocusState();
   const [composerSubmissionError, setComposerSubmissionError] = useState<string | null>(null);
   const [providerInputSubmissionError, setProviderInputSubmissionError] = useState<string | null>(
     null,
@@ -4291,8 +4293,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const handleImplementPlanInNewThreadPrimaryAction = useCallback(() => {
     void onImplementPlanInNewThread();
   }, [onImplementPlanInNewThread]);
+  // The phone composer collapses when the editor loses focus. Desktop only
+  // rests on a timeline scroll, so losing focus there changes nothing.
   const scheduleComposerCollapseCheck = useCallback(() => {
-    if (isMobileViewport && mobileComposerExpandInFlightRef.current) {
+    if (!isMobileViewport || mobileComposerExpandInFlightRef.current) {
       return;
     }
     if (composerBlurFrameRef.current !== null) {
@@ -4300,10 +4304,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     composerBlurFrameRef.current = window.requestAnimationFrame(() => {
       composerBlurFrameRef.current = null;
-      if (isMobileViewport && mobileComposerExpandInFlightRef.current) {
-        return;
-      }
-      if (!isMobileViewport && desktopOutsidePointerInFlightRef.current) {
+      if (mobileComposerExpandInFlightRef.current) {
         return;
       }
       const composerSurface = composerSurfaceRef.current;
@@ -4319,108 +4320,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ) {
         return;
       }
-      if (
-        !isMobileViewport &&
-        selectionHoldsComposerOpen(window.getSelection(), getTimelineScrollableNode())
-      ) {
-        // The check runs again once the selection clears.
-        return;
-      }
       setIsComposerFocused(false);
     });
-  }, [getTimelineScrollableNode, isMobileViewport, setIsComposerFocused]);
-
-  // A held collapse settles when the selection goes away, whether the user
-  // clicked elsewhere, pressed Escape, or used the selection toolbar.
-  useEffect(() => {
-    if (isMobileViewport || !isComposerFocused) return;
-    let wasHolding = false;
-    const handleSelectionChange = () => {
-      const holding = selectionHoldsComposerOpen(
-        window.getSelection(),
-        getTimelineScrollableNode(),
-      );
-      if (wasHolding && !holding) {
-        scheduleComposerCollapseCheck();
-      }
-      wasHolding = holding;
-    };
-    document.addEventListener("selectionchange", handleSelectionChange);
-    return () => {
-      document.removeEventListener("selectionchange", handleSelectionChange);
-    };
-  }, [
-    getTimelineScrollableNode,
-    isComposerFocused,
-    isMobileViewport,
-    scheduleComposerCollapseCheck,
-  ]);
-
-  useEffect(() => {
-    if (isMobileViewport || !isComposerFocused) return;
-
-    const isInsideDesktopComposerFocusScope = (target: EventTarget | null) =>
-      Boolean(
-        target instanceof Node &&
-        (composerFormRef.current?.contains(target) || isInsideRestingComposerControlScope(target)),
-      );
-    const handleFocusIn = (event: FocusEvent) => {
-      if (!isInsideDesktopComposerFocusScope(event.target)) {
-        if (desktopOutsidePointerInFlightRef.current) {
-          return;
-        }
-        setIsComposerFocused(false);
-      }
-    };
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!isInsideDesktopComposerFocusScope(event.target)) {
-        desktopOutsidePointerInFlightRef.current = true;
-        if (desktopOutsidePointerReleaseTimeoutRef.current !== null) {
-          window.clearTimeout(desktopOutsidePointerReleaseTimeoutRef.current);
-          desktopOutsidePointerReleaseTimeoutRef.current = null;
-        }
-      }
-    };
-    const finishOutsidePointerInteraction = () => {
-      desktopOutsidePointerInFlightRef.current = false;
-      if (desktopOutsidePointerReleaseTimeoutRef.current !== null) {
-        window.clearTimeout(desktopOutsidePointerReleaseTimeoutRef.current);
-        desktopOutsidePointerReleaseTimeoutRef.current = null;
-      }
-      scheduleComposerCollapseCheck();
-    };
-    const handlePointerUp = () => {
-      if (!desktopOutsidePointerInFlightRef.current) return;
-      desktopOutsidePointerReleaseTimeoutRef.current = window.setTimeout(() => {
-        if (desktopOutsidePointerInFlightRef.current) {
-          finishOutsidePointerInteraction();
-        }
-      }, 0);
-    };
-    const handleClick = () => {
-      if (desktopOutsidePointerInFlightRef.current) {
-        finishOutsidePointerInteraction();
-      }
-    };
-
-    document.addEventListener("focusin", handleFocusIn, true);
-    document.addEventListener("pointerdown", handlePointerDown, true);
-    document.addEventListener("pointerup", handlePointerUp, true);
-    document.addEventListener("pointercancel", handlePointerUp, true);
-    document.addEventListener("click", handleClick);
-    return () => {
-      document.removeEventListener("focusin", handleFocusIn, true);
-      document.removeEventListener("pointerdown", handlePointerDown, true);
-      document.removeEventListener("pointerup", handlePointerUp, true);
-      document.removeEventListener("pointercancel", handlePointerUp, true);
-      document.removeEventListener("click", handleClick);
-      if (desktopOutsidePointerReleaseTimeoutRef.current !== null) {
-        window.clearTimeout(desktopOutsidePointerReleaseTimeoutRef.current);
-        desktopOutsidePointerReleaseTimeoutRef.current = null;
-      }
-      desktopOutsidePointerInFlightRef.current = false;
-    };
-  }, [isComposerFocused, isMobileViewport, scheduleComposerCollapseCheck, setIsComposerFocused]);
+  }, [isMobileViewport, setIsComposerFocused]);
 
   useEffect(() => {
     return () => {
@@ -4739,6 +4641,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     questionIndex={activePendingQuestionIndex}
                     onToggleOption={onSelectActivePendingUserInputOption}
                     onAdvance={onAdvanceActivePendingUserInput}
+                    onDismiss={onDismissActivePendingUserInput}
                   />
                 ) : !isComposerCollapsedMobile && showPlanFollowUpPrompt && activeProposedPlan ? (
                   <ComposerPlanFollowUpBanner
@@ -4754,6 +4657,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       questionIndex={activePendingQuestionIndex}
                       onToggleOption={onSelectActivePendingUserInputOption}
                       onAdvance={onAdvanceActivePendingUserInput}
+                      onDismiss={onDismissActivePendingUserInput}
                     />
                     {!isChoiceOnlyPendingQuestion ||
                     activePendingProgress?.activeQuestion?.multiSelect ? (
