@@ -216,9 +216,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "composer-collapse",
     title: "Compact composer",
     to: "/settings/general",
-    searchTerms: [
-      "composer rest resting unfocus blur focus click away scroll wheel conversation timeline shrink minimize",
-    ],
+    searchTerms: ["composer rest resting scroll wheel conversation timeline shrink minimize"],
   },
   {
     id: "provider-update-checks",

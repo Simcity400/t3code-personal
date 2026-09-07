@@ -267,13 +267,26 @@ machine.
   `docs/internals/personal-fork-updates.md`). This replaces the retired source-checkout
   updater pill: no local git resets or rebuilds, only the marker and the prompt.
 
-- **One-line composer (web)**: retired 2026-09-03 — upstream's "collapse the resting
-  composer" (#7855) collapses the desktop composer to a single line at rest and expands
-  it on focus, replacing the fork's `min-h-[1lh]` on the composer `ContentEditable` in
-  `apps/web/src/components/ComposerPromptEditor.tsx`. The composer is now one line only
-  while unfocused on an existing thread; focused and new-thread composers use upstream's
-  taller box. The mobile one-line composer (`composerEditorHeight.ts`) is unaffected and
-  still ships.
+- **Always-compact web composer** (2026-09-05; supersedes the 2026-09-03 retirement of the
+  fork's earlier `min-h-[1lh]` one-line composer): `apps/web/src/components/chat/ChatComposer.tsx`
+  uses upstream's resting single-line layout on every web viewport (`isComposerResting` is
+  constant) and longer drafts grow inside the editor. Upstream's collapse triggers went with
+  it: the `composerCollapseOnBlur` / `composerCollapseOnScroll` settings UI (the General →
+  "Compact composer" row is a fixed "Always compact" label; `settingsSearch.ts` matches), the
+  wheel-gesture collapse (`composerScrollGesture.ts` and `composerFooterLayout.ts` deleted)
+  and the legacy "Context window indicator" toggle. `composerSelectionHold.ts` stays even
+  though upstream deleted it in #10437, because the fork's outside-pointer handling still
+  reads it. Expect conflicts in `ChatComposer.tsx`, `SettingsPanels.tsx` and
+  `settingsSearch.ts` whenever upstream reworks composer collapsing (2026-09-07 sync: #10437
+  was dropped this way); keep the fork's side and drop upstream's collapse machinery.
+- **Codex resume keeps the historical turns** (2026-09-07 sync): upstream #10373 decodes only
+  `cwd`, `model` and `thread.id` from `thread/resume`, so an old turn carrying an error value
+  the generated schema does not know (`misalignment_policy_violation`) cannot fail the resume.
+  The fork also needs the resumed thread's `turns` and `path` for the historical collab prompt
+  links (nested Codex tasks), so `openCodexThread` in `CodexSessionRuntime.ts` decodes the
+  metadata strictly and each turn individually, dropping only the undecodable turns. Upstream's
+  two resume tests are kept with that shape (an empty `turns` instead of a bare metadata object)
+  next to the fork's side-chat fork test.
 - **Background tasks & "waiting on" in the Agents panel** (2026-09-03): the Agents
   right panel gained a **Waiting on** strip and a **Tasks** section beside the subagent
   roster, so a thread's background work is visible instead of buried. Tasks covers the
