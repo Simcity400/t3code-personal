@@ -17,6 +17,7 @@ concurrency:
 jobs:
   gate:
     name: Check published nightlies and missing builds
+    if: github.repository == 'Simcity400/t3code-personal'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:

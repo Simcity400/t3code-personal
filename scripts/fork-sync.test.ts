@@ -55,6 +55,7 @@ describe("published nightly sync", () => {
     git(fork, "config", "user.email", "test@example.invalid");
     git(fork, "rm", ".github/workflows/official.yml");
     write(fork, ".github/workflows/fork-release.yml", "name: Personal\n");
+    write(fork, ".github/workflows/fork-checks.yml", "name: Fork Checks\n");
     write(fork, "personal.txt", "preserve my feature\n");
     write(fork, "fork-upstream.json", '{"tag":"older"}\n');
     commit(fork);
@@ -82,7 +83,10 @@ describe("published nightly sync", () => {
     expect(NodeFS.readFileSync(NodePath.join(fork, "personal.txt"), "utf8")).toBe(
       "preserve my feature\n",
     );
-    expect(git(fork, "ls-files", ".github/workflows")).toBe(".github/workflows/fork-release.yml");
+    expect(git(fork, "ls-files", ".github/workflows").split("\n")).toEqual([
+      ".github/workflows/fork-checks.yml",
+      ".github/workflows/fork-release.yml",
+    ]);
     expect(
       JSON.parse(NodeFS.readFileSync(NodePath.join(fork, "fork-upstream.json"), "utf8")),
     ).toEqual({

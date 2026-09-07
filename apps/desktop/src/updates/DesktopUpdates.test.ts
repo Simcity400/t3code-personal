@@ -236,6 +236,34 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(NodeServices.layer));
   });
 
+  it.effect("checks a public GitHub feed without a GitHub login", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const resourcesPath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-public-updates-",
+        });
+        yield* fileSystem.writeFileString(
+          path.join(resourcesPath, "app-update.yml"),
+          "provider: github\nowner: Simcity400\nrepo: t3code-personal\nchannel: nightly\n",
+        );
+        const harness = makeHarness({ resourcesPath, mockUpdates: false });
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const updates = yield* DesktopUpdates.DesktopUpdates;
+            yield* updates.configure;
+            const result = yield* updates.check("manual");
+            assert.isTrue(result.checked);
+            assert.isTrue(result.state.enabled);
+            assert.equal(harness.checkCount(), 1);
+            assert.isTrue(Option.isNone(yield* updates.disabledReason));
+          }),
+        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("updates and broadcasts state from updater events", () => {
     const harness = makeHarness();
 

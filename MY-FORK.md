@@ -1,7 +1,7 @@
 # My personal T3 Code
 
-This is a private fork of [pingdotgg/t3code](https://github.com/pingdotgg/t3code) with
-personal customizations, backed up at
+This is an independently maintained fork of [pingdotgg/t3code](https://github.com/pingdotgg/t3code) with
+personal customizations, hosted at
 [Simcity400/t3code-personal](https://github.com/Simcity400/t3code-personal).
 
 ## Using it
@@ -17,8 +17,9 @@ personal customizations, backed up at
   Real merge conflicts stop publication and appear in the Fork Sync run; they require a
   reviewed resolution that preserves the personal features. There is no source-checkout
   updater or separate merge-help pill. See [the update architecture](docs/internals/personal-fork-updates.md).
-  For the private feed, the updater reads the existing `gh` login directly; it does not
-  put the GitHub token in the app or agent environment.
+  Builds made while the repository is public update without a GitHub login. Older
+  private-feed builds read the existing `gh` login directly; they do not put the
+  GitHub token in the app or agent environment.
   Two Actions-minute savers (owner, 2026-09-04): pushes that only touch
   `*.md` files do not start a release, and the Linux "Build WSL node-pty" job is off
   unless the repository variable `FORK_WSL_PTY` is `true` — the Windows build then ships
@@ -35,8 +36,10 @@ personal customizations, backed up at
 
 ## Setting up another computer
 
-1. Install Git and GitHub CLI, then run `gh auth login` so the private release can be
-   downloaded and the installed app can check for future updates.
+1. For a public release, download the installer for your architecture from this fork's
+   Releases page, as described in [the README](README.md#install-this-fork).
+   Alternatively, use the setup helper below: install Git and GitHub CLI, then run
+   `gh auth login`. The helper and older private-feed builds use that login.
 2. `git clone https://github.com/Simcity400/t3code-personal.git "T3 Code Personal"`
 3. Double-click `Setup T3 Code (My Version).cmd` in the clone. It downloads and
    installs the latest packaged personal release; it does not build another copy from
@@ -130,12 +133,12 @@ machine.
   device connections in `~\.t3\userdata`. **Caveat** for that case only: two apps
   sharing one profile must not run at the same time.
 - **One user-facing Windows app**: the installed personal Nightly build is the normal
-  launcher. A publish run after each push to `origin/main` builds a private Windows
+  launcher. A publish run after each push to `origin/main` builds a fork Windows
   release and surfaces it through the packaged app's update button — see **Get updates**
   above for which publisher runs it. Source
-  development commands must not be installed as Start Menu shortcuts. Because the
-  release repository is private, GitHub CLI must be signed in. Only electron-updater
-  receives that token; app backends and agents do not.
+  development commands must not be installed as Start Menu shortcuts. When the
+  build uses a private release feed, GitHub CLI must be signed in. Only electron-updater
+  receives that token; app backends and agents do not. Public-feed builds need no token.
 - **Directory launch**: `apps/desktop/scripts/start-electron.mjs` launches the app
   directory instead of `dist-electron/main.cjs`. With a bare entry file Electron has no
   package.json, so the app reported Electron's own version — the stage label fell back
@@ -227,8 +230,8 @@ machine.
   deleted. `Setup T3 Code (My Version).cmd` stays: a new machine still needs it once.
   `scripts/lib/personal-*.ts` stay: `apps/mobile/app.config.ts` and
   `fork-mobile-preview.yml` read them.
-- **Only the fork's own workflows**: the fork keeps fork-sync.yml, fork-release.yml
-  and fork-mobile-preview.yml. Upstream-only workflows require its runners and secrets,
+- **Only the fork's own workflows**: the fork keeps fork-sync.yml, fork-release.yml,
+  fork-mobile-preview.yml and fork-checks.yml. Upstream-only workflows require its runners and secrets,
   so sync removes them inside the merge commit. A collision with a fork-owned workflow
   stops the run for review. The packaged updater offers complete releases.
 - **Claude accounts that continue one thread** (2026-09-06): Claude instances gained a
@@ -496,5 +499,5 @@ as upstream's documentation, not as a description of this fork.
 
 ## Repo layout
 
-- `origin` → the private backup repo (push here)
+- `origin` → this fork (push here)
 - `upstream` → the official repo (pull updates from here, never push)

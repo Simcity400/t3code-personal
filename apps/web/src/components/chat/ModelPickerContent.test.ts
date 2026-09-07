@@ -54,9 +54,7 @@ describe("shouldIncludeModelPickerOption", () => {
 
   it.each([
     ["opencode", "error"],
-    ["opencode", "warning"],
     ["antigravity", "error"],
-    ["antigravity", "warning"],
   ] as const)(
     "keeps only the active synthetic %s row when the provider status is %s",
     (driver, status) => {
@@ -104,6 +102,23 @@ describe("shouldIncludeModelPickerOption", () => {
           activeModel,
         }),
       ).toBe(false);
+    },
+  );
+});
+
+describe("authenticated provider warnings", () => {
+  it.each(["opencode", "antigravity"])(
+    "keeps catalog models selectable for an authenticated %s account with a warning",
+    (driver) => {
+      const providerEntry = entry("warning", driver);
+      expect(
+        shouldIncludeModelPickerOption({
+          entry: providerEntry,
+          option: { slug: "catalog/model", name: "Catalog model" },
+          activeInstanceId: providerEntry.instanceId,
+          activeModel: "missing-model",
+        }),
+      ).toBe(true);
     },
   );
 });
@@ -229,7 +244,10 @@ describe("describeLockedOutInstance", () => {
   it("names the shared conversation home setting for a second Claude account", () => {
     expect(
       describeLockedOutInstance({
-        entry: { displayName: "Second account", driverKind: ProviderDriverKind.make("claudeAgent") },
+        entry: {
+          displayName: "Second account",
+          driverKind: ProviderDriverKind.make("claudeAgent"),
+        },
         lockedProvider: ProviderDriverKind.make("claudeAgent"),
         lockedDisplayName: "First account",
       }),

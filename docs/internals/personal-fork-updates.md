@@ -33,8 +33,8 @@ fork with its `main` checked out and current.
    `git fetch --no-tags https://github.com/pingdotgg/t3code.git refs/tags/<tag>` then
    `git merge --no-commit --no-ff FETCH_HEAD`.
 2. Delete upstream-only workflows inside the merge (`git rm` everything under
-   `.github/workflows` except `fork-sync.yml`, `fork-release.yml` and
-   `fork-mobile-preview.yml`). The fork's three workflows must come through the merge
+   `.github/workflows` except `fork-sync.yml`, `fork-release.yml`,
+   `fork-mobile-preview.yml` and `fork-checks.yml`). The fork's workflows must come through the merge
    unchanged: CI's later pushes cannot touch workflow files.
 3. Resolve each conflict so both sides survive: upstream's fix plus the fork
    customization MY-FORK.md describes for that area. When the fork retired a feature
@@ -61,6 +61,13 @@ On Windows, Electron's `app.runningUnderARM64Translation` selects ARM64 even whe
 an earlier update left the app running as x64 under emulation. Native x64 hosts
 continue to select x64. The shared private GitHub manifest remains compatible with
 the existing feed.
+
+The release build derives feed privacy from the repository's visibility. Builds
+made while the repository is public use anonymous updates; older private builds
+keep their authenticated feed until replaced. Keep publishing `latest.yml` as well
+as `nightly.yml` so those older installations can still upgrade. The blocked-sync
+notice is currently specific to authenticated private feeds; public builds use
+the Actions run to inspect sync failures.
 
 An older installed updater cannot receive this selection fix before downloading
 its first corrected build. An ARM user may therefore need to install that first

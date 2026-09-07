@@ -13,7 +13,12 @@ interface Release {
   assets?: ReadonlyArray<{ name: string; size: number }>;
 }
 const nightlyTag = /^v\d+\.\d+\.\d+-nightly\.\d{8}\.\d+$/;
-const forkWorkflows = new Set(["fork-sync.yml", "fork-release.yml", "fork-mobile-preview.yml"]);
+const forkWorkflows = new Set([
+  "fork-sync.yml",
+  "fork-release.yml",
+  "fork-mobile-preview.yml",
+  "fork-checks.yml",
+]);
 /** The marker branch the installed app reads when a sync stops (see markSyncBlocked). */
 export const SYNC_BLOCKED_BRANCH = "needs-merge-help";
 export const SYNC_BLOCKED_FILE = "fork-sync-status.json";

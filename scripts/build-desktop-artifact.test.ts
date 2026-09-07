@@ -342,6 +342,26 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         releaseType: "prerelease",
         channel: "nightly",
       });
+
+      const publicForkConfig = yield* resolveGitHubPublishConfig("nightly").pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                GITHUB_REPOSITORY: "Simcity400/t3code-personal",
+                T3CODE_DESKTOP_UPDATE_PRIVATE: "false",
+              },
+            }),
+          ),
+        ),
+      );
+      assert.deepStrictEqual(publicForkConfig, {
+        provider: "github",
+        owner: "Simcity400",
+        repo: "t3code-personal",
+        releaseType: "prerelease",
+        channel: "nightly",
+      });
     }),
   );
 

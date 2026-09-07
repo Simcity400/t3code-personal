@@ -3,6 +3,10 @@ rem Installs the latest packaged personal T3 Code release. It does not build or
 rem launch a second source version.
 setlocal
 
+set "INSTALLER_ARCH=x64"
+if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "INSTALLER_ARCH=arm64"
+if /i "%PROCESSOR_ARCHITEW6432%"=="ARM64" set "INSTALLER_ARCH=arm64"
+
 where gh >nul 2>&1 || (echo GitHub CLI is required. Install it, then run: gh auth login & goto :fail)
 gh auth status --hostname github.com >nul 2>&1 || (echo Sign in first by running: gh auth login & goto :fail)
 
@@ -16,7 +20,7 @@ if not defined RELEASE_TAG (
   echo No packaged personal T3 Code prerelease is available yet.
   goto :fail
 )
-gh release download "%RELEASE_TAG%" --repo Simcity400/t3code-personal --pattern "*.exe" --dir "%DOWNLOAD_DIR%" --clobber
+gh release download "%RELEASE_TAG%" --repo Simcity400/t3code-personal --pattern "*-%INSTALLER_ARCH%.exe" --dir "%DOWNLOAD_DIR%" --clobber
 if errorlevel 1 goto :fail
 
 set "INSTALLER="

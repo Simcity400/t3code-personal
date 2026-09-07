@@ -1,122 +1,100 @@
-# T3 Code
+﻿# T3 Code Personal
 
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
+A community fork of [T3 Code](https://github.com/pingdotgg/t3code), maintained by
+[Simcity400](https://github.com/Simcity400). It controls coding agents through a web,
+Electron desktop, or React Native mobile client. This fork is independently maintained
+and is not an official T3 Tools release.
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, and Google Antigravity. If they're set up on your computer, T3 Code can control them.
+It tracks published upstream nightlies and adds improvements for working with multiple
+accounts, side conversations, and background agents:
 
-## "Wait, what are you selling me?"
+- Separate [Codex](docs/user/providers-codex.md) and [Claude](docs/user/providers-claude.md)
+  accounts, with account setup from Settings and shared conversation history.
+- [Side chats](docs/user/side-chats.md) for branching a conversation while keeping the
+  main thread available.
+- [Agent transcripts](docs/user/agent-transcripts.md), background-task controls, and
+  per-agent context usage on desktop, web, and mobile.
 
-Nothing. We built T3 Code because we wanted the best possible development experience with agents. We were inspired by existing solutions like the Codex desktop app, Conductor, Claude Desktop and Cursor Glass, but none met our bar.
+See [MY-FORK.md](MY-FORK.md) for the maintained differences from upstream.
 
-We wanted something performant, remote-ready, and truly open. If we ever go the wrong direction, we want you to have everything you need to fork and build the editor that you want.
+## Install this fork
 
-## Installation
+### Windows
 
-> [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, Grok Build, OpenCode, and Antigravity. Install and authenticate at least one provider before use:
->
-> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
-> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
-> - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `agent login`
-> - Grok Build: install [Grok Build CLI](https://x.ai/cli) and run `grok login`
-> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
-> - Antigravity: enable it in Settings, then use **Install Antigravity** and **Sign in with Google**. No CLI is required.
+Download an installer from this fork's
+[Releases](https://github.com/Simcity400/t3code-personal/releases). Choose the newest
+published nightly and the installer matching your computer:
 
-### Try it out (install-free)
+| Computer            | Installer suffix |
+| ------------------- | ---------------- |
+| Intel or AMD 64-bit | `-x64.exe`       |
+| Windows on ARM      | `-arm64.exe`     |
 
-The easiest way to test T3 Code is to run the server in your terminal (requires Node.js 22.16+, 23.11+, or 24.10+):
+These are unsigned Windows builds. They use the **T3 Code (Nightly)** app name and
+the existing T3 Code installation/profile locations, so they can replace an existing
+installation. Back up your T3 data before switching between this fork and upstream;
+their database migrations differ.
 
-```bash
-npx t3@latest
-```
+Builds produced while the repository is public use a public update feed. Older builds
+from the private repository require `gh auth login` for updates; install a newer public
+build manually once to remove that requirement. The optional
+`Setup T3 Code (My Version).cmd` helper still requires an authenticated GitHub CLI.
 
-This will launch T3 Code's backend on your machine as well as the local web app to control your agents.
+### Web, macOS, and Linux
 
-Tip: Use `npx t3@latest --help` for the full CLI reference.
+Use the source instructions below. This fork's release workflow currently packages
+Windows only. `npx t3@latest`, the official package-manager installers, and downloads
+from t3.codes install upstream T3 Code, which has a different feature set.
 
-### Desktop app
+### Mobile
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
+The fork includes mobile source and a maintainer-operated iPhone preview pipeline.
+There is no public App Store or Google Play release of this fork. To build your own,
+follow the [mobile development guide](apps/mobile/README.md) and configure your own
+Expo project, app identifiers, and signing credentials. The official store apps are
+upstream clients and may not expose this fork's features.
 
-#### Windows (`winget`)
+## Run from source
 
-```bash
-winget install T3Tools.T3Code
-```
-
-#### macOS (Homebrew)
-
-```bash
-brew install --cask t3-code
-```
-
-#### Arch Linux (AUR)
-
-Stable:
-
-```bash
-yay -S t3code-bin
-```
-
-Nightly:
-
-```bash
-yay -S t3code-nightly-bin
-```
-
-The AUR packaging is maintained in this repository under [`packaging/aur`](./packaging/aur).
-
-## Some notes
-
-We are very very early in this project. Expect bugs.
-
-We are (mostly) not accepting contributions yet. Small fixes may be considered. Big features will not be.
-
-## Documentation
-
-Full docs live in [docs/](./docs). There's no docs site yet.
-
-- [Install and first run](./docs/user/install.md)
-- [Permission modes](./docs/user/permission-modes.md)
-- [Keyboard shortcuts](./docs/user/keybindings.md)
-- [Side chats](./docs/user/side-chats.md)
-- [Project settings](./docs/user/project-settings.md)
-- [Remote access from a phone or another machine](./docs/user/remote-access.md)
-- [Keeping app and server in sync](./docs/user/updating.md)
-- [Source control integrations](./docs/user/source-control.md)
-- Multiple accounts: [Codex](./docs/user/providers-codex.md) · [Claude](./docs/user/providers-claude.md)
-- [Run T3 Code as a background service](./docs/user/background-service.md)
-
-Building from source? Start at [docs/internals/overview.md](./docs/internals/overview.md).
-
-## If you REALLY want to contribute still.... read this first
+Use Node.js 24.13.1 or a compatible newer Node 24 release, as specified in
+[package.json](package.json).
 
 ### Install `vp`
 
-T3 Code uses Vite+ so you'll need to install the global `vp` command-line tool.
+This repository uses Vite+. Follow its [installation guide](https://viteplus.dev/guide/).
 
-#### macOS / Linux
-
-```bash
-curl -fsSL https://vite.plus | bash
-```
-
-#### Windows
-
-```bash
-irm https://vite.plus/ps1 | iex
-```
-
-Checkout their getting started guide for more information: https://viteplus.dev/guide/
-
-### Install dependencies
-
-```bash
+```sh
+git clone https://github.com/Simcity400/t3code-personal.git
+cd t3code-personal
 vp i
+vp run dev
 ```
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before reporting a bug or opening a PR.
+Open the one-time pairing URL printed by the dev runner. Use `vp run dev:desktop`
+to develop the Electron client. Authenticate a supported provider before starting a
+thread; the web and desktop apps offer account setup under **Settings > Providers**.
 
-Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
+T3 Connect is optional. Copy `.env.example` to `.env` before building to enable the
+upstream-hosted service using its public client configuration. Leave it absent to run
+without that integration. Provider credentials and local T3 state stay on the host;
+never commit them. See the [development runbook](docs/operations/development.md) for
+isolated state, build prerequisites, and focused checks.
 
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+## Documentation and support
+
+- [User guides](docs/README.md)
+- [Remote access](docs/user/remote-access.md)
+- [Fork updates and upstream sync](docs/internals/personal-fork-updates.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security reporting](.github/SECURITY.md)
+
+Report fork bugs and propose changes in
+[this repository's issues](https://github.com/Simcity400/t3code-personal/issues).
+Documentation retained from upstream may describe its release infrastructure or point
+to its downloads; use this README for fork installation and support.
+
+## License and attribution
+
+[MIT](LICENSE). T3 Code was created by T3 Tools Inc. and its contributors. This fork
+retains the upstream copyright and license notices. Bundled reference repositories
+and third-party assets retain their own licenses.

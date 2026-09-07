@@ -45,3 +45,18 @@ apps/desktop/resources/resource-monitor/
 # Personal fork: pnpm content-addressable store (a `v11/` tree) left in the repo
 # root by a local install. Machine-local build state, never part of a commit.
 .pnpm-store/
+.tmp/
+
+# Local credentials, signing material, and database snapshots.
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.p12
+*.pfx
+*.key
+*.keystore
+*.jks
+*.mobileprovision
+credentials.json
+auth.json
