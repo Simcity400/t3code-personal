@@ -84,7 +84,7 @@ Cursor's executable is `cursor-agent`, although its login command is
 To add a Claude or Codex account, select the computer in **Settings → Providers**
 and choose **Add account**. T3 prepares separate credentials and shared conversations
 for switching accounts within a thread, then starts sign-in. If the CLI is missing,
-setup installs it using npm on that computer. To authenticate an existing account
+setup runs its standalone installer on that computer. To authenticate an existing account
 again, select it and choose **Sign in**. The account is checked when sign-in finishes.
 For remote Codex sign-in, choose **Use device code** and follow the link and code
 shown in the panel on your own device.

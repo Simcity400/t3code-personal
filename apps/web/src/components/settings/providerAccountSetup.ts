@@ -13,7 +13,10 @@ import * as Schema from "effect/Schema";
 
 const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
-import { resolveOnboardingProviderLoginCommand } from "../../onboarding/providerReadiness.logic";
+import {
+  resolveOnboardingProviderInstallCommand,
+  resolveOnboardingProviderLoginCommand,
+} from "../../onboarding/providerReadiness.logic";
 
 export type AccountDriver = "codex" | "claudeAgent";
 
@@ -43,10 +46,15 @@ export function providerAccountLoginCommand(
       `The configured executable ${config.binaryPath} is unavailable. Update its binary path in provider settings.`,
     );
   }
-  const packageName = provider.driver === "codex" ? "@openai/codex" : "@anthropic-ai/claude-code";
+  const install = resolveOnboardingProviderInstallCommand(
+    provider.driver === "codex" ? "codex" : "claudeAgent",
+    platform,
+  );
+  // Installers may exit their shell and update PATH only for future processes.
+  // Run them in a child, then expose the native install directories before login.
   return platform === "windows"
-    ? `npm.cmd install -g ${packageName}; if ($LASTEXITCODE -eq 0) { ${login}; if ($LASTEXITCODE -eq 0) { exit } }`
-    : `npm install -g ${packageName} && ${login} && exit`;
+    ? `powershell.exe -NoProfile -Command '${install}'; if ($LASTEXITCODE -eq 0) { $env:PATH = (Join-Path $env:USERPROFILE '.local\\bin') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + $env:PATH; ${login}; if ($LASTEXITCODE -eq 0) { exit } }`
+    : `bash -o pipefail -c '${install}' && export PATH="$HOME/.local/bin:$PATH" && ${login} && exit`;
 }
 
 /** Reuse conversation storage, never another account's credentials or environment secrets. */

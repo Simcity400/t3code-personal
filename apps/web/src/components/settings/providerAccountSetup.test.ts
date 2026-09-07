@@ -125,14 +125,18 @@ describe("providerAccountLoginCommand", () => {
   it("installs missing providers and only proceeds to login when installation succeeds", () => {
     expect(
       providerAccountLoginCommand(provider("codex", false), DEFAULT_SERVER_SETTINGS, "linux", true),
-    ).toBe("npm install -g @openai/codex && codex login --device-auth && exit");
+    ).toBe(
+      `bash -o pipefail -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' && export PATH="$HOME/.local/bin:$PATH" && codex login --device-auth && exit`,
+    );
     expect(
       providerAccountLoginCommand(
         provider("claudeAgent", false),
         DEFAULT_SERVER_SETTINGS,
         "darwin",
       ),
-    ).toBe("npm install -g @anthropic-ai/claude-code && claude auth login && exit");
+    ).toBe(
+      `bash -o pipefail -c 'curl -fsSL https://claude.ai/install.sh | bash' && export PATH="$HOME/.local/bin:$PATH" && claude auth login && exit`,
+    );
   });
 
   it("preserves failures in Windows terminals and uses application shims", () => {
@@ -142,10 +146,12 @@ describe("providerAccountLoginCommand", () => {
       "windows",
     );
     expect(command).toContain(
-      "npm.cmd install -g @anthropic-ai/claude-code; if ($LASTEXITCODE -eq 0)",
+      "powershell.exe -NoProfile -Command 'irm https://claude.ai/install.ps1 | iex'; if ($LASTEXITCODE -eq 0)",
     );
     expect(command).toContain("Get-Command claude -CommandType Application");
     expect(command).toContain("auth login; if ($LASTEXITCODE -eq 0) { exit }");
+    expect(command).toContain("[Environment]::GetEnvironmentVariable('Path', 'User')");
+    expect(command).toContain("Join-Path $env:USERPROFILE '.local\\bin'");
   });
 
   it("uses private file credentials for Codex shadow accounts", () => {
