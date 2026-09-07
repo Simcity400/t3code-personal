@@ -1,0 +1,6 @@
+# This gitlink is inherited from the vendored upstream reference. Declare it at
+# the repository root so Git tooling can traverse submodules without fetching it.
+[submodule "alchemy-reference"]
+	path = .repos/alchemy-effect/.vendor/alchemy
+	url = https://github.com/alchemy-run/alchemy.git
+	update = none
