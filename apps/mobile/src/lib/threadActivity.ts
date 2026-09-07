@@ -509,8 +509,6 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     isTaskActivity && typeof payload?.taskId === "string" && payload.taskId.length > 0
       ? payload.taskId
       : undefined;
-  const runtimeErrorMessage =
-    activity.kind === "runtime.error" ? asTrimmedString(payload?.message) : null;
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
@@ -550,12 +548,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const viewedImagePath = asTrimmedString(asRecord(payload?.data)?.imagePath);
   const commandOutput = commandPreview.command ? extractCommandOutputText(payload?.data) : null;
   const output = commandOutput ? stripTrailingExitCode(commandOutput).output : null;
-  if (runtimeErrorMessage) {
-    // Older servers persisted the useful reason only in payload.message and
-    // labelled every such row "Runtime error". Reading it here keeps mobile
-    // useful when paired to one of those environments and for existing rows.
-    entry.detail = runtimeErrorMessage;
-  } else if (!taskDetailAsLabel && output) {
+  if (!taskDetailAsLabel && output) {
     entry.detail = output;
   } else if (!taskDetailAsLabel && typeof payload?.detail === "string") {
     const detail = stripTrailingExitCode(payload.detail).output;
@@ -573,6 +566,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (isTaskActivity && typeof payload?.error === "string" && payload.error.trim()) {
     entry.detail = payload.error;
+  }
+  if (!entry.detail && (activity.kind === "runtime.error" || activity.kind === "runtime.warning")) {
+    const message = asTrimmedString(payload?.message);
+    if (message) entry.detail = message;
   }
   if (viewedImagePath) {
     entry.viewedImagePath = viewedImagePath;
@@ -988,9 +985,12 @@ function workEntryIcon(entry: DerivedWorkLogEntry): ThreadFeedActivity["icon"] {
 function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
   if (entry.agentSpawn) return agentSpawnExpandedBody(entry.agentSpawn);
   const blocks: string[] = [];
+  const visibleLabel = workEntryRowLabel(entry, true).trim();
   const appendBlock = (value: string | null | undefined) => {
     const trimmed = value?.trim();
-    if (trimmed && (entry.command || !blocks.includes(trimmed))) blocks.push(trimmed);
+    if (trimmed && (entry.command || (trimmed !== visibleLabel && !blocks.includes(trimmed)))) {
+      blocks.push(trimmed);
+    }
   };
 
   if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) {
@@ -1006,24 +1006,15 @@ function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
 }
 
 /**
- * A row only opens when its body says more than its collapsed line. A row
- * whose only detail is the single-line text it already shows (a runtime
- * warning, a task summary, a short command) has nothing to reveal.
- * Multi-line text still expands: the collapsed row truncates it to one line.
+ * Even single-line details can be truncated by the available screen width.
  * Cheap field checks come first so large tool payloads are not serialized
  * for every row (see the deferred-expansion test).
  */
-function workEntryHasExpandedBody(entry: WorkLogEntry, collapsedText: string): boolean {
+function workEntryCanExpand(entry: WorkLogEntry): boolean {
   if (entry.agentSpawn) return agentSpawnMembers(entry.agentSpawn).length > 0;
   if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) return true;
   if (entry.changedFiles?.some((path) => path.trim().length > 0)) return true;
-  const parts = [entry.rawCommand ?? entry.command, entry.detail]
-    .map((value) => value?.trim())
-    .filter((value): value is string => Boolean(value));
-  if (parts.length === 0) return false;
-  if (parts.length > 1 && new Set(parts).size > 1) return true;
-  const only = parts[0]!;
-  return only.includes("\n") || collapseWhitespace(only) !== collapseWhitespace(collapsedText);
+  return Boolean((entry.rawCommand ?? entry.command)?.trim() || entry.detail?.trim());
 }
 
 function collapseWhitespace(value: string): string {
@@ -1036,12 +1027,14 @@ function stripShellWrapper(value: string): string {
   return (match?.[1] ?? trimmed).trim();
 }
 
-/** The one-line text a collapsed work row shows. */
-export function workEntryRowLabel(entry: WorkLogEntry): string {
+/** Expanded rows retain detail formatting; commands stay in the separate body. */
+export function workEntryRowLabel(entry: WorkLogEntry, expanded = false): string {
   if (entry.agentSpawn) return agentSpawnLabel(entry.agentSpawn);
   const presentation = resolveWorkEntryToolPresentation(entry);
   if (presentation) return presentation.displayName;
+  if (expanded && entry.command?.trim()) return "Command";
   const preview = workEntryPreview(entry);
+  if (expanded) return preview?.trim() || workEntryHeading(entry);
   const compactPreview = preview === null ? null : collapseWhitespace(stripShellWrapper(preview));
   return compactPreview || workEntryHeading(entry);
 }
@@ -2355,7 +2348,7 @@ function toThreadFeedActivityEntry(
       turnId: entry.turnId,
       summary,
       detail,
-      canExpand: workEntryHasExpandedBody(entry, workEntryRowLabel(entry)),
+      canExpand: workEntryCanExpand(entry),
       getFullDetail,
       getCopyText,
       icon: workEntryIcon(entry),

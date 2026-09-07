@@ -1,8 +1,7 @@
-// @effect-diagnostics nodeBuiltinImport:off globalConsole:off - CI bootstrap runs before dependencies are installed.
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalDate:off - CI bootstrap runs before dependencies are installed.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import * as DateTime from "effect/DateTime";
 
 interface Release {
   tag_name: string;
@@ -279,7 +278,7 @@ if (import.meta.main) {
             : (cause?.reason ??
               "The sync run failed before a merge could be judged. Read the run log."),
         runUrl: process.env.FORK_SYNC_RUN_URL ?? null,
-        at: DateTime.formatIso(DateTime.nowUnsafe()),
+        at: new Date().toISOString(),
       }),
     );
   } else if (process.argv[2] === "verify-release") {

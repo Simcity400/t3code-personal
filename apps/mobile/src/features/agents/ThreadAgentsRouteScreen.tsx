@@ -255,6 +255,9 @@ function ThreadAgentsRouteScreenContent(_props: ThreadAgentsRouteScreenProps) {
           anchorMessageId={null}
           // Read-only transcript: nothing is ever submitted from this surface.
           submittedMessageId={null}
+          queuedMessages={[]}
+          dispatchingMessageId={null}
+          onEditPendingMessage={() => {}}
           contentInsetEndAdjustment={contentInsetEndAdjustment}
           contentTopInset={0}
           contentBottomInset={18}

@@ -70,6 +70,19 @@ describe("published nightly sync", () => {
     NodeFS.rmSync(target, { recursive: true, force: true });
   });
 
+  it("loads in a clean checkout before dependencies are installed", () => {
+    const bootstrap = NodePath.join(directory, "fork-sync.mts");
+    NodeFS.copyFileSync(new URL("./fork-sync.ts", import.meta.url), bootstrap);
+    const result = NodeChildProcess.spawnSync(process.execPath, [bootstrap, "unknown"], {
+      cwd: directory,
+      encoding: "utf8",
+      env: { ...process.env, GITHUB_REPOSITORY: "example/fork" },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Expected check, merge, mark-blocked or verify-release.");
+    expect(result.stderr).not.toContain("ERR_MODULE_NOT_FOUND");
+  });
+
   it("merges the published tag while preserving fork features and excluding unreleased main", () => {
     write(upstream, "feature.txt", "published\n");
     write(upstream, ".github/workflows/new-official.yml", "name: New upstream job\n");

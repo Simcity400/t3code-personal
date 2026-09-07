@@ -3,12 +3,12 @@ import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
   DndContext,
-  PointerSensor,
   useSensor,
   useSensors,
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
+  type Modifier,
 } from "@dnd-kit/core";
 import { SortableContext, useSortable } from "@dnd-kit/sortable";
 import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
@@ -173,7 +173,12 @@ import {
   type SidebarSection,
 } from "./Sidebar.logic";
 import { resolveLocalCheckoutBranchMismatch } from "./BranchToolbar.logic";
-import { createSidebarCollisionDetection, createSidebarSortingStrategy } from "./Sidebar.drag";
+import {
+  createSidebarCollisionDetection,
+  createSidebarSortingStrategy,
+  restrictBelowSidebarLabel,
+} from "./Sidebar.drag";
+import { SidebarDragLifecycle, SidebarPointerSensor } from "./Sidebar.pointer";
 import { createSidebarListMotion } from "./Sidebar.motion";
 import {
   ThreadWorktreeIndicator,
@@ -204,7 +209,7 @@ import { Input } from "./ui/input";
 import {
   Combobox,
   ComboboxEmpty,
-  ComboboxInput,
+  ComboboxSearchInput,
   ComboboxItem,
   ComboboxList,
   ComboboxPopup,
@@ -277,11 +282,7 @@ function WorkingDuration(props: { startedAt: string | null }) {
     return () => window.clearInterval(id);
   }, [startedMs]);
   if (Number.isNaN(startedMs)) return null;
-  return (
-    <span className="font-mono tabular-nums">
-      {formatWorkingDurationLabel(Date.now() - startedMs)}
-    </span>
-  );
+  return <span className="tabular-nums">{formatWorkingDurationLabel(Date.now() - startedMs)}</span>;
 }
 
 const EMPTY_PROVIDER_ENTRIES: ReadonlyMap<string, ProviderInstanceEntry> = new Map();
@@ -541,7 +542,8 @@ function SortableSidebarMarker(props: {
       className={cn("list-none", props.className)}
       style={{
         transform: CSS.Translate.toString(transform),
-        transition,
+        // A newly revealed target must not slide from its hidden position.
+        transition: props.marker.endsWith("-placeholder") ? "none" : transition,
         visibility: transform?.scaleY === 0 ? "hidden" : undefined,
       }}
     >
@@ -550,8 +552,8 @@ function SortableSidebarMarker(props: {
   );
 }
 
-// Empty targets stay mounted before pickup so starting a drag never changes
-// the list's measured positions.
+// Empty targets stay measurable without reserving space at rest. The sorting
+// strategy opens their hint space during a drag.
 function SidebarSectionPlaceholder(props: {
   marker: "active-placeholder" | "settled-placeholder";
   label: string;
@@ -562,26 +564,25 @@ function SidebarSectionPlaceholder(props: {
     <SortableSidebarMarker
       marker={props.marker}
       data-testid={`sidebar-${props.marker}`}
-      className={cn(
-        "mx-0.5 flex h-9 items-center justify-center rounded-md border border-dashed border-transparent text-xs text-sidebar-muted-foreground/60",
-        props.showHint && "border-sidebar-foreground/25 text-sidebar-foreground/80",
-        props.isDropTarget && "border-primary/40 bg-primary/5 text-primary",
-      )}
+      className="relative mx-0.5 -mb-px h-0"
     >
-      {props.showHint ? props.label : null}
+      {props.showHint ? (
+        <div
+          className={cn(
+            "absolute inset-x-0 top-0 flex h-9 items-center justify-center rounded-md border border-dashed border-sidebar-foreground/25 text-xs text-sidebar-foreground/80",
+            props.isDropTarget && "border-primary/40 bg-primary/5 text-primary",
+          )}
+        >
+          {props.label}
+        </div>
+      ) : null}
     </SortableSidebarMarker>
   );
 }
 
-// Boundary labels appear during a drag in space the sorting strategy opens
-// below each marker (SIDEBAR_DRAG_LABEL_HEIGHT), so they never sit on a row.
-// The marker itself stays zero height, so nothing is reserved at rest and
-// pickup measurements are unchanged. They read at full strength so the
-// sections are easy to find, and the section under the lifted row takes the
-// accent. They paint above the lifted row so a card dragged across a
-// boundary never hides its label.
-// Matches the label's h-4 below.
-const SIDEBAR_DRAG_LABEL_HEIGHT = 16;
+// Zero-height markers reserve no label space at rest. During a drag the
+// sorting strategy opens 24px for a 16px label with 4px clearance on each side.
+const SIDEBAR_DRAG_LABEL_HEIGHT = 24;
 
 function SidebarDragBoundary(props: {
   marker: "pinned-header" | "pinned-divider";
@@ -593,16 +594,14 @@ function SidebarDragBoundary(props: {
     <SortableSidebarMarker
       marker={props.marker}
       data-testid={`sidebar-${props.marker}`}
-      className="pointer-events-none relative z-30 mx-0.5 h-0"
+      className="pointer-events-none relative mx-0.5 -mb-px h-0"
     >
       {props.visible ? (
-        <div className="absolute inset-x-2 top-0 flex h-4 items-center gap-1.5">
+        <div className="sidebar-drag-boundary-label absolute inset-x-2 top-1 flex h-4 items-center gap-2">
           <span
             className={cn(
-              "inline-flex h-4 shrink-0 items-center rounded-sm border bg-sidebar px-1.5 text-[10px] leading-none font-medium",
-              props.isDropTarget
-                ? "border-primary/40 text-primary"
-                : "border-sidebar-foreground/25 text-sidebar-foreground/80",
+              "shrink-0 text-xs font-medium",
+              props.isDropTarget ? "text-primary" : "text-sidebar-foreground/80",
             )}
           >
             {props.label}
@@ -632,10 +631,10 @@ function SidebarSectionHeader(props: {
 }) {
   const snoozed = props.marker === "snoozed-header";
   const className = cn(
-    "flex h-full w-full items-center gap-2 rounded-md border border-dashed border-transparent px-2 text-left text-xs font-medium",
+    "flex h-full w-full items-center gap-2 px-2 text-left text-xs font-medium",
     snoozed ? "text-blue-600 dark:text-blue-400" : "text-sidebar-muted-foreground/60",
     props.dragging && "text-sidebar-foreground/80",
-    props.isDropTarget && "border-primary/40 bg-primary/5 text-primary",
+    props.isDropTarget && "text-primary",
   );
   const content = (
     <>
@@ -1466,9 +1465,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           // number from reflowing as PR states stream in.
           "shrink-0 text-xs tabular-nums hover:underline",
           variant === "slim" && variantAction === "unsettle"
-            ? props.isActive
-              ? "text-secondary-label"
-              : cn("text-secondary-label transition-colors", settledPrHoverClass)
+            ? cn("text-secondary-label transition-colors", settledPrHoverClass)
             : prStatus.colorClass,
         )}
         aria-label={prStatus.tooltip}
@@ -3023,8 +3020,15 @@ export default function Sidebar() {
     },
     [unsnoozeThread],
   );
+  const threadListRef = useRef<HTMLUListElement | null>(null);
+  const dragLabelOffsetRef = useRef(0);
+  const restrictBelowPins = useCallback<Modifier>(
+    (args) => restrictBelowSidebarLabel(args, dragLabelOffsetRef.current),
+    [],
+  );
   const listMotionRef = useRef<ReturnType<typeof createSidebarListMotion> | null>(null);
   const attachListMotionRef = useCallback((node: HTMLUListElement | null) => {
+    threadListRef.current = node;
     listMotionRef.current?.dispose();
     listMotionRef.current = node === null ? null : createSidebarListMotion(node);
     listMotionRef.current?.update(false);
@@ -3033,16 +3037,35 @@ export default function Sidebar() {
   // Hold the chosen section and order until every key write arrives. This
   // also covers first-time ordering, which assigns keys to keyless neighbors.
   // A failed write, concurrent reorder, or membership change releases the hold.
-  const dndSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-  );
   const [dragState, setDragState] = useState<{
     readonly activeKey: string;
     readonly activeSection: SidebarSection;
     readonly occurredAt: string;
     readonly activationY: number | null;
+    readonly targetSection: SidebarSection | null;
   } | null>(null);
-  const [dragTargetSection, setDragTargetSection] = useState<SidebarSection | null>(null);
+  const dragTargetSection = dragState?.targetSection ?? null;
+  const dragSensorRef = useRef<SidebarPointerSensor | null>(null);
+  const finishThreadDrag = useCallback((started: boolean) => {
+    dragSensorRef.current = null;
+    if (started) {
+      listMotionRef.current?.release();
+      setDragState(null);
+    }
+  }, []);
+  const attachDragSensor = useCallback((sensor: SidebarPointerSensor) => {
+    dragSensorRef.current = sensor;
+  }, []);
+  const cancelThreadDrag = useCallback(() => {
+    dragSensorRef.current?.cancel();
+  }, []);
+  const dndSensors = useSensors(
+    useSensor(SidebarPointerSensor, {
+      distance: 6,
+      onAttach: attachDragSensor,
+      onFinish: finishThreadDrag,
+    }),
+  );
   const sectionByThreadKey = useMemo(() => {
     const map = new Map<string, SidebarSection>();
     const add = (list: readonly EnvironmentThreadShell[], section: SidebarSection) => {
@@ -3187,22 +3210,27 @@ export default function Sidebar() {
       if (activeSection === undefined) return;
       // Stop normal section motion before dnd-kit measures the picked-up row.
       listMotionRef.current?.suspend();
+      const list = threadListRef.current;
+      const header = list?.querySelector<HTMLElement>('[data-testid="sidebar-pinned-header"]');
+      if (list && header) {
+        const listRect = list.getBoundingClientRect();
+        const scale = list.offsetWidth > 0 ? listRect.width / list.offsetWidth : 1;
+        dragLabelOffsetRef.current =
+          header.getBoundingClientRect().top - listRect.top + SIDEBAR_DRAG_LABEL_HEIGHT * scale;
+      } else {
+        dragLabelOffsetRef.current = 0;
+      }
       setDragState({
         activeKey,
         activeSection,
+        targetSection: activeSection,
         occurredAt: new Date().toISOString(),
         activationY:
           event.activatorEvent instanceof PointerEvent ? event.activatorEvent.clientY : null,
       });
-      setDragTargetSection(activeSection);
     },
     [sectionByThreadKey],
   );
-  const handleThreadDragCancel = useCallback(() => {
-    listMotionRef.current?.release();
-    setDragState(null);
-    setDragTargetSection(null);
-  }, []);
   // Include every visible row in the measured order. Older servers disable
   // pickup on their rows without changing where those rows render.
   const sidebarListItems = useMemo((): readonly SidebarListItem[] => {
@@ -3228,9 +3256,7 @@ export default function Sidebar() {
     items.push(...pinnedRows);
     items.push({ kind: "marker", marker: "pinned-divider" });
     const activeRows = rowsOf(activeThreads, "active");
-    if (activeRows.length === 0) {
-      items.push({ kind: "marker", marker: "active-placeholder" });
-    }
+    items.push({ kind: "marker", marker: "active-placeholder" });
     items.push(...activeRows);
     if (snoozedThreads.length > 0) {
       items.push({ kind: "marker", marker: "snoozed-header" });
@@ -3238,9 +3264,7 @@ export default function Sidebar() {
     }
     items.push({ kind: "marker", marker: "settled-header" });
     const settledRows = rowsOf(renderedSettledThreads, "settled");
-    if (settledRows.length === 0) {
-      items.push({ kind: "marker", marker: "settled-placeholder" });
-    }
+    items.push({ kind: "marker", marker: "settled-placeholder" });
     items.push(...settledRows);
     return items;
   }, [
@@ -3251,6 +3275,14 @@ export default function Sidebar() {
     snoozedThreads.length,
     visibleSnoozedThreads,
   ]);
+  useEffect(() => {
+    if (
+      dragState !== null &&
+      !sidebarListItems.some((item) => item.kind === "thread" && item.key === dragState.activeKey)
+    ) {
+      cancelThreadDrag();
+    }
+  }, [cancelThreadDrag, dragState, sidebarListItems]);
   const listMotionPaused = dragState !== null;
   useLayoutEffect(() => {
     // Drag release clears the baseline, so its commit cannot replay the
@@ -3266,7 +3298,11 @@ export default function Sidebar() {
       const target = event.over
         ? resolveSidebarDropTarget(sidebarListItems, String(event.active.id), String(event.over.id))
         : null;
-      setDragTargetSection(target?.section ?? null);
+      setDragState((current) =>
+        current === null || current.activeKey !== String(event.active.id)
+          ? current
+          : { ...current, targetSection: target?.section ?? null },
+      );
     },
     [sidebarListItems],
   );
@@ -3320,18 +3356,22 @@ export default function Sidebar() {
     }),
     [threads],
   );
+  const draggedThreadKey = dragState?.activeKey;
+  const draggedFromSection = dragState?.activeSection;
+  const dragActivationY = dragState?.activationY;
   const dndCollisionDetection = useMemo(() => {
-    if (dragState === null) return createSidebarCollisionDetection(() => true);
-    const source = threadByKey.get(dragState.activeKey);
+    if (draggedThreadKey === undefined || draggedFromSection === undefined)
+      return createSidebarCollisionDetection(() => true);
+    const source = threadByKey.get(draggedThreadKey);
     if (source === undefined) return createSidebarCollisionDetection(() => false);
     return createSidebarCollisionDetection(
       (id) => {
-        const target = resolveSidebarDropTarget(sidebarListItems, dragState.activeKey, id);
+        const target = resolveSidebarDropTarget(sidebarListItems, draggedThreadKey, id);
         if (target === null) return false;
         return (
           planSidebarThreadDrop({
-            activeKey: dragState.activeKey,
-            activeSection: dragState.activeSection,
+            activeKey: draggedThreadKey,
+            activeSection: draggedFromSection,
             activePinned: source.pinnedAt != null,
             activeSettled: source.settledOverride === "settled",
             supportsSettlement:
@@ -3347,7 +3387,10 @@ export default function Sidebar() {
           }).kind !== "none"
         );
       },
-      { emptyPins: pinnedKeys.length === 0, activationY: dragState.activationY },
+      {
+        items: sidebarListItems,
+        activationY: dragActivationY ?? null,
+      },
     );
   }, [
     activeKeysById,
@@ -3355,7 +3398,9 @@ export default function Sidebar() {
     serverConfigs,
     activeKeys,
     activeReorderableThreadKeys,
-    dragState,
+    draggedThreadKey,
+    draggedFromSection,
+    dragActivationY,
     draggableThreadKeys,
     pinnedKeys,
     sidebarListItems,
@@ -3363,9 +3408,6 @@ export default function Sidebar() {
   ]);
   const handleThreadDragEnd = useCallback(
     (event: DragEndEvent) => {
-      listMotionRef.current?.release();
-      setDragState(null);
-      setDragTargetSection(null);
       const activeKey = String(event.active.id);
       const activeSection = sectionByThreadKey.get(activeKey);
       const target =
@@ -4351,48 +4393,34 @@ export default function Sidebar() {
                     align="start"
                     className="w-(--anchor-width) min-w-0 overflow-hidden"
                   >
-                    <div className="shrink-0 px-3 pt-2.5">
-                      <div className="relative -translate-y-px border-b border-border/70 pb-1.5 transition-colors focus-within:border-ring">
-                        <SearchIcon
-                          aria-hidden="true"
-                          className="pointer-events-none absolute top-1.5 left-0 size-4 shrink-0 text-muted-foreground/55"
-                        />
-                        <ComboboxInput
-                          aria-label="Search projects"
-                          className="[&_input]:h-6.5 [&_input]:ps-5 [&_input]:font-sans [&_input]:leading-6.5"
-                          inputClassName="rounded-none bg-transparent text-sm"
-                          placeholder="Search projects..."
-                          showTrigger={false}
-                          size="sm"
-                          unstyled
-                          value={projectScopeMenuState.query}
-                          onKeyDown={(event) => {
-                            if (
-                              event.defaultPrevented ||
-                              event.nativeEvent.isComposing ||
-                              event.ctrlKey ||
-                              event.altKey ||
-                              event.metaKey ||
-                              (event.key !== "ContextMenu" &&
-                                !(event.shiftKey && event.key === "F10"))
-                            ) {
-                              return;
-                            }
-                            // Combobox items use virtual focus: keyboard events
-                            // stay on this input, not on the highlighted option.
-                            const scopeKey = highlightedProjectScopeKeyRef.current;
-                            const project = scopeKey ? projectGroupByScopeKey.get(scopeKey) : null;
-                            if (project) handleProjectSettings(event, project);
-                          }}
-                          onChange={(event) =>
-                            dispatchProjectScopeMenu({
-                              type: "query-changed",
-                              query: event.target.value,
-                            })
-                          }
-                        />
-                      </div>
-                    </div>
+                    <ComboboxSearchInput
+                      aria-label="Search projects"
+                      placeholder="Search projects..."
+                      value={projectScopeMenuState.query}
+                      onKeyDown={(event) => {
+                        if (
+                          event.defaultPrevented ||
+                          event.nativeEvent.isComposing ||
+                          event.ctrlKey ||
+                          event.altKey ||
+                          event.metaKey ||
+                          (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))
+                        ) {
+                          return;
+                        }
+                        // Combobox items use virtual focus: keyboard events
+                        // stay on this input, not on the highlighted option.
+                        const scopeKey = highlightedProjectScopeKeyRef.current;
+                        const project = scopeKey ? projectGroupByScopeKey.get(scopeKey) : null;
+                        if (project) handleProjectSettings(event, project);
+                      }}
+                      onChange={(event) =>
+                        dispatchProjectScopeMenu({
+                          type: "query-changed",
+                          query: event.target.value,
+                        })
+                      }
+                    />
                     <ComboboxEmpty>No matching projects.</ComboboxEmpty>
                     <ComboboxList>
                       {(item: (typeof projectScopeItems)[number]) => {
@@ -4549,17 +4577,21 @@ export default function Sidebar() {
               <DndContext
                 sensors={dndSensors}
                 collisionDetection={dndCollisionDetection}
-                modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
+                modifiers={[
+                  restrictToVerticalAxis,
+                  restrictBelowPins,
+                  restrictToFirstScrollableAncestor,
+                ]}
                 onDragStart={handleThreadDragStart}
                 onDragOver={handleThreadDragOver}
-                onDragCancel={handleThreadDragCancel}
                 onDragEnd={handleThreadDragEnd}
               >
+                <SidebarDragLifecycle onUnmount={cancelThreadDrag} />
                 <SortableContext items={sortableIds} strategy={sidebarSortingStrategy}>
                   <ul
                     ref={attachListMotionRef}
                     role="list"
-                    className="relative flex flex-col gap-px pt-2"
+                    className="relative flex flex-col gap-px"
                   >
                     {(() => {
                       const renderThreadRowInner = (
@@ -4750,7 +4782,14 @@ export default function Sidebar() {
                                 key="active-placeholder"
                                 marker="active-placeholder"
                                 label="Active"
-                                showHint={from !== null}
+                                showHint={
+                                  from !== null &&
+                                  (activeThreads.length === 0 ||
+                                    (from === "active" &&
+                                      activeThreads.length === 1 &&
+                                      dragTargetSection !== null &&
+                                      dragTargetSection !== "active"))
+                                }
                                 isDropTarget={dragTargetSection === "active"}
                               />,
                             );
@@ -4797,7 +4836,14 @@ export default function Sidebar() {
                                 key="settled-placeholder"
                                 marker="settled-placeholder"
                                 label="Settled"
-                                showHint={from !== null && from !== "settled"}
+                                showHint={
+                                  from !== null &&
+                                  (renderedSettledThreads.length === 0 ||
+                                    (from === "settled" &&
+                                      renderedSettledThreads.length === 1 &&
+                                      dragTargetSection !== null &&
+                                      dragTargetSection !== "settled"))
+                                }
                                 isDropTarget={dragTargetSection === "settled"}
                               />,
                             );
