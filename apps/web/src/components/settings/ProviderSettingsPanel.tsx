@@ -75,10 +75,12 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
+import { AddProviderAccountDialog } from "./AddProviderAccountDialog";
 import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
+import { ProviderAccountSignIn } from "./ProviderAccountSignIn";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
 import {
@@ -570,6 +572,7 @@ export function EnvironmentProviderSettings({
   });
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
+  const [isAddAccountDialogOpen, setIsAddAccountDialogOpen] = useState(false);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
     targetInstanceId ?? null,
   );
@@ -912,6 +915,14 @@ export function EnvironmentProviderSettings({
               readOnly={readOnly}
               onEnable={() => updateProviderInstance(row, { ...row.instance, enabled: true })}
             />
+          ) : mode === "editor" && (row.driver === "codex" || row.driver === "claudeAgent") ? (
+            <ProviderAccountSignIn
+              key={`${environmentId}:${row.instanceId}`}
+              environmentId={environmentId}
+              environmentLabel={environmentLabel}
+              provider={liveProvider}
+              readOnly={readOnly}
+            />
           ) : null
         }
         onUpdate={(next) => {
@@ -1008,6 +1019,9 @@ export function EnvironmentProviderSettings({
                   />
                   <TooltipPopup side="top">Refresh provider status</TooltipPopup>
                 </Tooltip>
+                <Button size="xs" variant="outline" onClick={() => setIsAddAccountDialogOpen(true)}>
+                  <PlusIcon /> Add account
+                </Button>
                 <Tooltip>
                   <TooltipTrigger
                     render={
@@ -1153,6 +1167,14 @@ export function EnvironmentProviderSettings({
           environmentId={environmentId}
           environmentLabel={environmentLabel}
           onOpenChange={setIsAddInstanceDialogOpen}
+        />
+      ) : null}
+      {isAddAccountDialogOpen && !readOnly ? (
+        <AddProviderAccountDialog
+          environmentId={environmentId}
+          environmentLabel={environmentLabel}
+          onClose={() => setIsAddAccountDialogOpen(false)}
+          onCreated={setSelectedInstanceId}
         />
       ) : null}
     </>

@@ -10,6 +10,10 @@ export const resolveCodexLaunchArgs = (
 export const codexLaunchArgv = (launchArgs?: string): ReadonlyArray<string> =>
   tokenizeCliArgs(launchArgs);
 
+/** Account overlays keep authentication private while reading one conversation database. */
+export const withCodexAccountLaunchArgs = (launchArgs: string, sharedHomePath: string): string =>
+  `${launchArgs} --config cli_auth_credentials_store=file --config ${JSON.stringify(`sqlite_home=${sharedHomePath}`)}`.trim();
+
 export function hasCodexModelCatalogOverride(launchArgs: string): boolean {
   const args = codexLaunchArgv(launchArgs);
   for (let index = 0; index < args.length; index += 1) {

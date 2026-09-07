@@ -146,6 +146,13 @@ describe("selectOnboardingProvidersByDriver", () => {
 });
 
 describe("resolveOnboardingProviderLoginCommand", () => {
+  it("uses the application rather than the policy-blocked PowerShell shim on Windows", () => {
+    expect(
+      resolveOnboardingProviderLoginCommand(readyCodex, DEFAULT_SERVER_SETTINGS, "windows"),
+    ).toBe(
+      "& (Get-Command codex -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source) login",
+    );
+  });
   it("uses the selected Codex account binary", () => {
     const provider = { ...readyCodex, instanceId: ProviderInstanceId.make("codex_work") };
 

@@ -51,7 +51,21 @@ type CodexRateLimitsProbe =
       readonly snapshot: CodexRateLimitSnapshot;
       readonly resetCredits: CodexResetCreditsSummary | null | undefined;
     }
-  | { readonly failure: string };
+  | { readonly failure: string; readonly authenticationFailed?: boolean };
+
+// JSON-RPC uses the same internal-error code for auth and network failures.
+// Only explicit credential rejection establishes that a saved account needs login.
+export function isCodexAuthenticationError(error: CodexErrors.CodexAppServerError): boolean {
+  return (
+    error._tag === "CodexAppServerRequestError" &&
+    /refresh_token_(?:revoked|reused|expired)|refresh token (?:was revoked|was already used|has expired)|have since logged out or signed in to another account|\b401 Unauthorized\b/i.test(
+      error.errorMessage,
+    )
+  );
+}
+
+const CODEX_SIGN_IN_MESSAGE =
+  "Codex credentials are no longer valid. Sign in again using this provider's configured Codex home directory.";
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
 
@@ -451,7 +465,10 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
         ),
         Effect.catch((error) =>
           Effect.logDebug("Codex rate-limit read failed.", { cause: error }).pipe(
-            Effect.as<CodexRateLimitsProbe>({ failure: codexRateLimitsFailureMessage(error) }),
+            Effect.as<CodexRateLimitsProbe>({
+              failure: codexRateLimitsFailureMessage(error),
+              authenticationFailed: isCodexAuthenticationError(error),
+            }),
           ),
         ),
       ),
@@ -625,10 +642,12 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         installed,
         version: null,
         status: "error",
-        auth: { status: "unknown" },
-        message: installed
-          ? `Codex app-server provider probe failed: ${error.message}.`
-          : "Codex CLI (`codex`) was not found on PATH.",
+        auth: { status: isCodexAuthenticationError(error) ? "unauthenticated" : "unknown" },
+        message: isCodexAuthenticationError(error)
+          ? CODEX_SIGN_IN_MESSAGE
+          : installed
+            ? `Codex app-server provider probe failed: ${error.message}.`
+            : "Codex CLI (`codex`) was not found on PATH.",
       },
     });
   }
@@ -652,7 +671,17 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   }
 
   const snapshot = probeResult.success.value;
-  const accountStatus = accountProbeStatus(snapshot.account);
+  const account = accountProbeStatus(snapshot.account);
+  const accountStatus =
+    snapshot.rateLimits &&
+    "failure" in snapshot.rateLimits &&
+    snapshot.rateLimits.authenticationFailed
+      ? {
+          status: "error" as const,
+          auth: { ...account.auth, status: "unauthenticated" as const },
+          message: CODEX_SIGN_IN_MESSAGE,
+        }
+      : account;
   const usageLimits =
     snapshot.account.account?.type === "apiKey"
       ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })

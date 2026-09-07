@@ -1,6 +1,44 @@
 import { assert, it } from "@effect/vitest";
 
-import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
+import * as CodexErrors from "effect-codex-app-server/errors";
+import {
+  applyPreferredCodexDefaultModel,
+  isCodexAuthenticationError,
+  mapCodexModelCapabilities,
+} from "./CodexProvider.ts";
+
+it("distinguishes rejected credentials from transient Codex failures", () => {
+  for (const errorMessage of [
+    "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.",
+    "Your refresh token was already used. Please sign in again.",
+    "Your refresh token has expired.",
+    "refresh_token_revoked",
+    "refresh_token_reused",
+    "refresh_token_expired",
+    "You have since logged out or signed in to another account.",
+    "failed to fetch codex rate limits: 401 Unauthorized",
+  ]) {
+    assert.isTrue(
+      isCodexAuthenticationError(
+        new CodexErrors.CodexAppServerRequestError({ code: -32603, errorMessage }),
+      ),
+    );
+  }
+  for (const errorMessage of [
+    "Failed to refresh token: connection timed out",
+    "failed to fetch codex rate limits: 503 Service Unavailable",
+    "Method not found",
+  ]) {
+    assert.isFalse(
+      isCodexAuthenticationError(
+        new CodexErrors.CodexAppServerRequestError({ code: -32603, errorMessage }),
+      ),
+    );
+  }
+  assert.isFalse(
+    isCodexAuthenticationError(new CodexErrors.CodexAppServerProcessExitedError({ code: 1 })),
+  );
+});
 
 it("maps current Codex model capability fields", () => {
   const capabilities = mapCodexModelCapabilities({

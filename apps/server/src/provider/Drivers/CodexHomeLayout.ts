@@ -48,15 +48,17 @@ function resolveHomePath(path: Path.Path, value: string | undefined): string {
 
 export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(function* (
   config: CodexSettings,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<CodexHomeLayout, never, Path.Path> {
   const path = yield* Path.Path;
-  const sharedHomePath = resolveHomePath(path, config.homePath);
+  const configuredHome = config.homePath.trim() || environment.CODEX_HOME?.trim();
+  const sharedHomePath = resolveHomePath(path, configuredHome);
   const shadowHomePath = config.shadowHomePath.trim();
   if (shadowHomePath.length === 0) {
     return {
       mode: "direct",
       sharedHomePath,
-      effectiveHomePath: config.homePath.trim().length > 0 ? sharedHomePath : undefined,
+      effectiveHomePath: configuredHome ? sharedHomePath : undefined,
       continuationKey: `codex:home:${sharedHomePath}`,
     };
   }

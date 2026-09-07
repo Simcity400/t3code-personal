@@ -179,6 +179,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           retainVerifiedSnapshot
             ? {
                 ...previous,
+                auth: { ...previous.auth, stale: true },
                 status: "warning",
                 message: `Could not verify provider status. Using the last successful check from ${previous.checkedAt}. ${probedSnapshot.message ?? "Please refresh to try again."}`,
               }

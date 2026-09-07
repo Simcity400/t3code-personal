@@ -41,6 +41,29 @@ const writeTextFile = Effect.fn("CodexHomeLayout.test.writeTextFile")(function* 
 
 it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   describe("resolveCodexHomeLayout", () => {
+    it.effect(
+      "uses the effective CODEX_HOME for direct and shadow continuation, with explicit settings taking precedence",
+      () =>
+        Effect.gen(function* () {
+          const homePath = yield* makeTempDir("t3code-inherited-home-");
+          const shadowHomePath = yield* makeTempDir("t3code-private-home-");
+          const environment = { CODEX_HOME: homePath };
+          const direct = yield* resolveCodexHomeLayout(decodeCodexSettings({}), environment);
+          const shadow = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ shadowHomePath }),
+            environment,
+          );
+          expect(direct.sharedHomePath).toBe(homePath);
+          expect(direct.effectiveHomePath).toBe(homePath);
+          expect(shadow.continuationKey).toBe(direct.continuationKey);
+          expect(shadow.effectiveHomePath).toBe(shadowHomePath);
+          const explicit = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: shadowHomePath }),
+            environment,
+          );
+          expect(explicit.sharedHomePath).toBe(shadowHomePath);
+        }),
+    );
     it.effect("uses direct CODEX_HOME when no shadow home is configured", () =>
       Effect.gen(function* () {
         const homePath = yield* makeTempDir("t3code-codex-home-");

@@ -29,6 +29,21 @@ const baseProviderSnapshot = {
 };
 
 describe("ServerProvider", () => {
+  it("preserves server-resolved conversation storage and accepts older continuation snapshots", () => {
+    const continuation = {
+      groupKey: "claude:home:/mounted/claude",
+      conversationHomePath: "/mounted/claude",
+    };
+    expect(decodeServerProvider({ ...baseProviderSnapshot, continuation }).continuation).toEqual(
+      continuation,
+    );
+    expect(
+      decodeServerProvider({
+        ...baseProviderSnapshot,
+        continuation: { groupKey: continuation.groupKey },
+      }).continuation,
+    ).toEqual({ groupKey: continuation.groupKey });
+  });
   it("defaults capability arrays when decoding provider snapshots", () => {
     const parsed = decodeServerProvider({
       instanceId: "codex",

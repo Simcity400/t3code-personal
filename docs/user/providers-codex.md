@@ -6,6 +6,22 @@ and custom binaries or environment variables.
 
 ## Use multiple accounts
 
+In the web or desktop app, open **Settings > Providers**, select the computer
+where you want to run agents, and choose **Add account > Codex**. Name the account
+and choose **Add account and sign in**. T3 creates a separate login directory and
+shares conversations with your default Codex account. If you already have separate
+conversation groups, choose which account's conversations to continue.
+
+Complete the ChatGPT sign-in. T3 checks the account when the sign-in finishes.
+If Codex is missing, the setup panel installs it with npm first; that computer
+needs npm available. For a remote computer, select the device-code option.
+
+The account appears in the model picker for compatible existing threads. Account
+setup belongs to the selected computer; repeat sign-in when adding the same account
+to another computer. You do not need to copy credentials between computers.
+
+### Custom directory setup
+
 A shared Codex home with a shadow home lets work and personal accounts continue
 the same threads. The accounts share Codex sessions and configuration while keeping
 their own login and available models.
