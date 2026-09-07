@@ -7,7 +7,28 @@ import {
   codexExecLaunchArgs,
   resolveCodexLaunchArgs,
   withCodexModelCatalogLaunchArgs,
+  withCodexAccountLaunchArgs,
 } from "./codexLaunchArgs.ts";
+
+describe("withCodexAccountLaunchArgs", () => {
+  it("keeps a shadow account's credentials private and shares the same database for sessions and helpers", () => {
+    const sharedHome = "C:\\Users\\Jane Doe\\.codex";
+    const configured = "--enable feature --config cli_auth_credentials_store=keyring";
+    const launchArgs = withCodexAccountLaunchArgs(configured, sharedHome);
+    const expected = [
+      "--enable",
+      "feature",
+      "--config",
+      "cli_auth_credentials_store=keyring",
+      "--config",
+      "cli_auth_credentials_store=file",
+      "--config",
+      `sqlite_home=${sharedHome}`,
+    ];
+    NodeAssert.deepEqual(codexAppServerArgs(launchArgs), ["app-server", ...expected]);
+    NodeAssert.deepEqual(codexExecLaunchArgs(launchArgs), expected);
+  });
+});
 
 describe("resolveCodexLaunchArgs", () => {
   it("uses T3CODE_CODEX_LAUNCH_ARGS before configured settings", () => {

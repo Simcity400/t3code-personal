@@ -214,7 +214,7 @@ describe("makeManagedServerProvider", () => {
         for (let attempt = 0; attempt < 2; attempt++) {
           const snapshot = yield* provider.refresh;
           assert.strictEqual(snapshot.status, "warning");
-          assert.deepStrictEqual(snapshot.auth, enrichedSnapshot.auth);
+          assert.deepStrictEqual(snapshot.auth, { ...enrichedSnapshot.auth, stale: true });
           assert.deepStrictEqual(snapshot.models, enrichedSnapshot.models);
           assert.strictEqual(snapshot.checkedAt, enrichedSnapshot.checkedAt);
           assert.include(snapshot.message, enrichedSnapshot.checkedAt);

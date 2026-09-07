@@ -60,6 +60,8 @@ export type ServerProviderAuthStatus = typeof ServerProviderAuthStatus.Type;
 
 export const ServerProviderAuth = Schema.Struct({
   status: ServerProviderAuthStatus,
+  /** A failed check retained this account from an earlier successful probe. */
+  stale: Schema.optional(Schema.Boolean),
   type: Schema.optional(TrimmedNonEmptyString),
   label: Schema.optional(TrimmedNonEmptyString),
   email: Schema.optional(TrimmedNonEmptyString),
@@ -145,6 +147,8 @@ export type ServerProviderAvailability = typeof ServerProviderAvailability.Type;
 
 export const ServerProviderContinuation = Schema.Struct({
   groupKey: TrimmedNonEmptyString,
+  /** Server-resolved conversation storage used when adding an account to this group. */
+  conversationHomePath: Schema.optional(TrimmedNonEmptyString),
 });
 export type ServerProviderContinuation = typeof ServerProviderContinuation.Type;
 

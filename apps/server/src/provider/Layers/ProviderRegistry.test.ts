@@ -439,6 +439,53 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
+      it.effect("invalidates a saved account when the usage probe rejects its credentials", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                rateLimits: { failure: "Codex could not read usage.", authenticationFailed: true },
+              }),
+            ),
+          );
+          assert.strictEqual(status.status, "error");
+          assert.strictEqual(status.auth.status, "unauthenticated");
+          assert.strictEqual(status.auth.email, "test@example.com");
+          assert.include(status.message, "Sign in again");
+        }),
+      );
+
+      it.effect("keeps a saved account for transient usage failures and successful probes", () =>
+        Effect.gen(function* () {
+          for (const rateLimits of [
+            { failure: "Codex did not answer the usage request." },
+            undefined,
+          ]) {
+            const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+              Effect.succeed(makeCodexProbeSnapshot(rateLimits ? { rateLimits } : {})),
+            );
+            assert.strictEqual(status.status, "ready");
+            assert.strictEqual(status.auth.status, "authenticated");
+          }
+        }),
+      );
+
+      it.effect("reports rejected credentials from account reads as unauthenticated", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.fail(
+              new CodexErrors.CodexAppServerRequestError({
+                code: -32603,
+                errorMessage:
+                  "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.",
+              }),
+            ),
+          );
+          assert.strictEqual(status.auth.status, "unauthenticated");
+          assert.strictEqual(status.status, "error");
+        }),
+      );
+
       it.effect("returns unauthenticated when app-server requires OpenAI auth", () =>
         Effect.gen(function* () {
           const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>

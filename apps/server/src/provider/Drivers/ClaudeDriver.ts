@@ -157,6 +157,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         displayName,
         accentColor,
         continuationGroupKey,
+        conversationHomePath: homeLayout.conversationHomePath,
       });
 
       // One per instance: the status probe writes the model-scoped bucket
@@ -270,6 +271,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         enabled,
         snapshot,
         snapshotForCwd,
+        // Explicit refresh after login must not reuse the pre-login account probe.
+        refreshModels: () => Cache.invalidate(capabilitiesProbeCache, capabilitiesCacheKey),
         adapter,
         textGeneration,
       } satisfies ProviderInstance;
