@@ -16,7 +16,6 @@ import {
   ProviderApprovalDecision,
   ProviderApprovalPolicy,
   ProviderInteractionMode,
-  ProviderInterruptScope,
   ProviderRequestKind,
   ProviderSandboxMode,
   ProviderUserInputAnswers,
@@ -60,8 +59,6 @@ export const ProviderSessionStartInput = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
-  /** Canonical parent thread whose provider continuation should be forked. */
-  forkFromThreadId: Schema.optional(ThreadId),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
@@ -94,18 +91,7 @@ export type ProviderTurnStartResult = typeof ProviderTurnStartResult.Type;
 export const ProviderInterruptTurnInput = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
-  taskId: Schema.optional(TrimmedNonEmptyString),
-  scope: Schema.optional(ProviderInterruptScope),
-  resume: Schema.optional(Schema.Boolean),
-}).check(
-  Schema.makeFilter(
-    (input) => input.scope !== "tree" || (input.taskId === undefined && input.resume !== true),
-    { message: "Stop all requires the root thread and cannot resume agents." },
-  ),
-  Schema.makeFilter((input) => input.resume !== true || input.taskId !== undefined, {
-    message: "Resume requires a selected task.",
-  }),
-);
+});
 export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
 
 export const ProviderStopSessionInput = Schema.Struct({

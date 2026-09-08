@@ -12,6 +12,41 @@ const layer = it.layer(
 );
 
 layer("ProjectionThreadMessageRepository", (it) => {
+  it.effect(
+    "preserves child attribution across completion without counting it as parent output",
+    () =>
+      Effect.gen(function* () {
+        const repository = yield* ProjectionThreadMessageRepository;
+        const threadId = ThreadId.make("agent-transcript-thread");
+        const turnId = TurnId.make("agent-transcript-turn");
+        const message = {
+          messageId: MessageId.make("agent-transcript-message"),
+          threadId,
+          turnId,
+          role: "assistant" as const,
+          text: "Child output",
+          agentId: "child-1",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        };
+        yield* repository.appendStreaming(message);
+        const { agentId: _, ...completion } = message;
+        yield* repository.upsert({ ...completion, isStreaming: false });
+        const rows = yield* repository.listByThreadId({ threadId });
+        assert.equal(rows[0]?.agentId, "child-1");
+        assert.isFalse(
+          yield* repository.hasAssistantMessageForTurn({ threadId, turnId, streamingOnly: false }),
+        );
+        yield* repository.upsert({
+          ...completion,
+          messageId: MessageId.make("parent-output"),
+          isStreaming: false,
+        });
+        assert.isTrue(
+          yield* repository.hasAssistantMessageForTurn({ threadId, turnId, streamingOnly: false }),
+        );
+      }),
+  );
   it.effect("finds the latest live user-message time within one thread", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadMessageRepository;
@@ -229,44 +264,6 @@ layer("ProjectionThreadMessageRepository", (it) => {
       assert.equal(rows.length, 1);
       assert.equal(rows[0]?.text, "cleared");
       assert.deepEqual(rows[0]?.attachments, []);
-    }),
-  );
-
-  it.effect("persists agent attribution across streaming message upserts", () =>
-    Effect.gen(function* () {
-      const repository = yield* ProjectionThreadMessageRepository;
-      const threadId = ThreadId.make("thread-agent-message");
-      const messageId = MessageId.make("message-agent-message");
-      const createdAt = "2026-08-15T10:00:00.000Z";
-
-      yield* repository.upsert({
-        messageId,
-        threadId,
-        turnId: null,
-        role: "assistant",
-        text: "Checking",
-        agentId: "agent-1",
-        isStreaming: true,
-        createdAt,
-        updatedAt: createdAt,
-      });
-      yield* repository.upsert({
-        messageId,
-        threadId,
-        turnId: null,
-        role: "assistant",
-        text: "Checking complete",
-        isStreaming: false,
-        createdAt,
-        updatedAt: "2026-08-15T10:00:01.000Z",
-      });
-
-      const row = yield* repository.getByMessageId({ messageId });
-      assert.equal(row._tag, "Some");
-      if (row._tag === "Some") {
-        assert.equal(row.value.agentId, "agent-1");
-        assert.equal(row.value.text, "Checking complete");
-      }
     }),
   );
 

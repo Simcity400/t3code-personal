@@ -36,7 +36,6 @@ export interface PendingUserInputCardProps {
   readonly onToggleCollapsed: () => void;
   /** Renders a stop control on the collapsed bar, which replaces the composer. */
   readonly onStopThread?: () => void;
-  readonly onStopAll?: () => void;
   /**
    * 0 collapsed → 1 expanded. Slides the iOS overlay card down behind the
    * collapsed bar (inside a clipping window) on the UI thread; the host
@@ -197,16 +196,6 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           onPress={props.onStopThread}
         />
       ) : null}
-      {props.onStopAll ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Stop all"
-          className="min-h-11 justify-center px-3"
-          onPress={props.onStopAll}
-        >
-          <Text className="text-xs text-danger-foreground">Stop all</Text>
-        </Pressable>
-      ) : null}
     </View>
   ) : null;
   const card = renderCard ? (
@@ -332,16 +321,6 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           );
         })}
       </ScrollView>
-      {props.onStopAll ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Stop all"
-          className="min-h-11 items-center justify-center px-3"
-          onPress={props.onStopAll}
-        >
-          <Text className="text-sm text-danger-foreground">Stop all</Text>
-        </Pressable>
-      ) : null}
       <Pressable
         className={cn(
           "items-center justify-center rounded-2xl px-4 py-3.5",

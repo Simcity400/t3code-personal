@@ -52,26 +52,16 @@ import Migration0037 from "./Migrations/037_ProjectionTurnsKeysetIndex.ts";
 import Migration0038 from "./Migrations/038_ProjectionThreadsPinOrderKey.ts";
 import Migration0039 from "./Migrations/039_ProjectionProjectsDefaultThreadEnvMode.ts";
 import Migration0040 from "./Migrations/040_ProjectionProjectFaviconPath.ts";
-import Migration0041 from "./Migrations/041_ProjectionThreadMessageAgentId.ts";
-import Migration0042 from "./Migrations/042_ProjectionThreadSideChats.ts";
-// Fork note: ids 041/042 are already recorded in every fork database (the fork added
-// its own two migrations first). The migrator only runs ids greater than the highest
-// recorded one, so every upstream migration from AuthSessionClientConnection onwards is
-// renumbered here (+2) — otherwise it would silently never run on fork machines.
-// Upstream 041 -> 043, 042 -> 044, 043 -> 045, 044 -> 046, 045 -> 047, 046 -> 048,
-// 047 -> 049, 048 -> 052, 049 -> 053 (050/051 are fork-only). The files on disk carry
-// the fork ids, not upstream's.
-import Migration0043 from "./Migrations/043_AuthSessionClientConnection.ts";
-import Migration0044 from "./Migrations/044_ProjectionThreadLinkedPullRequest.ts";
-import Migration0045 from "./Migrations/045_ProjectionThreadsUnsettledAt.ts";
-import Migration0046 from "./Migrations/046_ClearAutomaticProjectModelDefaults.ts";
-import Migration0047 from "./Migrations/047_ProjectionProjectsAutoPull.ts";
-import Migration0048 from "./Migrations/048_RepairAutomaticSettlementTimestamps.ts";
-import Migration0049 from "./Migrations/049_ProjectionProjectIcon.ts";
-import Migration0050 from "./Migrations/050_CrossProviderRecoveryIndexes.ts";
-import Migration0051 from "./Migrations/051_ProjectionThreadsGoal.ts";
-import Migration0052 from "./Migrations/052_ProjectionThreadBranchPullRequest.ts";
-import Migration0053 from "./Migrations/053_ProjectionThreadsActiveOrderKey.ts";
+import Migration0041 from "./Migrations/041_AuthSessionClientConnection.ts";
+import Migration0042 from "./Migrations/042_ProjectionThreadLinkedPullRequest.ts";
+import Migration0043 from "./Migrations/043_ProjectionThreadsUnsettledAt.ts";
+import Migration0044 from "./Migrations/044_ClearAutomaticProjectModelDefaults.ts";
+import Migration0045 from "./Migrations/045_ProjectionProjectsAutoPull.ts";
+import Migration0046 from "./Migrations/046_RepairAutomaticSettlementTimestamps.ts";
+import Migration0047 from "./Migrations/047_ProjectionProjectIcon.ts";
+import Migration0048 from "./Migrations/048_ProjectionThreadBranchPullRequest.ts";
+import Migration0049 from "./Migrations/049_ProjectionThreadsActiveOrderKey.ts";
+import { ensureForkColumns, reconcileForkMigrations } from "./ForkCompatibility.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -124,19 +114,15 @@ export const migrationEntries = [
   [38, "ProjectionThreadsPinOrderKey", Migration0038],
   [39, "ProjectionProjectsDefaultThreadEnvMode", Migration0039],
   [40, "ProjectionProjectFaviconPath", Migration0040],
-  [41, "ProjectionThreadMessageAgentId", Migration0041],
-  [42, "ProjectionThreadSideChats", Migration0042],
-  [43, "AuthSessionClientConnection", Migration0043],
-  [44, "ProjectionThreadLinkedPullRequest", Migration0044],
-  [45, "ProjectionThreadsUnsettledAt", Migration0045],
-  [46, "ClearAutomaticProjectModelDefaults", Migration0046],
-  [47, "ProjectionProjectsAutoPull", Migration0047],
-  [48, "RepairAutomaticSettlementTimestamps", Migration0048],
-  [49, "ProjectionProjectIcon", Migration0049],
-  [50, "CrossProviderRecoveryIndexes", Migration0050],
-  [51, "ProjectionThreadsGoal", Migration0051],
-  [52, "ProjectionThreadBranchPullRequest", Migration0052],
-  [53, "ProjectionThreadsActiveOrderKey", Migration0053],
+  [41, "AuthSessionClientConnection", Migration0041],
+  [42, "ProjectionThreadLinkedPullRequest", Migration0042],
+  [43, "ProjectionThreadsUnsettledAt", Migration0043],
+  [44, "ClearAutomaticProjectModelDefaults", Migration0044],
+  [45, "ProjectionProjectsAutoPull", Migration0045],
+  [46, "RepairAutomaticSettlementTimestamps", Migration0046],
+  [47, "ProjectionProjectIcon", Migration0047],
+  [48, "ProjectionThreadBranchPullRequest", Migration0048],
+  [49, "ProjectionThreadsActiveOrderKey", Migration0049],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -173,7 +159,9 @@ export interface RunMigrationsOptions {
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
+  yield* reconcileForkMigrations(migrationManifest);
   const executedMigrations = yield* run({ loader: makeMigrationLoader(toMigrationInclusive) });
+  yield* ensureForkColumns();
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   yield* migrations.length === 0
     ? Effect.logDebug("Database schema is current")

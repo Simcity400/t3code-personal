@@ -8,12 +8,8 @@ import {
   hasDesktopAssets,
   hasReleaseChanges,
   latestNightly,
-  markSyncBlocked,
   NightlyMergeConflict,
   planSync,
-  resolveTagCommit,
-  SYNC_BLOCKED_BRANCH,
-  SYNC_BLOCKED_FILE,
   syncNightly,
 } from "./fork-sync.ts";
 
@@ -55,6 +51,7 @@ describe("published nightly sync", () => {
     git(fork, "config", "user.email", "test@example.invalid");
     git(fork, "rm", ".github/workflows/official.yml");
     write(fork, ".github/workflows/fork-release.yml", "name: Personal\n");
+    write(fork, ".github/workflows/fork-checks.yml", "name: Fork Checks\n");
     write(fork, "personal.txt", "preserve my feature\n");
     write(fork, "fork-upstream.json", '{"tag":"older"}\n');
     commit(fork);
@@ -67,6 +64,19 @@ describe("published nightly sync", () => {
     )
       throw new Error("Unexpected fixture directory");
     NodeFS.rmSync(target, { recursive: true, force: true });
+  });
+
+  it("loads in a clean checkout before dependencies are installed", () => {
+    const bootstrap = NodePath.join(directory, "fork-sync.mts");
+    NodeFS.copyFileSync(new URL("./fork-sync.ts", import.meta.url), bootstrap);
+    const result = NodeChildProcess.spawnSync(process.execPath, [bootstrap, "unknown"], {
+      cwd: directory,
+      encoding: "utf8",
+      env: { ...process.env, GITHUB_REPOSITORY: "example/fork" },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Expected check, merge or verify-release.");
+    expect(result.stderr).not.toContain("ERR_MODULE_NOT_FOUND");
   });
 
   it("merges the published tag while preserving fork features and excluding unreleased main", () => {
@@ -82,7 +92,10 @@ describe("published nightly sync", () => {
     expect(NodeFS.readFileSync(NodePath.join(fork, "personal.txt"), "utf8")).toBe(
       "preserve my feature\n",
     );
-    expect(git(fork, "ls-files", ".github/workflows")).toBe(".github/workflows/fork-release.yml");
+    expect(git(fork, "ls-files", ".github/workflows").split("\n")).toEqual([
+      ".github/workflows/fork-checks.yml",
+      ".github/workflows/fork-release.yml",
+    ]);
     expect(
       JSON.parse(NodeFS.readFileSync(NodePath.join(fork, "fork-upstream.json"), "utf8")),
     ).toEqual({
@@ -112,42 +125,6 @@ describe("published nightly sync", () => {
     expect(NodeFS.readFileSync(NodePath.join(fork, "fork-upstream.json"), "utf8")).toContain(
       "older",
     );
-  });
-  it("publishes the blocked marker on origin and leaves the checkout where it was", () => {
-    const main = git(fork, "rev-parse", "HEAD");
-    const status = {
-      repository: "Simcity400/t3code-personal",
-      tag: TAG,
-      commit: "0123456789abcdef0123456789abcdef01234567",
-      conflicts: ["feature.txt"],
-      reason: null,
-      runUrl: "https://example.invalid/run/1",
-      at: "2026-09-06T00:00:00.000Z",
-    };
-    const marker = markSyncBlocked(fork, status);
-    expect(git(fork, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
-    expect(git(fork, "rev-parse", "HEAD")).toBe(main);
-    expect(git(fork, "status", "--porcelain")).toBe("");
-    expect(git(upstream, "rev-parse", SYNC_BLOCKED_BRANCH)).toBe(marker);
-    expect(git(upstream, "rev-parse", `${SYNC_BLOCKED_BRANCH}^`)).toBe(main);
-    expect(
-      JSON.parse(git(upstream, "show", `${SYNC_BLOCKED_BRANCH}:${SYNC_BLOCKED_FILE}`)),
-    ).toEqual(status);
-    // A later stop replaces the marker instead of stacking on it.
-    const replaced = markSyncBlocked(fork, { ...status, conflicts: [] });
-    expect(git(upstream, "rev-parse", SYNC_BLOCKED_BRANCH)).toBe(replaced);
-    expect(git(upstream, "rev-parse", `${SYNC_BLOCKED_BRANCH}^`)).toBe(main);
-  });
-  it("resolves a lightweight or annotated tag to its commit", () => {
-    write(upstream, "feature.txt", "tagged\n");
-    commit(upstream);
-    const head = git(upstream, "rev-parse", "HEAD");
-    git(upstream, "tag", TAG);
-    expect(resolveTagCommit(upstream, TAG)).toBe(head);
-    git(upstream, "tag", "-d", TAG);
-    git(upstream, "tag", "-a", "-m", "annotated", TAG);
-    expect(resolveTagCommit(upstream, TAG)).toBe(head);
-    expect(resolveTagCommit(upstream, "v0.0.39-nightly.20260905.9999")).toBeNull();
   });
   it("does not overwrite a fork-owned workflow", () => {
     write(upstream, ".github/workflows/fork-release.yml", "name: Collision\n");

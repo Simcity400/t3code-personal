@@ -1,14 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { parseSideChatSlashCommand, serializeComposerFileLink } from "./composerTrigger.ts";
-
-describe("parseSideChatSlashCommand", () => {
-  it("extracts multiline prompts", () => {
-    expect(parseSideChatSlashCommand("/side first line\nsecond line")).toEqual({
-      prompt: "first line\nsecond line",
-    });
-  });
-});
+import { serializeComposerFileLink } from "./composerTrigger.ts";
 
 describe("serializeComposerFileLink", () => {
   it("uses the basename as the markdown label", () => {

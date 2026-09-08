@@ -35,7 +35,6 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderServiceError } from "../Errors.ts";
-import type { CrossProviderAgentBridge } from "../CrossProviderAgentBridge.ts";
 import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
@@ -43,7 +42,6 @@ import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
 export interface ProviderServiceShape {
-  readonly crossProviderAgents?: CrossProviderAgentBridge;
   /**
    * Start a provider session.
    */
@@ -91,11 +89,6 @@ export interface ProviderServiceShape {
    */
   readonly stopSession: (
     input: ProviderStopSessionInput,
-  ) => Effect.Effect<void, ProviderServiceError>;
-
-  /** Stop bridge-owned runtimes on one account before replacing its credentials. */
-  readonly stopCrossProviderSessions?: (
-    instanceId: ProviderInstanceId,
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**

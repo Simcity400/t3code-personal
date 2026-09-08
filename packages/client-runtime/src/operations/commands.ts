@@ -294,7 +294,6 @@ export const interruptThreadTurn: (input: InterruptThreadTurnInput) => CommandEf
   return yield* dispatch({
     ...input,
     type: "thread.turn.interrupt",
-    scope: input.scope ?? "self",
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

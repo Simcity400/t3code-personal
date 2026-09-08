@@ -606,8 +606,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
-            forkedFromThreadId: event.payload.forkedFromThreadId ?? null,
-            sideChatPromotedAt: event.payload.sideChatPromotedAt ?? null,
             linkedPullRequest: null,
             goal: null,
             branchPullRequest: null,
@@ -812,9 +810,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.branch !== undefined ? { branch: event.payload.branch } : {}),
             ...(event.payload.worktreePath !== undefined
               ? { worktreePath: event.payload.worktreePath }
-              : {}),
-            ...(event.payload.sideChatPromotedAt !== undefined
-              ? { sideChatPromotedAt: event.payload.sideChatPromotedAt }
               : {}),
             ...(event.payload.linkedPullRequest !== undefined
               ? { linkedPullRequest: event.payload.linkedPullRequest }
@@ -1532,7 +1527,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.turn-interrupt-requested": {
-          if (event.payload.taskId !== undefined || event.payload.turnId === undefined) {
+          if (event.payload.turnId === undefined) {
             return;
           }
           const existingTurn = yield* projectionTurnRepository.getByTurnId({

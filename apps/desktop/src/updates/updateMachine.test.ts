@@ -64,7 +64,6 @@ describe("updateMachine", () => {
       downloadedVersion: "1.1.0",
       releaseNotes: [{ version: "1.1.0", items: ["fix: queued update"], totalItems: 1 }],
       omittedReleaseCount: 2,
-      upstreamMerge: null,
       downloadPercent: 100,
     };
     const checking = reduceDesktopUpdateStateOnCheckStart(
@@ -99,7 +98,6 @@ describe("updateMachine", () => {
         downloadedVersion: "1.1.0",
         releaseNotes,
         omittedReleaseCount: 2,
-        upstreamMerge: null,
         downloadPercent: 100,
       },
       "1.1.0",
@@ -164,7 +162,6 @@ describe("updateMachine", () => {
         downloadedVersion: "1.1.0",
         releaseNotes,
         omittedReleaseCount: 2,
-        upstreamMerge: null,
         message: "old failure",
         errorContext: "download",
         canRetry: true,
@@ -192,7 +189,6 @@ describe("updateMachine", () => {
         availableVersion: "1.1.0",
         releaseNotes: [{ version: "1.1.0", items: ["fix: stale update"], totalItems: 1 }],
         omittedReleaseCount: 2,
-        upstreamMerge: null,
         message: "old failure",
         errorContext: "download",
         canRetry: true,
@@ -251,7 +247,6 @@ describe("updateMachine", () => {
         availableVersion: "1.1.0-nightly.1",
         releaseNotes: [{ version: "1.1.0-nightly.1", items: ["feat: old note"], totalItems: 1 }],
         omittedReleaseCount: 2,
-        upstreamMerge: null,
       },
       "2026-03-04T00:00:00.000Z",
     );

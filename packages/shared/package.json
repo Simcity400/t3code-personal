@@ -107,10 +107,6 @@
       "types": "./src/threadEnvMode.ts",
       "import": "./src/threadEnvMode.ts"
     },
-    "./threadWorkState": {
-      "types": "./src/threadWorkState.ts",
-      "import": "./src/threadWorkState.ts"
-    },
     "./t3ProjectFile": {
       "types": "./src/t3ProjectFile.ts",
       "import": "./src/t3ProjectFile.ts"

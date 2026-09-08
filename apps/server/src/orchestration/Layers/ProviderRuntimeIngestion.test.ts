@@ -10,7 +10,6 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
-  RuntimeTaskId,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -64,9 +63,6 @@ import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts"
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { selectSubagentTranscriptMessages } from "../../../../../packages/client-runtime/src/state/subagentRuntime.ts";
-import { reconcileCrossProviderExecutions } from "../../serverRuntimeStartup.ts";
-import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { makeSqlStatementCounter } from "../../../integration/SqlStatementCounter.integration.ts";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
@@ -145,9 +141,9 @@ function createProviderServiceHarness() {
       });
     },
     rollbackConversation: () => unsupported(),
+    setCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
+    clearCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
     uploadFeedback: () => unsupported(),
-    setCodexGoal: () => unsupported(),
-    clearCodexGoal: () => unsupported(),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub).pipe(
         Stream.flatMap(({ events, enqueued }) =>
@@ -240,10 +236,7 @@ async function waitForThread(
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    | OrchestrationEngineService
-    | ProviderRuntimeIngestionService
-    | ProjectionSnapshotQuery
-    | ProviderSessionDirectory,
+    OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -315,16 +308,6 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(ThreadPlanProgress.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
-      Layer.provideMerge(
-        Layer.succeed(ProviderSessionDirectory, {
-          getBinding: () => Effect.succeed(Option.none()),
-          getProvider: () => Effect.die("unused"),
-          upsert: () => Effect.die("unused"),
-          listBindings: () => Effect.die("unused"),
-          listThreadIds: () => Effect.die("unused"),
-          recordImportedTranscript: () => Effect.die("unused"),
-        }),
-      ),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer))),
       Layer.provideMerge(VcsProcess.layer),
@@ -419,219 +402,216 @@ describe("ProviderRuntimeIngestion", () => {
   }
 
   it.each([false, true])(
-    "isolates bridge transcript and lifecycle (streaming=%s)",
-    async (streaming) => {
-      const harness = await createHarness({
-        serverSettings: { enableLegacyTokenStreaming: streaming },
-      });
-      const before = (await harness.readModel()).threads[0]!;
+    "keeps child transcripts separate with streaming=%s",
+    async (enableLegacyTokenStreaming) => {
+      const harness = await createHarness({ serverSettings: { enableLegacyTokenStreaming } });
       const base = {
-        provider: ProviderDriverKind.make("claudeAgent"),
+        provider: ProviderDriverKind.make("codex"),
         threadId: asThreadId("thread-1"),
-        createdAt: "2026-09-05T01:00:00.000Z",
-        bridgeAgentId: "bridge",
+        turnId: asTurnId("parent-turn"),
+        createdAt: "2026-01-01T00:00:00.000Z",
       };
-      let sequence = 0;
-      const emit = (
-        event: Omit<LegacyProviderRuntimeEvent, keyof typeof base | "eventId"> & { type: string },
-      ) =>
-        harness.emit({
+      await harness.emitAndDrain([
+        { ...base, type: "turn.started", eventId: asEventId("parent-start") },
+        {
           ...base,
-          ...event,
-          eventId: asEventId(`bridge-${sequence++}`),
-        } as LegacyProviderRuntimeEvent);
-      emit({
-        type: "task.updated",
-        payload: {
-          taskId: "bridge",
-          taskType: "cross_provider",
-          executionOwner: "cross-provider",
-          agentKind: "agent",
-          title: "Child",
-          status: "running",
-          canStop: true,
-        },
-      });
-      emit({
-        type: "item.completed",
-        itemId: "prompt",
-        payload: {
-          itemType: "user_message",
-          agentId: "bridge",
-          detail: "Review this code. ".repeat(40),
-        },
-      });
-      for (const itemId of ["block-one", "block-two", undefined]) {
-        emit({
           type: "content.delta",
-          ...(itemId ? { itemId } : {}),
+          eventId: asEventId("parent-text"),
+          itemId: "answer",
+          payload: { streamKind: "assistant_text", delta: "Parent answer" },
+        },
+        {
+          ...base,
+          type: "content.delta",
+          eventId: asEventId("child-text"),
+          itemId: "answer",
+          payload: { agentId: "child-a", streamKind: "assistant_text", delta: "Child answer" },
+        },
+        {
+          ...base,
+          type: "item.completed",
+          eventId: asEventId("child-complete"),
+          itemId: "answer",
+          payload: { agentId: "child-a", itemType: "assistant_message", detail: "Child answer" },
+        },
+        {
+          ...base,
+          type: "item.completed",
+          eventId: asEventId("child-complete-duplicate"),
+          itemId: "answer",
+          payload: { agentId: "child-a", itemType: "assistant_message", detail: "Child answer" },
+        },
+        {
+          ...base,
+          type: "item.completed",
+          eventId: asEventId("child-snapshot"),
+          itemId: "answer",
+          payload: { agentId: "child-b", itemType: "assistant_message", detail: "Snapshot answer" },
+        },
+        {
+          ...base,
+          type: "item.completed",
+          eventId: asEventId("child-tool"),
+          itemId: "tool",
           payload: {
-            streamKind: "assistant_text",
-            delta: `Reply ${itemId ?? "no-id"}`,
-            agentId: "bridge",
+            agentId: "child-b",
+            itemType: "command_execution",
+            status: "completed",
+            detail: "pwd",
           },
-        });
-      }
-      emit({
-        type: "content.delta",
-        payload: { streamKind: "reasoning_text", delta: "Progress detail", agentId: "bridge" },
-      });
-      emit({
-        type: "user-input.requested",
-        requestId: "question",
-        payload: { agentId: "bridge", responseMode: "message", delivery: "agent", questions: [] },
-      });
-      emit({ type: "turn.proposed.delta", payload: { delta: "# Child plan", agentId: "bridge" } });
-      emit({
-        type: "turn.proposed.completed",
-        payload: { planMarkdown: "# Child plan", agentId: "bridge" },
-      });
-      emit({
-        type: "turn.plan.updated",
-        payload: { agentId: "bridge", plan: [{ step: "Review", status: "inProgress" }] },
-      });
-      emit({ type: "session.state.changed", payload: { state: "compacting", compacting: true } });
-      emit({ type: "thread.state.changed", payload: { state: "compacted" } });
-      emit({
-        type: "thread.token-usage.updated",
-        payload: { agentId: "bridge", usage: { usedTokens: 420 } },
-      });
-      emit({ type: "runtime.error", payload: { message: "Child error" } });
-      emit({ type: "runtime.warning", payload: { message: "Child warning" } });
-      emit({ type: "thread.metadata.updated", payload: { name: "Child title" } });
-      emit({ type: "turn.diff.updated", payload: { unifiedDiff: "child diff" } });
-      emit({ type: "session.exited", payload: {} });
-      emit({ type: "turn.completed", payload: { state: "completed" } });
-      emit({ type: "task.updated", payload: { taskId: "bridge", status: "completed" } });
-      await harness.drain();
-      const thread = (await harness.readModel()).threads[0]!;
-      expect(thread.session).toEqual(before.session);
-      expect(thread.title).toBe(before.title);
-      expect(thread.checkpoints).toEqual(before.checkpoints);
-      expect(thread.proposedPlans).toEqual([]);
-      expect(thread.messages).toHaveLength(3);
+        },
+        {
+          ...base,
+          type: "content.delta",
+          eventId: asEventId("child-thought"),
+          itemId: "thought",
+          payload: { agentId: "child-a", streamKind: "reasoning_text", delta: "Thinking" },
+        },
+      ]);
+      const active = (await harness.readModel()).threads.find(
+        (thread) => thread.id === base.threadId,
+      )!;
+      expect(active.session).toMatchObject({ status: "running", activeTurnId: base.turnId });
       expect(
-        selectSubagentTranscriptMessages(thread.messages, thread.activities, "bridge")[0]?.text,
-      ).toBe("Review this code. ".repeat(40));
+        active.messages
+          .filter((message) => message.agentId)
+          .map((message) => [message.agentId, message.text, message.streaming]),
+      ).toEqual([
+        ["child-a", "Child answer", false],
+        ["child-b", "Snapshot answer", false],
+      ]);
       expect(
-        thread.messages.map((message) => ({
-          text: message.text,
-          agentId: message.agentId,
-          streaming: message.streaming,
-        })),
-      ).toEqual(
-        ["Reply block-one", "Reply block-two", "Reply no-id"].map((text) => ({
-          text,
-          agentId: "bridge",
-          streaming: false,
-        })),
-      );
-      for (const kind of [
-        "turn.proposed.completed",
-        "turn.plan.updated",
-        "session.compacting",
-        "context-compaction",
-        "context-window.updated",
-        "runtime.error",
-        "runtime.warning",
-      ]) {
-        expect(thread.activities.find((activity) => activity.kind === kind)?.payload).toMatchObject(
-          { agentId: "bridge", bridgeAgentId: "bridge" },
-        );
-      }
-      // Reasoning deltas are dropped for children exactly as for the main
-      // thread; only completed items reach the transcript.
-      expect(thread.activities.some((activity) => activity.kind === "content.delta")).toBe(false);
+        active.activities.some(
+          (activity) =>
+            activity.kind === "tool.updated" &&
+            (activity.payload as Record<string, unknown>).agentId === "child-a",
+        ),
+      ).toBe(true);
       expect(
-        thread.activities.find((activity) => activity.kind === "user-input.requested")?.payload,
-      ).toMatchObject({ delivery: "agent" });
+        active.activities.some(
+          (activity) =>
+            activity.kind === "tool.completed" &&
+            (activity.payload as Record<string, unknown>).agentId === "child-b",
+        ),
+      ).toBe(true);
+      await harness.emitAndDrain([
+        {
+          ...base,
+          type: "item.completed",
+          eventId: asEventId("parent-complete"),
+          itemId: "answer",
+          payload: { itemType: "assistant_message", detail: "Parent answer" },
+        },
+        {
+          ...base,
+          type: "turn.completed",
+          eventId: asEventId("parent-end"),
+          payload: { state: "completed" },
+        },
+      ]);
+      const finished = (await harness.readModel()).threads.find(
+        (thread) => thread.id === base.threadId,
+      )!;
       expect(
-        thread.activities.find((activity) => activity.kind === "task.state")?.payload,
-      ).toMatchObject({ executionOwner: "cross-provider", status: "completed" });
-      const shell = await harness.readThreadShell();
-      expect(shell?.session).toEqual(before.session);
+        finished.messages
+          .filter((message) => message.role === "assistant" && !message.agentId)
+          .map((message) => message.text),
+      ).toEqual(["Parent answer"]);
+      expect(finished.session?.status).toBe("ready");
     },
   );
 
-  it("recovers lost child executions and questions idempotently from current projection state", async () => {
+  it("projects native goal notifications onto the thread and drops repeated snapshots", async () => {
     const harness = await createHarness();
-    const base = {
-      provider: ProviderDriverKind.make("claudeAgent"),
-      threadId: asThreadId("thread-1"),
-      createdAt: "2026-09-05T01:00:00.000Z",
-      bridgeAgentId: "bridge",
+    const goal = {
+      objective: "Ship the release",
+      status: "active" as "active" | "blocked",
+      tokenBudget: null,
+      tokensUsed: 1_000,
+      timeUsedSeconds: 30,
+      createdAt: 1_788_588_115,
+      updatedAt: 1_788_588_145,
     };
-    harness.emit({
-      ...base,
-      eventId: asEventId("recover-wrapper"),
-      type: "task.updated",
-      payload: {
-        taskId: "bridge",
-        taskType: "cross_provider",
-        executionOwner: "cross-provider",
-        status: "interrupted",
-        canStop: false,
-        canResume: true,
-      },
+    const goalEvent = (eventId: string, patch: Partial<typeof goal>, turnId?: string) => ({
+      type: "thread.goal.updated" as const,
+      eventId: asEventId(eventId),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      ...(turnId ? { turnId: asTurnId(turnId) } : {}),
+      payload: { goal: { ...goal, ...patch } },
     });
-    harness.emit({
-      ...base,
-      eventId: asEventId("recover-native"),
-      type: "task.updated",
-      payload: {
-        taskId: "bridge:native",
-        taskType: "subagent",
-        parentAgentId: "bridge",
-        status: "running",
-        title: "Native reviewer",
-        model: "child-model",
-        canStop: true,
-      },
-    });
-    harness.emit({
-      ...base,
-      eventId: asEventId("recover-question"),
-      type: "user-input.requested",
-      requestId: "recover-request",
-      payload: {
-        agentId: "bridge",
-        questions: [],
-        responseMode: "message",
-        delivery: "agent",
-      },
-    });
-    await harness.drain();
-    const before = (await harness.readModel()).threads[0]!;
-    await runtime!.runPromise(reconcileCrossProviderExecutions);
-    const after = await harness.readModel();
-    const thread = after.threads[0]!;
-    expect(thread.session).toEqual(before.session);
-    expect(
-      thread.activities.find(
-        (activity) =>
-          activity.kind === "task.state" && (activity.payload as { id: string }).id === "bridge",
-      )?.payload,
-    ).toMatchObject({ status: "interrupted", canResume: false, canStop: false });
-    expect(
-      thread.activities.find(
-        (activity) =>
-          activity.kind === "task.state" &&
-          (activity.payload as { id: string }).id === "bridge:native",
-      )?.payload,
-    ).toMatchObject({
-      status: "interrupted",
-      title: "Native reviewer",
-      model: "child-model",
-      parentAgentId: "bridge",
-      executionOwner: "cross-provider",
-    });
-    expect(
-      thread.activities.find((activity) => activity.kind === "user-input.resolved")?.payload,
-    ).toMatchObject({ cancelled: true });
-    await runtime!.runPromise(reconcileCrossProviderExecutions);
-    expect(await harness.readModel()).toEqual(after);
-  });
 
+    await harness.emitAndDrain([goalEvent("evt-goal-created", {})]);
+    const afterCreate = await harness.readModel();
+    expect(afterCreate.threads[0]?.goal).toEqual({ ...goal, turnId: null });
+    // The thread's recency is provider-turn driven, never goal bookkeeping.
+    expect(afterCreate.threads[0]?.updatedAt).toBe("2026-01-01T00:00:00.000Z");
+
+    // Codex re-sends the current goal on every resume; nothing to record.
+    await harness.emitAndDrain([goalEvent("evt-goal-resume-snapshot", {})]);
+    expect((await harness.readModel()).snapshotSequence).toBe(afterCreate.snapshotSequence);
+
+    await harness.emitAndDrain([
+      goalEvent(
+        "evt-goal-blocked",
+        { status: "blocked", tokensUsed: 5_000, updatedAt: 1_788_588_245 },
+        "turn-blocked",
+      ),
+    ]);
+    const afterBlock = await harness.readModel();
+    expect(afterBlock.threads[0]?.goal?.status).toBe("blocked");
+    expect(afterBlock.threads[0]?.goal?.turnId).toBe("turn-blocked");
+
+    // A refresh that Codex does not tie to a turn keeps pointing at the
+    // turn that stalled the goal, so its explanation survives a resume.
+    await harness.emitAndDrain([
+      goalEvent("evt-goal-usage", {
+        status: "blocked",
+        tokensUsed: 6_000,
+        updatedAt: 1_788_588_300,
+      }),
+    ]);
+    const afterRefresh = await harness.readModel();
+    expect(afterRefresh.threads[0]?.goal?.tokensUsed).toBe(6_000);
+    expect(afterRefresh.threads[0]?.goal?.turnId).toBe("turn-blocked");
+
+    // A status change without a turn (the user resumed) drops it.
+    await harness.emitAndDrain([
+      goalEvent("evt-goal-resumed", {
+        status: "active",
+        tokensUsed: 6_000,
+        updatedAt: 1_788_588_400,
+      }),
+    ]);
+    expect((await harness.readModel()).threads[0]?.goal?.turnId).toBeNull();
+
+    await harness.emitAndDrain([
+      {
+        type: "thread.goal.cleared",
+        eventId: asEventId("evt-goal-cleared"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:02.000Z",
+        threadId: asThreadId("thread-1"),
+        payload: {},
+      },
+    ]);
+    const afterClear = await harness.readModel();
+    expect(afterClear.threads[0]?.goal ?? null).toBeNull();
+
+    // A goalless thread resumes with a cleared snapshot too.
+    await harness.emitAndDrain([
+      {
+        type: "thread.goal.cleared",
+        eventId: asEventId("evt-goal-cleared-again"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:03.000Z",
+        threadId: asThreadId("thread-1"),
+        payload: {},
+      },
+    ]);
+    expect((await harness.readModel()).snapshotSequence).toBe(afterClear.snapshotSequence);
+  });
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -1318,140 +1298,6 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
-  it("ignores a delayed exit from a replaced provider account", async () => {
-    const harness = await createHarness();
-    const threadId = asThreadId("thread-1");
-    const replacementInstanceId = ProviderInstanceId.make("codex-work");
-
-    await harness.dispatch({
-      type: "thread.session.set",
-      commandId: CommandId.make("cmd-session-replacement-account"),
-      threadId,
-      session: {
-        threadId,
-        status: "ready",
-        providerName: "codex",
-        providerInstanceId: replacementInstanceId,
-        runtimeMode: "approval-required",
-        activeTurnId: null,
-        lastError: null,
-        updatedAt: "2026-01-01T00:00:02.000Z",
-      },
-      createdAt: "2026-01-01T00:00:02.000Z",
-    });
-
-    harness.emit({
-      type: "task.started",
-      eventId: asEventId("evt-task-started-replacement-account"),
-      provider: ProviderDriverKind.make("codex"),
-      providerInstanceId: replacementInstanceId,
-      threadId,
-      createdAt: "2026-01-01T00:00:02.000Z",
-      payload: {
-        taskId: RuntimeTaskId.make("task-replacement-account"),
-        taskType: "local_agent",
-        title: "Replacement account work",
-      },
-    });
-    await harness.drain();
-    expect((await harness.readThreadShell()).backgroundLiveness).toBe("working");
-
-    // The old account's process exits late; the thread already belongs to the
-    // replacement, so nothing about the live session may change.
-    harness.emit({
-      type: "session.exited",
-      eventId: asEventId("evt-session-exited-previous-account"),
-      provider: ProviderDriverKind.make("codex"),
-      providerInstanceId: ProviderInstanceId.make("codex-personal"),
-      threadId,
-      createdAt: "2026-01-01T00:00:03.000Z",
-    });
-    await harness.drain();
-
-    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
-    expect(thread?.session?.status).toBe("ready");
-    expect(thread?.session?.providerInstanceId).toBe(replacementInstanceId);
-    const shell = await harness.readThreadShell();
-    expect(shell.backgroundLiveness).toBe("working");
-    expect(shell.backgroundWait).toMatchObject({ label: "Replacement account work" });
-  });
-
-  it("settles the session when a provider reports only turn.aborted after an interrupt", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
-
-    harness.emit({
-      type: "turn.started",
-      eventId: asEventId("evt-turn-started-aborted-only"),
-      provider: ProviderDriverKind.make("opencode"),
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-aborted-only"),
-    });
-
-    await waitForThread(
-      harness.readModel,
-      (thread) =>
-        thread.session?.status === "running" &&
-        thread.session?.activeTurnId === "turn-aborted-only",
-      10_000,
-    );
-
-    harness.emit({
-      type: "turn.aborted",
-      eventId: asEventId("evt-turn-aborted-only"),
-      provider: ProviderDriverKind.make("opencode"),
-      createdAt: "2026-01-01T00:00:01.000Z",
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-aborted-only"),
-      payload: { reason: "Interrupted by user." },
-    });
-
-    await waitForThread(
-      harness.readModel,
-      (thread) => thread.session?.status === "interrupted" && thread.session?.activeTurnId === null,
-      10_000,
-    );
-  });
-
-  it("ignores turn.aborted for a superseded turn while a newer turn is active", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
-
-    harness.emit({
-      type: "turn.started",
-      eventId: asEventId("evt-turn-started-aborted-stale"),
-      provider: ProviderDriverKind.make("opencode"),
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-aborted-stale-new"),
-    });
-
-    await waitForThread(
-      harness.readModel,
-      (thread) =>
-        thread.session?.status === "running" &&
-        thread.session?.activeTurnId === "turn-aborted-stale-new",
-      10_000,
-    );
-
-    harness.emit({
-      type: "turn.aborted",
-      eventId: asEventId("evt-turn-aborted-stale"),
-      provider: ProviderDriverKind.make("opencode"),
-      createdAt: "2026-01-01T00:00:01.000Z",
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-aborted-stale-old"),
-      payload: { reason: "Interrupted by user." },
-    });
-
-    await harness.drain();
-    const readModel = await harness.readModel();
-    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    expect(thread?.session?.status).toBe("running");
-    expect(thread?.session?.activeTurnId).toBe("turn-aborted-stale-new");
-  });
-
   it("accepts claude turn lifecycle when seeded thread id is a synthetic placeholder", async () => {
     const harness = await createHarness();
     const seededAt = "2026-01-01T00:00:00.000Z";
@@ -1763,72 +1609,6 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(message?.text).toBe("hello world");
     expect(message?.streaming).toBe(false);
-  });
-
-  it("persists agent assistant messages without settling or replacing the parent turn", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
-    const turnId = asTurnId("turn-agent-transcript");
-    const agentId = RuntimeTaskId.make("agent-transcript-1");
-
-    harness.emit({
-      type: "turn.started",
-      eventId: asEventId("evt-agent-transcript-turn"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId,
-      payload: {},
-    });
-    await waitForThread(
-      harness.readModel,
-      (thread) => thread.latestTurn?.turnId === turnId && thread.latestTurn.state === "running",
-    );
-
-    harness.emit({
-      type: "content.delta",
-      eventId: asEventId("evt-agent-transcript-delta"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId,
-      itemId: asItemId("agent-message-1"),
-      payload: {
-        streamKind: "assistant_text",
-        delta: "child work",
-        agentId,
-      },
-    });
-    harness.emit({
-      type: "item.completed",
-      eventId: asEventId("evt-agent-transcript-complete"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId,
-      itemId: asItemId("agent-message-1"),
-      payload: {
-        itemType: "assistant_message",
-        status: "completed",
-        agentId,
-      },
-    });
-
-    const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.messages.some(
-        (message: ProviderRuntimeTestMessage) =>
-          message.id === "assistant:agent:agent-transcript-1:agent-message-1" && !message.streaming,
-      ),
-    );
-    const message = thread.messages.find(
-      (entry: ProviderRuntimeTestMessage) =>
-        entry.id === "assistant:agent:agent-transcript-1:agent-message-1",
-    );
-    expect(message?.text).toBe("child work");
-    expect(message?.agentId).toBe(agentId);
-    expect(thread.latestTurn?.turnId).toBe(turnId);
-    expect(thread.latestTurn?.state).toBe("running");
-    expect(thread.latestTurn?.assistantMessageId).toBeNull();
   });
 
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
@@ -2749,98 +2529,6 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.proposedPlans).toEqual([
       expect.objectContaining({ planMarkdown: "# Replacement plan", createdAt: replacementTime }),
     ]);
-  });
-
-  it("projects native goal notifications onto the thread and drops repeated snapshots", async () => {
-    const harness = await createHarness();
-    const goal = {
-      objective: "Ship the release",
-      status: "active" as "active" | "blocked",
-      tokenBudget: null,
-      tokensUsed: 1_000,
-      timeUsedSeconds: 30,
-      createdAt: 1_788_588_115,
-      updatedAt: 1_788_588_145,
-    };
-    const goalEvent = (eventId: string, patch: Partial<typeof goal>, turnId?: string) => ({
-      type: "thread.goal.updated" as const,
-      eventId: asEventId(eventId),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: "2026-01-01T00:00:01.000Z",
-      threadId: asThreadId("thread-1"),
-      ...(turnId ? { turnId: asTurnId(turnId) } : {}),
-      payload: { goal: { ...goal, ...patch } },
-    });
-
-    await harness.emitAndDrain([goalEvent("evt-goal-created", {})]);
-    const afterCreate = await harness.readModel();
-    expect(afterCreate.threads[0]?.goal).toEqual({ ...goal, turnId: null });
-    // The thread's recency is provider-turn driven, never goal bookkeeping.
-    expect(afterCreate.threads[0]?.updatedAt).toBe("2026-01-01T00:00:00.000Z");
-
-    // Codex re-sends the current goal on every resume; nothing to record.
-    await harness.emitAndDrain([goalEvent("evt-goal-resume-snapshot", {})]);
-    expect((await harness.readModel()).snapshotSequence).toBe(afterCreate.snapshotSequence);
-
-    await harness.emitAndDrain([
-      goalEvent(
-        "evt-goal-blocked",
-        { status: "blocked", tokensUsed: 5_000, updatedAt: 1_788_588_245 },
-        "turn-blocked",
-      ),
-    ]);
-    const afterBlock = await harness.readModel();
-    expect(afterBlock.threads[0]?.goal?.status).toBe("blocked");
-    expect(afterBlock.threads[0]?.goal?.turnId).toBe("turn-blocked");
-
-    // A refresh that Codex does not tie to a turn keeps pointing at the
-    // turn that stalled the goal, so its explanation survives a resume.
-    await harness.emitAndDrain([
-      goalEvent("evt-goal-usage", {
-        status: "blocked",
-        tokensUsed: 6_000,
-        updatedAt: 1_788_588_300,
-      }),
-    ]);
-    const afterRefresh = await harness.readModel();
-    expect(afterRefresh.threads[0]?.goal?.tokensUsed).toBe(6_000);
-    expect(afterRefresh.threads[0]?.goal?.turnId).toBe("turn-blocked");
-
-    // A status change without a turn (the user resumed) drops it.
-    await harness.emitAndDrain([
-      goalEvent("evt-goal-resumed", {
-        status: "active",
-        tokensUsed: 6_000,
-        updatedAt: 1_788_588_400,
-      }),
-    ]);
-    expect((await harness.readModel()).threads[0]?.goal?.turnId).toBeNull();
-
-    await harness.emitAndDrain([
-      {
-        type: "thread.goal.cleared",
-        eventId: asEventId("evt-goal-cleared"),
-        provider: ProviderDriverKind.make("codex"),
-        createdAt: "2026-01-01T00:00:02.000Z",
-        threadId: asThreadId("thread-1"),
-        payload: {},
-      },
-    ]);
-    const afterClear = await harness.readModel();
-    expect(afterClear.threads[0]?.goal ?? null).toBeNull();
-
-    // A goalless thread resumes with a cleared snapshot too.
-    await harness.emitAndDrain([
-      {
-        type: "thread.goal.cleared",
-        eventId: asEventId("evt-goal-cleared-again"),
-        provider: ProviderDriverKind.make("codex"),
-        createdAt: "2026-01-01T00:00:03.000Z",
-        threadId: asThreadId("thread-1"),
-        payload: {},
-      },
-    ]);
-    expect((await harness.readModel()).snapshotSequence).toBe(afterClear.snapshotSequence);
   });
 
   it("buffers assistant deltas with one lifecycle query per event until completion", async () => {
@@ -3922,7 +3610,6 @@ describe("ProviderRuntimeIngestion", () => {
         : undefined;
 
     expect(activity?.kind).toBe("runtime.error");
-    expect(activity?.summary).toBe("runtime activity exploded");
     expect(activityPayload?.message).toBe("runtime activity exploded");
   });
 
@@ -4316,68 +4003,6 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
-  it("stamps a subagent's context window row with its owning agent", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
-
-    harness.emit({
-      type: "thread.token-usage.updated",
-      eventId: asEventId("evt-agent-token-usage"),
-      provider: ProviderDriverKind.make("claudeAgent"),
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      payload: {
-        usage: { usedTokens: 90_000, maxTokens: 200_000 },
-        agentId: "agent-1",
-      },
-    });
-
-    const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.updated",
-      ),
-    );
-
-    const usageActivity = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.updated",
-    );
-    // Persisted, so a reload rebuilds this agent's meter; and named, so the
-    // parent's meter can skip it instead of reading a child's usage as its own.
-    expect(usageActivity?.payload).toMatchObject({
-      usedTokens: 90_000,
-      maxTokens: 200_000,
-      agentId: "agent-1",
-    });
-  });
-
-  it("stamps a subagent's plan row with its owning agent", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
-
-    harness.emit({
-      type: "turn.plan.updated",
-      eventId: asEventId("evt-agent-plan"),
-      provider: ProviderDriverKind.make("claudeAgent"),
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      payload: {
-        plan: [{ step: "Read the file", status: "inProgress" }],
-        agentId: "agent-1",
-      },
-    });
-
-    const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.kind === "turn.plan.updated",
-      ),
-    );
-
-    const planActivity = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.kind === "turn.plan.updated",
-    );
-    expect(planActivity?.payload).toMatchObject({ agentId: "agent-1" });
-  });
-
   it("projects Codex camelCase token usage payloads into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -4475,116 +4100,6 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
-  it("persists exactly one compaction row per thread, rewritten on each edge", async () => {
-    const harness = await createHarness();
-
-    harness.emit({
-      type: "session.state.changed",
-      eventId: asEventId("evt-compacting-start"),
-      provider: ProviderDriverKind.make("claudeAgent"),
-      threadId: asThreadId("thread-1"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      payload: { state: "compacting", reason: "status:compacting", compacting: true },
-    });
-
-    let thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.kind === "session.compacting",
-      ),
-    );
-    let rows = thread.activities.filter(
-      (activity: ProviderRuntimeTestActivity) => activity.kind === "session.compacting",
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.summary).toBe("Compacting context");
-    expect((rows[0]?.payload as Record<string, unknown>).compacting).toBe(true);
-    // A compacting session is busy, not resting: the composer reads this.
-    expect(thread.session?.status).toBe("running");
-
-    harness.emit({
-      type: "session.state.changed",
-      eventId: asEventId("evt-compacting-end"),
-      provider: ProviderDriverKind.make("claudeAgent"),
-      threadId: asThreadId("thread-1"),
-      createdAt: "2026-01-01T00:00:20.000Z",
-      payload: { state: "running", reason: "status:active", compacting: false },
-    });
-
-    thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) =>
-          activity.kind === "session.compacting" &&
-          (activity.payload as Record<string, unknown>).compacting === false,
-      ),
-    );
-    rows = thread.activities.filter(
-      (activity: ProviderRuntimeTestActivity) => activity.kind === "session.compacting",
-    );
-    // One row, rewritten — not a pair per compaction that no reader wants.
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.summary).toBe("Context compaction finished");
-  });
-
-  it("writes no compaction row for an unedged session state change", async () => {
-    const harness = await createHarness();
-
-    // `running` is republished on every heartbeat (Claude's api_retry does);
-    // a row per state change would be an activity stream of nothing else.
-    harness.emit({
-      type: "session.state.changed",
-      eventId: asEventId("evt-heartbeat"),
-      provider: ProviderDriverKind.make("claudeAgent"),
-      threadId: asThreadId("thread-1"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      payload: { state: "running", reason: "api_retry:3/10" },
-    });
-
-    const thread = await waitForThread(
-      harness.readModel,
-      (entry) => entry.session?.status === "running",
-    );
-    expect(
-      thread.activities.filter(
-        (activity: ProviderRuntimeTestActivity) => activity.kind === "session.compacting",
-      ),
-    ).toHaveLength(0);
-  });
-
-  it("persists a task's command and MCP server/tool on every task row", async () => {
-    const harness = await createHarness();
-
-    harness.emit({
-      type: "task.started",
-      eventId: asEventId("evt-task-detail"),
-      provider: ProviderDriverKind.make("claudeAgent"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-1"),
-      payload: {
-        taskId: RuntimeTaskId.make("task-monitor"),
-        description: "github/list_issues",
-        taskType: "monitor_mcp",
-        command: "pnpm test --watch",
-        server: "github",
-        tool: "list_issues",
-      },
-    });
-
-    const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-detail",
-      ),
-    );
-    const payload = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-detail",
-    )?.payload as Record<string, unknown>;
-    expect(payload.command).toBe("pnpm test --watch");
-    expect(payload.server).toBe("github");
-    expect(payload.tool).toBe("list_issues");
-    // monitor_mcp is background work, not an agent.
-    expect(payload.agentKind).toBe("background");
-  });
-
   it("projects compacted thread state into context compaction activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -4661,135 +4176,6 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activity?.payload).toMatchObject({ requestId: "message-compact" });
   });
 
-  it("tells the shell what the thread is waiting on, from the task rows themselves", async () => {
-    const harness = await createHarness();
-
-    harness.emit({
-      type: "task.started",
-      eventId: asEventId("evt-wait-lane"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      threadId: asThreadId("thread-1"),
-      payload: {
-        taskId: RuntimeTaskId.make("task-lane"),
-        taskType: "local_agent",
-        description: "merge-upstream",
-        title: "merge-upstream",
-      },
-    });
-    await harness.drain();
-
-    // The label is the provider's own words, carried end to end: nothing on
-    // this path knows what any particular task does.
-    let shell = await harness.readThreadShell();
-    expect(shell?.backgroundWait).toEqual({
-      count: 1,
-      label: "merge-upstream",
-      since: "2026-01-01T00:00:00.000Z",
-      monitorOnly: false,
-    });
-    // ... and the two-value field upstream's settlement and reaper read is
-    // still exactly in step with it.
-    expect(shell?.backgroundLiveness).toBe("working");
-    // Task rows are not the agent working: the session is untouched.
-    expect(shell?.session?.status).toBe("ready");
-    expect(shell?.session?.activeTurnId).toBeNull();
-
-    harness.emit({
-      type: "task.completed",
-      eventId: asEventId("evt-wait-lane-done"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: "2026-01-01T00:05:00.000Z",
-      threadId: asThreadId("thread-1"),
-      payload: {
-        taskId: RuntimeTaskId.make("task-lane"),
-        status: "completed",
-      },
-    });
-    await harness.drain();
-
-    shell = await harness.readThreadShell();
-    expect(shell?.backgroundWait).toBeNull();
-    expect(shell?.backgroundLiveness).toBeNull();
-  });
-
-  it("puts the compaction edges on the shell, where the sidebar can read them", async () => {
-    const harness = await createHarness();
-
-    harness.emit({
-      type: "session.state.changed",
-      eventId: asEventId("evt-compacting-start"),
-      provider: ProviderDriverKind.make("claudeAgent"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      threadId: asThreadId("thread-1"),
-      payload: { state: "compacting", reason: "status:compacting", compacting: true },
-    });
-    await harness.drain();
-
-    let shell = await harness.readThreadShell();
-    expect(shell?.compactingSince).toBe("2026-01-01T00:00:00.000Z");
-    // A compacting session is busy, not resting — the composer reads this and
-    // must keep refusing a fresh turn — while the thread still reads as a
-    // wait, because the agent is generating nothing.
-    expect(shell?.session?.status).toBe("running");
-    // And it stays out of the two-value field auto-settlement and the reaper
-    // read, whose meaning is "background TASKS are alive".
-    expect(shell?.backgroundLiveness).toBeNull();
-    expect(shell?.backgroundWait).toBeNull();
-
-    // Heartbeats republish `running` with no edge marker; they must not
-    // silently end the compaction.
-    harness.emit({
-      type: "session.state.changed",
-      eventId: asEventId("evt-compacting-heartbeat"),
-      provider: ProviderDriverKind.make("claudeAgent"),
-      createdAt: "2026-01-01T00:01:00.000Z",
-      threadId: asThreadId("thread-1"),
-      payload: { state: "running", reason: "api_retry:1/3" },
-    });
-    await harness.drain();
-    shell = await harness.readThreadShell();
-    expect(shell?.compactingSince).toBe("2026-01-01T00:00:00.000Z");
-
-    harness.emit({
-      type: "session.state.changed",
-      eventId: asEventId("evt-compacting-end"),
-      provider: ProviderDriverKind.make("claudeAgent"),
-      createdAt: "2026-01-01T00:02:00.000Z",
-      threadId: asThreadId("thread-1"),
-      payload: { state: "running", reason: "compact_boundary", compacting: false },
-    });
-    await harness.drain();
-    shell = await harness.readThreadShell();
-    expect(shell?.compactingSince).toBeNull();
-  });
-
-  it("does not advertise native stopping for synthetic Claude workflow members", async () => {
-    const harness = await createHarness();
-    for (const taskId of ["workflow", "workflow:wf:0"]) {
-      harness.emit({
-        type: "task.started",
-        eventId: asEventId(`stop-capability:${taskId}`),
-        provider: ProviderDriverKind.make("claudeAgent"),
-        createdAt: "2026-01-01T00:00:00.000Z",
-        threadId: asThreadId("thread-1"),
-        payload: { taskId, taskType: "local_agent" },
-      });
-    }
-    await harness.drain();
-    const thread = (await harness.readModel()).threads[0];
-    expect(
-      thread?.activities.find(
-        (row: ProviderRuntimeTestActivity) => row.id === "stop-capability:workflow",
-      )?.payload,
-    ).toMatchObject({ canStop: true });
-    expect(
-      thread?.activities.find(
-        (row: ProviderRuntimeTestActivity) => row.id === "stop-capability:workflow:wf:0",
-      )?.payload,
-    ).toMatchObject({ canStop: false });
-  });
-
   it("projects Codex task lifecycle chunks into thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -4804,7 +4190,6 @@ describe("ProviderRuntimeIngestion", () => {
       payload: {
         taskId: "turn-task-1",
         taskType: "plan",
-        prompt: "Review the exact diff and report findings only.",
       },
     });
 
@@ -4874,10 +4259,6 @@ describe("ProviderRuntimeIngestion", () => {
       progress?.payload && typeof progress.payload === "object"
         ? (progress.payload as Record<string, unknown>)
         : undefined;
-    const startedPayload =
-      started?.payload && typeof started.payload === "object"
-        ? (started.payload as Record<string, unknown>)
-        : undefined;
     const completedPayload =
       completed?.payload && typeof completed.payload === "object"
         ? (completed.payload as Record<string, unknown>)
@@ -4885,7 +4266,6 @@ describe("ProviderRuntimeIngestion", () => {
 
     expect(started?.kind).toBe("task.started");
     expect(started?.summary).toBe("Plan task started");
-    expect(startedPayload?.prompt).toBe("Review the exact diff and report findings only.");
     expect(progress?.kind).toBe("task.progress");
     expect(progressPayload?.detail).toBe("Code reviewer is validating the desktop rollout chunks.");
     expect(progressPayload?.summary).toBe(
@@ -4898,186 +4278,6 @@ describe("ProviderRuntimeIngestion", () => {
         (entry: ProviderRuntimeTestProposedPlan) => entry.id === "plan:thread-1:turn:turn-task-1",
       )?.planMarkdown,
     ).toBe("# Plan title");
-  });
-
-  it("keeps a late agent launch prompt when ordinary progress arrives", async () => {
-    const harness = await createHarness();
-
-    harness.emit({
-      type: "task.started",
-      eventId: asEventId("evt-late-prompt-started"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-1"),
-      payload: {
-        taskId: "child-1",
-        description: "Reviewer",
-      },
-    });
-    harness.emit({
-      type: "task.progress",
-      eventId: asEventId("evt-late-prompt"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: "2026-01-01T00:00:01.000Z",
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-1"),
-      payload: {
-        taskId: "child-1",
-        description: "Reviewer",
-        prompt: "Review the exact diff and report findings only.",
-      },
-    });
-    harness.emit({
-      type: "task.progress",
-      eventId: asEventId("evt-child-progress"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: "2026-01-01T00:00:02.000Z",
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-1"),
-      payload: {
-        taskId: "child-1",
-        description: "Reviewer",
-        summary: "Inspecting the mobile composer.",
-      },
-    });
-
-    const thread = await waitForThread(
-      harness.readModel,
-      (entry) =>
-        entry.activities.some(
-          (activity: ProviderRuntimeTestActivity) =>
-            activity.id === "task-prompt:thread-1:child-1:evt-late-prompt",
-        ) &&
-        entry.activities.some(
-          (activity: ProviderRuntimeTestActivity) =>
-            activity.id === "task-progress:thread-1:child-1",
-        ),
-    );
-    const prompt = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) =>
-        activity.id === "task-prompt:thread-1:child-1:evt-late-prompt",
-    );
-
-    expect(prompt?.payload).toMatchObject({
-      taskId: "child-1",
-      prompt: "Review the exact diff and report findings only.",
-    });
-  });
-
-  it("keeps one row per instruction and copies the provider prompt id", async () => {
-    const harness = await createHarness();
-
-    harness.emit({
-      type: "task.started",
-      eventId: asEventId("evt-followup-started"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-1"),
-      payload: { taskId: "child-1", description: "Reviewer" },
-    });
-    for (const [eventId, promptId, prompt, createdAt] of [
-      ["evt-launch-prompt", "spawn-1", "Review the exact diff.", "2026-01-01T00:00:01.000Z"],
-      ["evt-followup-prompt", "send-1", "Check again.", "2026-01-01T00:00:02.000Z"],
-      // Same text as the previous instruction: only the prompt id separates
-      // them, so both rows must survive.
-      ["evt-followup-prompt-2", "send-2", "Check again.", "2026-01-01T00:00:03.000Z"],
-      // Re-report of the launch instruction (historical recovery): same
-      // prompt id, so it upserts instead of adding a row.
-      ["evt-launch-prompt-again", "spawn-1", "Review the exact diff.", "2026-01-01T00:00:04.000Z"],
-    ] as const) {
-      harness.emit({
-        type: "task.progress",
-        eventId: asEventId(eventId),
-        provider: ProviderDriverKind.make("codex"),
-        createdAt,
-        threadId: asThreadId("thread-1"),
-        turnId: asTurnId("turn-1"),
-        payload: { taskId: "child-1", description: "Reviewer", prompt, promptId },
-      });
-    }
-
-    const promptActivityIds = (entry: { activities: ReadonlyArray<ProviderRuntimeTestActivity> }) =>
-      entry.activities
-        .filter((activity) => activity.id.startsWith("task-prompt:thread-1:child-1:"))
-        .map((activity) => activity.id);
-    // Four prompt events to drain, so this one waits longer than the default:
-    // the poll deadline is wall-clock and this suite shares a loaded machine.
-    const thread = await waitForThread(
-      harness.readModel,
-      (entry) => promptActivityIds(entry).length === 3,
-      10_000,
-    );
-
-    expect(promptActivityIds(thread).toSorted()).toEqual([
-      "task-prompt:thread-1:child-1:send-1",
-      "task-prompt:thread-1:child-1:send-2",
-      "task-prompt:thread-1:child-1:spawn-1",
-    ]);
-    expect(
-      thread.activities.find(
-        (activity: ProviderRuntimeTestActivity) =>
-          activity.id === "task-prompt:thread-1:child-1:send-2",
-      )?.payload,
-    ).toMatchObject({ taskId: "child-1", prompt: "Check again.", promptId: "send-2" });
-  });
-
-  it("persists a child agent's own user message as transcript evidence", async () => {
-    const harness = await createHarness();
-
-    harness.emit({
-      type: "item.completed",
-      eventId: asEventId("evt-child-user-item"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: "2026-01-01T00:00:01.000Z",
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-1"),
-      itemId: asItemId("child-user-1"),
-      payload: {
-        itemType: "user_message",
-        status: "completed",
-        agentId: "child-1",
-        data: {
-          type: "userMessage",
-          content: [{ type: "text", text: "Review the exact diff." }],
-        },
-      },
-    });
-    harness.emit({
-      type: "item.completed",
-      eventId: asEventId("evt-parent-user-item"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: "2026-01-01T00:00:02.000Z",
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-1"),
-      itemId: asItemId("parent-user-1"),
-      payload: {
-        itemType: "user_message",
-        status: "completed",
-        data: {
-          type: "userMessage",
-          content: [{ type: "text", text: "Parent prompt, already a message." }],
-        },
-      },
-    });
-
-    const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-child-user-item",
-      ),
-    );
-
-    expect(
-      thread.activities.find(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-child-user-item",
-      )?.payload,
-    ).toMatchObject({ itemType: "user_message", agentId: "child-1" });
-    expect(
-      thread.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-parent-user-item",
-      ),
-    ).toBe(false);
   });
 
   it("titles task activities with the task description, including on completion", async () => {

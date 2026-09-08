@@ -890,4 +890,3 @@ export * from "./threadDetail.ts";
 export * from "./threadReducer.ts";
 export * from "./threadShell.ts";
 export * from "./threadState.ts";
-export * from "./sideChat.ts";

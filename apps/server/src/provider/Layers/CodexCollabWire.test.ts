@@ -115,6 +115,11 @@ describe("codex multi-agent wire capture", () => {
 describe("routeCodexChildNotification", () => {
   it("maps child lifecycle to agent events", () => {
     for (const method of [
+      "item/agentMessage/delta",
+      "item/reasoning/textDelta",
+      "item/reasoning/summaryTextDelta",
+      "item/commandExecution/outputDelta",
+      "item/fileChange/outputDelta",
       "turn/started",
       "turn/completed",
       "thread/status/changed",
@@ -123,7 +128,6 @@ describe("routeCodexChildNotification", () => {
       "model/rerouted",
       "item/started",
       "item/completed",
-      "item/agentMessage/delta",
       "thread/closed",
       "error",
     ]) {
@@ -132,14 +136,7 @@ describe("routeCodexChildNotification", () => {
   });
 
   it("drops only enumerated child chatter", () => {
-    for (const method of [
-      "item/reasoning/textDelta",
-      "item/commandExecution/outputDelta",
-      "turn/plan/updated",
-      "thread/name/updated",
-      "thread/goal/updated",
-      "thread/goal/cleared",
-    ]) {
+    for (const method of ["turn/plan/updated", "thread/name/updated"]) {
       assert.equal(routeCodexChildNotification(method), "drop", method);
     }
   });
@@ -158,9 +155,9 @@ describe("routeCodexChildNotification", () => {
       "thread/closed",
       "thread/compacted",
       "thread/name/updated",
-      "thread/tokenUsage/updated",
       "thread/goal/updated",
       "thread/goal/cleared",
+      "thread/tokenUsage/updated",
       "turn/started",
       "turn/completed",
       "turn/plan/updated",

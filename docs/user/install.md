@@ -81,14 +81,6 @@ Provider CLIs must be on the server's `PATH`. If T3 Code cannot find one, set it
 Cursor's executable is `cursor-agent`, although its login command is
 `agent login`. Antigravity can use its managed runtime without a `PATH` entry.
 
-To add a Claude or Codex account, select the computer in **Settings → Providers**
-and choose **Add account**. T3 prepares separate credentials and shared conversations
-for switching accounts within a thread, then starts sign-in. If the CLI is missing,
-setup runs its standalone installer on that computer. To authenticate an existing account
-again, select it and choose **Sign in**. The account is checked when sign-in finishes.
-For remote Codex sign-in, choose **Use device code** and follow the link and code
-shown in the panel on your own device.
-
 When a provider CLI is behind its latest release, its provider card shows the
 available version. **Update now** appears only when T3 Code can tell which
 installer owns the CLI (its own update command, Homebrew, or a global npm, pnpm,

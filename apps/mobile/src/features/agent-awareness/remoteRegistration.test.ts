@@ -331,17 +331,6 @@ describe("makeRelayDeviceRegistrationRequest", () => {
     });
   });
 
-  it("ends existing Live Activities in the personal Expo alert-only build", () => {
-    Constants.expoConfig!.extra = { personalExpoPushAlerts: true };
-    const activity = { end: vi.fn(() => Promise.resolve()) };
-    widgetMocks.getInstances.mockReturnValue([activity] as never);
-
-    setAgentAwarenessRelayTokenProvider(() => Promise.resolve("clerk-token-user-a"));
-
-    expect(activity.end).toHaveBeenCalledWith("immediate");
-    expect(backgroundRuntime.pending).toHaveLength(0);
-  });
-
   it("marks notification delivery disabled when APNs permission is unavailable", () => {
     expect(
       makeRelayDeviceRegistrationRequest({
@@ -934,29 +923,5 @@ describe("makeRelayDeviceRegistrationRequest", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(widgetMocks.start).toHaveBeenCalledTimes(1);
-  });
-
-  // The personal build delivers push alerts only: there is no APNs relay to
-  // update or end a card, so a seeded Live Activity would sit on "Connecting"
-  // forever. Arming must stay a no-op even for a publishing environment with
-  // the preference on.
-  it("never arms a Live Activity in the push-alerts-only personal build", async () => {
-    Constants.expoConfig!.extra = { personalExpoPushAlerts: true };
-    setAgentAwarenessRelayTokenProvider(() => Promise.resolve("clerk-token-user-a"));
-    environmentConfigsMock.configs.set("env-publishing", {
-      environment: { capabilities: { agentActivityPublishing: true } },
-    });
-    vi.mocked(loadPreferences).mockResolvedValueOnce({
-      liveActivitiesEnabled: true,
-    } as Preferences);
-
-    armAgentAwarenessLiveActivityForLocalWork({
-      environmentId: "env-publishing" as EnvironmentId,
-      threadTitle: "Fix the flaky test",
-      projectTitle: "t3code",
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(widgetMocks.start).not.toHaveBeenCalled();
   });
 });

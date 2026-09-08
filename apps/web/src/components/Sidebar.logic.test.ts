@@ -2203,42 +2203,6 @@ describe("getFallbackThreadIdAfterDelete", () => {
 
     expect(fallbackThreadId).toBe(ThreadId.make("thread-next"));
   });
-
-  it("skips hidden side chats but keeps promoted side chats eligible", () => {
-    const survivingParentId = ThreadId.make("thread-surviving-parent");
-    const fallbackThreadId = getFallbackThreadIdAfterDelete({
-      threads: [
-        makeThread({
-          id: ThreadId.make("thread-active"),
-          projectId: ProjectId.make("project-1"),
-          createdAt: "2026-03-09T10:05:00.000Z",
-        }),
-        makeThread({
-          id: ThreadId.make("thread-hidden-side-chat"),
-          projectId: ProjectId.make("project-1"),
-          createdAt: "2026-03-09T10:10:00.000Z",
-          forkedFromThreadId: survivingParentId,
-          sideChatPromotedAt: null,
-        }),
-        makeThread({
-          id: ThreadId.make("thread-promoted-side-chat"),
-          projectId: ProjectId.make("project-1"),
-          createdAt: "2026-03-09T10:08:00.000Z",
-          forkedFromThreadId: survivingParentId,
-          sideChatPromotedAt: "2026-03-09T10:09:00.000Z",
-        }),
-        makeThread({
-          id: survivingParentId,
-          projectId: ProjectId.make("project-1"),
-          createdAt: "2026-03-09T10:06:00.000Z",
-        }),
-      ],
-      deletedThreadId: ThreadId.make("thread-active"),
-      sortOrder: "created_at",
-    });
-
-    expect(fallbackThreadId).toBe(ThreadId.make("thread-promoted-side-chat"));
-  });
 });
 describe("sortProjectsForSidebar", () => {
   it("sorts projects by the most recent user message across their threads", () => {

@@ -14,12 +14,7 @@ import { DEV_PROXIED_PATH_PREFIXES } from "@t3tools/shared/devProxy";
 import { loadRepoEnv } from "../../scripts/lib/public-config";
 import { tailwindPlugins } from "./vite/tailwind";
 
-// Fork tweak: under vitest, ignore the machine's root `.env` so env-sensitive
-// tests see the same empty public config as upstream CI (which has no `.env`).
-// Tests that need these keys stub them with vi.stubEnv; a baked machine value
-// would otherwise shadow the "not configured" cases (connectCliAuth.test.ts).
-const repoEnv: Record<string, string | undefined> =
-  process.env.VITEST === "true" ? {} : loadRepoEnv();
+const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
 
 // Single-origin dev is signalled positively, because it cannot be inferred

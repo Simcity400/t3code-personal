@@ -24,7 +24,6 @@ import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import {
   archiveThread,
   createProject,
-  interruptThreadTurn,
   reorderActiveThread,
   settleThread,
   stopThreadSession,
@@ -76,45 +75,6 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("environment commands", () => {
-  for (const [label, input, expected] of [
-    ["defaults main Stop to self", {}, { scope: "self" }],
-    [
-      "stops an individual task",
-      { taskId: "task-1", scope: "self" },
-      { taskId: "task-1", scope: "self" },
-    ],
-    ["stops all root work", { scope: "tree" }, { scope: "tree" }],
-    [
-      "resumes an interrupted task",
-      { taskId: "task-1", scope: "self", resume: true },
-      { taskId: "task-1", scope: "self", resume: true },
-    ],
-  ] as const) {
-    it.effect(label, () =>
-      Effect.gen(function* () {
-        const dispatched: ClientOrchestrationCommand[] = [];
-        const supervisor = yield* makeSupervisor(dispatched);
-        const result = yield* interruptThreadTurn({
-          ...input,
-          commandId: CommandId.make("interrupt-command"),
-          threadId: ThreadId.make("thread-1"),
-          createdAt: "2026-09-05T00:00:00.000Z",
-        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
-
-        expect(result).toEqual({ sequence: 1 });
-        expect(dispatched).toEqual([
-          {
-            type: "thread.turn.interrupt",
-            commandId: "interrupt-command",
-            threadId: "thread-1",
-            createdAt: "2026-09-05T00:00:00.000Z",
-            ...expected,
-          },
-        ]);
-      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
-    );
-  }
-
   it.effect("adds generated command metadata", () =>
     Effect.gen(function* () {
       const dispatched: ClientOrchestrationCommand[] = [];

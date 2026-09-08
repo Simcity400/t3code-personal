@@ -45,7 +45,6 @@ jobs:
     env:
       APP_VARIANT: preview
       MOBILE_VERSION_POLICY: fingerprint
-      T3CODE_EXPO_PUSH_ALERTS: "1"
       NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - name: Check Expo credentials
@@ -83,7 +82,8 @@ jobs:
         uses: expo/expo-github-action@v8
         with:
           eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
+          # Setup's token validation prints the account email. Authenticate only
+          # the commands below, which already receive EXPO_TOKEN explicitly.
           packager: npm
 
       - name: Pull preview environment variables

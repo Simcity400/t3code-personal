@@ -1,9 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert } from "react-native";
-import { StackActions, useNavigation } from "@react-navigation/native";
-import * as Cause from "effect/Cause";
-import { AsyncResult } from "effect/unstable/reactivity";
 
 import {
   CommandId,
@@ -14,7 +11,7 @@ import {
   type ModelSelection,
   type ProviderInteractionMode,
   type RuntimeMode,
-  ThreadId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
@@ -23,9 +20,8 @@ import {
   type CodexFeedbackSubmission,
 } from "@t3tools/client-runtime/state/threads";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
-import { parseSideChatSlashCommand } from "@t3tools/shared/composerTrigger";
 
-import { makeQueuedMessageMetadata, makeTurnCommandMetadata } from "../lib/commandMetadata";
+import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
 import { isModelSelectionUnavailable } from "../lib/modelOptions";
 import { resolveProviderInteractionMode } from "../features/threads/legacy-plan-mode";
 import {
@@ -37,7 +33,10 @@ import {
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildThreadFeed } from "../lib/threadActivity";
+import { acknowledgedThreadMessagesAtom } from "./acknowledged-thread-messages";
+import { appendPendingThreadMessages } from "../features/threads/pending-thread-feed";
 import { appAtomRegistry } from "../state/atom-registry";
+import { pendingThreadCreationMessage } from "./pending-thread-creation";
 import {
   appendComposerDraftAttachments,
   appendComposerDraftText,
@@ -59,7 +58,6 @@ import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { dispatchingQueuedMessageIdAtom, useThreadOutboxMessages } from "./use-thread-outbox";
 import { threadEnvironment } from "./threads";
 import { useAtomCommand } from "./use-atom-command";
-import { deriveThreadTitleFromPrompt } from "../lib/projectThreadStartTurn";
 import {
   composerAttachmentUploadBlockReason,
   composerAttachmentUploadsAtom,
@@ -104,13 +102,14 @@ export function useThreadDraftForThread(input: {
 }
 
 export function useThreadComposerState() {
-  const navigation = useNavigation();
-  const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
-  const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
-  const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
-  const { selectedThread: selectedThreadShell, selectedEnvironmentRuntime } = useThreadSelection();
+  const {
+    selectedThread: selectedThreadShell,
+    selectedThreadCreation,
+    selectedEnvironmentRuntime,
+  } = useThreadSelection();
   const selectedThreadDetail = useSelectedThreadDetail();
   const composerDrafts = useAtomValue(composerDraftsAtom);
+  const acknowledgedMessages = useAtomValue(acknowledgedThreadMessagesAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
   const dispatchingQueuedMessageId = useAtomValue(dispatchingQueuedMessageIdAtom);
   const [feedbackSubmissionsByThreadKey, setFeedbackSubmissionsByThreadKey] = useState<
@@ -127,8 +126,15 @@ export function useThreadComposerState() {
   const selectedThreadKey = selectedThreadShell
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
     : null;
+  // The creation entry is the thread itself (rendered as the first message),
+  // not a follow-up waiting behind it.
   const selectedThreadQueuedMessages = useMemo(
-    () => (selectedThreadKey ? (queuedMessagesByThreadKey[selectedThreadKey] ?? []) : []),
+    () =>
+      selectedThreadKey
+        ? (queuedMessagesByThreadKey[selectedThreadKey] ?? []).filter(
+            (message) => message.creation === undefined,
+          )
+        : [],
     [queuedMessagesByThreadKey, selectedThreadKey],
   );
   const feedbackSubmissions = useMemo(
@@ -147,16 +153,52 @@ export function useThreadComposerState() {
   );
   const selectedThreadMessages = selectedThreadDetail?.messages;
   const selectedThreadActivities = selectedThreadDetail?.activities;
-  const selectedThreadFeed = useMemo(
-    () =>
-      selectedThreadMessages && selectedThreadActivities
+  // A thread whose creation has not delivered its turn yet: the prompt only
+  // exists in the outbox, so it is appended to whatever the server has. The
+  // detail is usually present but empty during a worktree checkout, so this
+  // cannot be an either/or with the loaded messages.
+  const pendingCreationMessage = selectedThreadCreation?.message ?? null;
+  const selectedThreadFeed = useMemo(() => {
+    const loadedMessages = selectedThreadMessages ?? [];
+    const feed =
+      (selectedThreadMessages && selectedThreadActivities) || pendingCreationMessage !== null
         ? buildThreadFeed({
-            messages: selectedThreadMessages,
-            activities: selectedThreadActivities,
+            messages:
+              pendingCreationMessage !== null &&
+              !loadedMessages.some((message) => message.id === pendingCreationMessage.messageId)
+                ? [...loadedMessages, pendingThreadCreationMessage(pendingCreationMessage)]
+                : loadedMessages,
+            activities: selectedThreadActivities ?? [],
           })
-        : [],
-    [selectedThreadActivities, selectedThreadMessages],
-  );
+        : [];
+    const pendingAcknowledgments = acknowledgedMessages.filter(
+      (message) =>
+        scopedThreadKey(message.environmentId, message.threadId) === selectedThreadKey &&
+        !selectedThreadQueuedMessages.some((queued) => queued.messageId === message.messageId),
+    );
+    if (pendingAcknowledgments.length === 0) return feed;
+    return appendPendingThreadMessages(feed, feed, pendingAcknowledgments).map((entry) =>
+      entry.pendingMessage ? { ...entry, acknowledged: true } : entry,
+    );
+  }, [
+    selectedThreadActivities,
+    selectedThreadMessages,
+    pendingCreationMessage,
+    selectedThreadKey,
+    selectedThreadQueuedMessages,
+    acknowledgedMessages,
+  ]);
+  useEffect(() => {
+    const echoedIds = new Set(selectedThreadMessages?.map((message) => message.id));
+    if (acknowledgedMessages.some((message) => echoedIds.has(message.messageId))) {
+      appAtomRegistry.set(
+        acknowledgedThreadMessagesAtom,
+        appAtomRegistry
+          .get(acknowledgedThreadMessagesAtom)
+          .filter((message) => !echoedIds.has(message.messageId)),
+      );
+    }
+  }, [acknowledgedMessages, selectedThreadMessages]);
 
   const selectedDraft = selectedThreadKey ? composerDrafts[selectedThreadKey] : null;
   const draftMessage = selectedDraft?.text ?? "";
@@ -246,6 +288,13 @@ export function useThreadComposerState() {
     if (!selectedThreadShell) {
       return null;
     }
+    // The server has not created this thread yet. Queuing a follow-up against
+    // its id would strand the message: if the creation is rejected the thread
+    // never appears and the drain drops the orphan. The composer disables its
+    // send button too; this guard also covers the editor's submit key.
+    if (selectedThreadCreation !== null) {
+      return null;
+    }
 
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
     const draft = getComposerDraftSnapshot(threadKey);
@@ -292,102 +341,6 @@ export function useThreadComposerState() {
     const provider = serverConfig?.providers.find(
       (entry) => entry.instanceId === modelSelection.instanceId,
     );
-
-    const sideChatCommand = parseSideChatSlashCommand(text);
-    if (sideChatCommand !== null) {
-      // The side-chat send bypasses the outbox upload path, so attachments
-      // have nowhere to go: open the side chat first and attach there. This
-      // matches the web composer, whose side chats also take text only.
-      if (attachments.length > 0) {
-        setPendingConnectionError(
-          "Remove the attachments, open the side chat with /side, then attach them there.",
-        );
-        return null;
-      }
-      const metadata = makeTurnCommandMetadata();
-      const sideThreadId = ThreadId.make(metadata.threadId);
-      const runtimeMode = draft.runtimeMode ?? thread.runtimeMode;
-      const interactionMode = resolveProviderInteractionMode(
-        provider,
-        draft.interactionMode ?? thread.interactionMode,
-      );
-      const createResult = await createThread({
-        environmentId: selectedThreadShell.environmentId,
-        input: {
-          threadId: sideThreadId,
-          projectId: selectedThreadShell.projectId,
-          title:
-            sideChatCommand.prompt.length > 0
-              ? deriveThreadTitleFromPrompt(sideChatCommand.prompt)
-              : "Side chat",
-          modelSelection,
-          runtimeMode,
-          interactionMode,
-          branch: selectedThreadShell.branch,
-          worktreePath: selectedThreadShell.worktreePath,
-          forkedFromThreadId: selectedThreadShell.id,
-          createdAt: metadata.createdAt,
-        },
-      });
-      if (AsyncResult.isFailure(createResult)) {
-        const error = Cause.squash(createResult.cause);
-        setPendingConnectionError(
-          error instanceof Error ? error.message : "The side chat could not be created.",
-        );
-        return null;
-      }
-      if (sideChatCommand.prompt.length === 0) {
-        clearComposerDraftContent(threadKey);
-        setPendingConnectionError(null);
-        navigation.dispatch(
-          StackActions.push("Thread", {
-            environmentId: String(selectedThreadShell.environmentId),
-            threadId: String(sideThreadId),
-          }),
-        );
-        return { messageId: null };
-      }
-      const messageId = MessageId.make(metadata.messageId);
-      const startResult = await startTurn({
-        environmentId: selectedThreadShell.environmentId,
-        input: {
-          commandId: CommandId.make(metadata.commandId),
-          threadId: sideThreadId,
-          message: {
-            messageId,
-            role: "user",
-            text: sideChatCommand.prompt,
-            attachments: [],
-          },
-          modelSelection,
-          titleSeed: deriveThreadTitleFromPrompt(sideChatCommand.prompt),
-          runtimeMode,
-          interactionMode,
-          createdAt: metadata.createdAt,
-        },
-      });
-      if (AsyncResult.isFailure(startResult)) {
-        await deleteThread({
-          environmentId: selectedThreadShell.environmentId,
-          input: { threadId: sideThreadId },
-        });
-        const error = Cause.squash(startResult.cause);
-        setPendingConnectionError(
-          error instanceof Error ? error.message : "The side chat could not be started.",
-        );
-        return null;
-      }
-      clearComposerDraftContent(threadKey);
-      setPendingConnectionError(null);
-      navigation.dispatch(
-        StackActions.push("Thread", {
-          environmentId: String(selectedThreadShell.environmentId),
-          threadId: String(sideThreadId),
-        }),
-      );
-      return { messageId };
-    }
-
     const feedbackCommand =
       attachments.length === 0 &&
       (provider?.driver === "codex" || thread.session?.providerName === "codex")
@@ -472,16 +425,13 @@ export function useThreadComposerState() {
         );
       },
     );
-    return { messageId };
+    return messageId;
   }, [
-    createThread,
-    deleteThread,
-    navigation,
     selectedEnvironmentRuntime?.connectionState,
     selectedEnvironmentRuntime?.serverConfig,
+    selectedThreadCreation,
     selectedThreadDetail,
     selectedThreadShell,
-    startTurn,
     uploadThreadFeedback,
   ]);
 
@@ -667,6 +617,8 @@ export function useThreadComposerState() {
     dismissFeedback,
     selectedThreadFeed,
     selectedThreadQueueCount,
+    selectedThreadQueuedMessages,
+    dispatchingQueuedMessageId,
     activeWorkStartedAt,
     isCompacting,
     draftMessage,

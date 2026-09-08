@@ -1,4 +1,5 @@
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
+import { selectAgentTranscript } from "@t3tools/client-runtime/state/agent-transcripts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -274,96 +275,49 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
-  it("renders child plans and coalesced reasoning as dedicated Markdown entries", () => {
-    const at = "2026-09-05T00:00:00.000Z";
-    const rows: OrchestrationThreadActivity[] = [
-      {
-        id: EventId.make("prompt"),
-        createdAt: at,
-        kind: "tool.completed",
-        tone: "info",
-        summary: "Instruction",
-        turnId: null,
-        payload: { agentId: "child", itemType: "user_message", prompt: "Begin" },
+  it("keeps child messages out of the root feed and renders the selected child's messages and tools", () => {
+    const root = {
+      id: MessageId.make("root-reply"),
+      role: "assistant" as const,
+      text: "Root reply",
+      turnId: TurnId.make("turn-1"),
+      streaming: false,
+      createdAt: "2026-04-01T00:00:01.000Z",
+      updatedAt: "2026-04-01T00:00:01.000Z",
+    };
+    const child = {
+      ...root,
+      id: MessageId.make("child-reply"),
+      agentId: "child-1",
+      text: "Child reply",
+    };
+    const sibling = { ...child, id: MessageId.make("sibling-reply"), agentId: "child-2" };
+    const tool = makeActivity({
+      id: EventId.make("child-tool"),
+      kind: "tool.completed",
+      summary: "Read child file",
+      createdAt: "2026-04-01T00:00:02.000Z",
+      turnId: root.turnId,
+      payload: {
+        agentId: "child-1",
+        timelineBypass: true,
+        itemType: "file_read",
+        status: "completed",
       },
-      {
-        id: EventId.make("r1"),
-        createdAt: at,
-        kind: "content.delta",
-        tone: "info",
-        summary: "reasoning_text",
-        turnId: null,
-        payload: {
-          agentId: "child",
-          itemId: "reasoning",
-          streamKind: "reasoning_text",
-          delta: "Read **",
-        },
-      },
-      {
-        id: EventId.make("r2"),
-        createdAt: at,
-        kind: "content.delta",
-        tone: "info",
-        summary: "reasoning_text",
-        turnId: null,
-        payload: {
-          agentId: "child",
-          itemId: "reasoning",
-          streamKind: "reasoning_text",
-          delta: "code**.",
-        },
-      },
-      {
-        id: EventId.make("plan"),
-        createdAt: at,
-        kind: "turn.proposed.completed",
-        tone: "info",
-        summary: "Plan proposed",
-        turnId: null,
-        payload: { agentId: "child", planMarkdown: "# Plan\n\n- Verify" },
-      },
-    ];
-    const thread = makeThread({
-      id: ThreadId.make("child-content"),
-      projectId: ProjectId.make("project"),
-      title: "Child",
-      activities: rows,
     });
-    const feed = buildThreadFeed(thread, { agentId: "child" });
-    expect(
-      feed.map((entry) =>
-        entry.type === "transcript-content" ? [entry.content.kind, entry.content.text] : entry.type,
-      ),
-    ).toEqual(["message", ["reasoning", "Read **code**."], ["plan", "# Plan\n\n- Verify"]]);
-    expect(buildThreadFeed(thread)).toEqual([]);
-    expect(deriveThreadFeedPresentation(feed, null, new Set())).toEqual(feed);
-  });
-  it("shows the provider reason from legacy runtime error activities", () => {
-    const reason = "You've hit your Codex usage limit. Try again later.";
-    const thread = makeThread({
-      id: ThreadId.make("thread-runtime-error"),
-      projectId: ProjectId.make("project-1"),
-      title: "Runtime error",
-      activities: [
-        makeActivity({
-          id: EventId.make("runtime-error"),
-          kind: "runtime.error",
-          tone: "error",
-          summary: "Runtime error",
-          createdAt: "2026-09-01T00:00:00.000Z",
-          payload: { message: reason },
-        }),
-      ],
-    });
+    const thread = { messages: [root, child, sibling], activities: [tool] };
+    const rootFeed = buildThreadFeed(thread);
+    expect(rootFeed.map((entry) => entry.id)).toEqual([root.id]);
 
-    const [group] = buildThreadFeed(thread);
-    expect(group?.type).toBe("activity-group");
-    if (group?.type !== "activity-group") return;
-    expect(group.activities[0]).toMatchObject({
-      detail: reason,
-      status: "failure",
-    });
+    const childFeed = buildThreadFeed(
+      selectAgentTranscript(thread.messages, thread.activities, "child-1"),
+    );
+    expect(
+      childFeed.filter((entry) => entry.type === "message").map((entry) => entry.message.text),
+    ).toEqual(["Child reply"]);
+    expect(childFeed.some((entry) => entry.type === "activity-group")).toBe(true);
+    expect(child.agentId).toBe("child-1");
+    expect(tool.payload).toMatchObject({ agentId: "child-1", timelineBypass: true });
   });
 
   it("reuses unchanged feed and presentation rows during an assistant text update", () => {
@@ -653,8 +607,8 @@ describe("buildThreadFeed", () => {
     const [row] = group.activities;
     expect(row?.workEntry.detail).toBe(command);
     expect(row?.getFullDetail()).toBe(`${command}\n\n${command}`);
-    // Opening it would only repeat the command the row already shows.
-    expect(row?.canExpand).toBe(false);
+    expect(row?.canExpand).toBe(true);
+    expect(workEntryRowLabel(row!.workEntry, true)).toBe("Command");
   });
 
   it.each([
@@ -686,7 +640,7 @@ describe("buildThreadFeed", () => {
         payload: { detail: "Bash is unusable in this environment" },
       },
       label: "Bash is unusable in this environment",
-      canExpand: false,
+      canExpand: true,
     },
     {
       name: "a multi-line task report",
@@ -722,7 +676,7 @@ describe("buildThreadFeed", () => {
       label: "printf hello",
       canExpand: true,
     },
-  ])("only lets $name expand when the body adds something: $canExpand", (input) => {
+  ])("sets expansion availability for $name: $canExpand", (input) => {
     const thread = makeThread({
       id: ThreadId.make("thread-expand-rule"),
       projectId: ProjectId.make("project-1"),
@@ -742,6 +696,107 @@ describe("buildThreadFeed", () => {
     const [row] = group.activities;
     expect(workEntryRowLabel(row!.workEntry)).toBe(input.label);
     expect(row?.canExpand).toBe(input.canExpand);
+  });
+
+  it.each(["runtime.error", "runtime.warning"] as const)(
+    "shows and copies the message of %s without a duplicate expanded body",
+    (kind) => {
+      const message =
+        "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 5:21 AM.";
+      const thread = makeThread({
+        id: ThreadId.make("runtime-message"),
+        projectId: ProjectId.make("project-1"),
+        title: "Runtime message",
+        activities: [
+          makeActivity({
+            id: EventId.make("runtime-message"),
+            createdAt: "2026-09-01T00:00:00.000Z",
+            kind,
+            tone: "error",
+            summary: "Runtime error",
+            payload: { message },
+          }),
+        ],
+      });
+      const [group] = buildThreadFeed(thread);
+      expect(group?.type).toBe("activity-group");
+      if (group?.type !== "activity-group") return;
+      const row = group.activities[0]!;
+      expect(row.canExpand).toBe(true);
+      expect(workEntryRowLabel(row.workEntry, true)).toBe(message);
+      expect(row.getFullDetail()).toBeNull();
+      expect(row.getCopyText()).toBe(`Runtime error\n${message}`);
+    },
+  );
+
+  it.each([
+    {
+      message: "fallback message",
+      detail: "More specific detail",
+      expected: "More specific detail",
+    },
+    { message: "  ", expected: undefined },
+    { message: { error: "not a string" }, expected: undefined },
+  ])("preserves existing runtime details and ignores invalid messages: $message", (input) => {
+    const thread = makeThread({
+      id: ThreadId.make("runtime-detail"),
+      projectId: ProjectId.make("project-1"),
+      title: "Runtime detail",
+      activities: [
+        makeActivity({
+          id: EventId.make("runtime-detail"),
+          createdAt: "2026-09-01T00:00:00.000Z",
+          kind: "runtime.error",
+          tone: "error",
+          summary: "Runtime error",
+          payload: { message: input.message, detail: input.detail },
+        }),
+      ],
+    });
+    const [group] = buildThreadFeed(thread);
+    expect(group?.type).toBe("activity-group");
+    if (group?.type !== "activity-group") return;
+    expect(group.activities[0]?.workEntry.detail).toBe(input.expected);
+    expect(group.activities[0]?.canExpand).toBe(Boolean(input.expected));
+  });
+
+  it.each([
+    {
+      summary: "Runtime error",
+      kind: "runtime.error" as const,
+      detail:
+        "Request failed.\nThe service returned an unexpected response.\nRetry after checking the connection.",
+    },
+    {
+      summary: "Web search",
+      kind: "tool.completed" as const,
+      detail: "https://itanium-cxx-abi.github.io/cxx-abi/abi.html",
+      itemType: "web_search",
+    },
+  ])("expands the full $summary label once, retaining its formatting and copy text", (input) => {
+    const thread = makeThread({
+      id: ThreadId.make("expanded-label"),
+      projectId: ProjectId.make("project-1"),
+      title: "Expanded label",
+      activities: [
+        makeActivity({
+          id: EventId.make("expanded-label"),
+          createdAt: "2026-09-01T00:00:00.000Z",
+          kind: input.kind,
+          summary: input.summary,
+          payload: { detail: input.detail, itemType: input.itemType },
+        }),
+      ],
+    });
+    const [group] = buildThreadFeed(thread);
+    expect(group?.type).toBe("activity-group");
+    if (group?.type !== "activity-group") return;
+    const row = group.activities[0]!;
+    expect(row.canExpand).toBe(true);
+    expect(workEntryRowLabel(row.workEntry)).toBe(input.detail.replace(/\s+/g, " "));
+    expect(workEntryRowLabel(row.workEntry, true)).toBe(input.detail);
+    expect(row.getFullDetail()).toBeNull();
+    expect(row.getCopyText()).toBe(`${input.summary}\n${input.detail}`);
   });
 
   it("drops a truncated Claude echo of a long command", () => {
@@ -942,284 +997,6 @@ describe("buildThreadFeed", () => {
       ]);
     },
   );
-
-  it("keeps agent-attributed assistant messages out of the parent feed", () => {
-    const thread = makeThread({
-      id: ThreadId.make("thread-agent-transcript"),
-      projectId: ProjectId.make("project-1"),
-      title: "Agent transcript",
-      messages: [
-        {
-          id: MessageId.make("parent-message"),
-          role: "assistant",
-          text: "Parent answer",
-          turnId: null,
-          streaming: false,
-          createdAt: "2026-04-01T00:00:01.000Z",
-          updatedAt: "2026-04-01T00:00:01.000Z",
-        },
-        {
-          id: MessageId.make("child-message"),
-          role: "assistant",
-          text: "Child answer",
-          agentId: "agent-1",
-          turnId: null,
-          streaming: false,
-          createdAt: "2026-04-01T00:00:02.000Z",
-          updatedAt: "2026-04-01T00:00:02.000Z",
-        },
-      ],
-    });
-
-    const feed = buildThreadFeed(thread);
-    const messageIds = feed.flatMap((entry) => (entry.type === "message" ? [entry.id] : []));
-    expect(messageIds).toEqual(["parent-message"]);
-  });
-
-  it("shows a subagent's report to the parent as an attributed message", () => {
-    const thread = makeThread({
-      id: ThreadId.make("thread-agent-reply"),
-      projectId: ProjectId.make("project-1"),
-      title: "Agent reply",
-      messages: [
-        {
-          id: MessageId.make("parent-message"),
-          role: "assistant",
-          text: "Spawning a reviewer.",
-          turnId: TurnId.make("turn-1"),
-          streaming: false,
-          createdAt: "2026-04-01T00:00:01.000Z",
-          updatedAt: "2026-04-01T00:00:01.000Z",
-        },
-      ],
-      activities: [
-        makeActivity({
-          id: EventId.make("task-start"),
-          kind: "task.started",
-          tone: "info",
-          summary: "Agent started",
-          createdAt: "2026-04-01T00:00:02.000Z",
-          turnId: TurnId.make("turn-1"),
-          payload: {
-            taskId: "agent-1",
-            title: "reviewer",
-            toolUseId: "toolu_1",
-            taskType: "local_agent",
-          },
-        }),
-        makeActivity({
-          id: EventId.make("collab-done"),
-          kind: "tool.completed",
-          tone: "tool",
-          summary: "Task",
-          createdAt: "2026-04-01T00:00:09.000Z",
-          turnId: TurnId.make("turn-1"),
-          payload: {
-            itemType: "collab_agent_tool_call",
-            itemId: "toolu_1",
-            data: { toolName: "Task", agentReply: "Two unparameterized queries." },
-          },
-        }),
-      ],
-    });
-
-    const feed = buildThreadFeed(thread);
-    const replyEntry = feed.find(
-      (entry) => entry.type === "message" && entry.message.text === "Two unparameterized queries.",
-    );
-    expect(replyEntry).toBeDefined();
-    // Attributed, so the reader can tell it from the main agent's own words.
-    expect(replyEntry).toMatchObject({ fromAgentLabel: "Reviewer" });
-  });
-
-  it("routes a nested report into the owning subagent's transcript, not the parent feed", () => {
-    const thread = makeThread({
-      id: ThreadId.make("thread-nested-reply"),
-      projectId: ProjectId.make("project-1"),
-      title: "Nested reply",
-      messages: [],
-      activities: [
-        makeActivity({
-          id: EventId.make("nested-start"),
-          kind: "task.started",
-          tone: "info",
-          summary: "Nested agent started",
-          createdAt: "2026-04-01T00:00:02.000Z",
-          turnId: TurnId.make("turn-1"),
-          payload: {
-            taskId: "nested-1",
-            title: "nested",
-            toolUseId: "toolu_nested",
-            taskType: "local_agent",
-            agentId: "agent-1",
-          },
-        }),
-        makeActivity({
-          id: EventId.make("nested-done"),
-          kind: "tool.completed",
-          tone: "tool",
-          summary: "Task",
-          createdAt: "2026-04-01T00:00:09.000Z",
-          turnId: TurnId.make("turn-1"),
-          payload: {
-            itemType: "collab_agent_tool_call",
-            itemId: "toolu_nested",
-            agentId: "agent-1",
-            data: { toolName: "Task", agentReply: "Nested finding." },
-          },
-        }),
-      ],
-    });
-
-    const parentFeed = buildThreadFeed(thread);
-    expect(
-      parentFeed.some(
-        (entry) => entry.type === "message" && entry.message.text === "Nested finding.",
-      ),
-    ).toBe(false);
-
-    const agentFeed = buildThreadFeed(thread, { agentId: "agent-1" });
-    expect(
-      agentFeed.some(
-        (entry) => entry.type === "message" && entry.message.text === "Nested finding.",
-      ),
-    ).toBe(true);
-  });
-
-  it("builds an agent transcript with the same message and work rows as the main feed", () => {
-    const thread = makeThread({
-      id: ThreadId.make("thread-agent-feed"),
-      projectId: ProjectId.make("project-1"),
-      title: "Agent feed",
-      messages: [
-        {
-          id: MessageId.make("parent-message"),
-          role: "assistant",
-          text: "Parent answer",
-          turnId: TurnId.make("turn-1"),
-          streaming: false,
-          createdAt: "2026-04-01T00:00:01.000Z",
-          updatedAt: "2026-04-01T00:00:01.000Z",
-        },
-        {
-          id: MessageId.make("child-message"),
-          role: "assistant",
-          text: "Child answer",
-          agentId: "agent-1",
-          turnId: TurnId.make("turn-1"),
-          streaming: true,
-          createdAt: "2026-04-01T00:00:02.000Z",
-          updatedAt: "2026-04-01T00:00:03.000Z",
-        },
-      ],
-      activities: [
-        makeActivity({
-          id: EventId.make("child-tool"),
-          kind: "tool.completed",
-          tone: "tool",
-          summary: "Ran tests",
-          createdAt: "2026-04-01T00:00:04.000Z",
-          turnId: TurnId.make("turn-1"),
-          payload: {
-            agentId: "agent-1",
-            timelineBypass: true,
-            itemId: "tool-1",
-            itemType: "command_execution",
-            title: "Ran tests",
-            status: "completed",
-          },
-        }),
-        makeActivity({
-          id: EventId.make("other-tool"),
-          kind: "tool.completed",
-          tone: "tool",
-          summary: "Changed file",
-          createdAt: "2026-04-01T00:00:05.000Z",
-          turnId: TurnId.make("turn-1"),
-          payload: {
-            agentId: "agent-2",
-            itemId: "tool-2",
-            itemType: "file_change",
-          },
-        }),
-      ],
-    });
-
-    const feed = buildThreadFeed(thread, { agentId: "agent-1" });
-
-    expect(feed).toMatchObject([
-      {
-        type: "message",
-        id: "child-message",
-        message: { text: "Child answer", streaming: true },
-      },
-      {
-        type: "activity-group",
-        activities: [{ id: "child-tool", summary: "Ran tests", status: "success" }],
-      },
-    ]);
-  });
-
-  it("renders the parent's original agent prompt before the agent response", () => {
-    const thread = makeThread({
-      id: ThreadId.make("thread-agent-prompt"),
-      projectId: ProjectId.make("project-1"),
-      title: "Agent prompt",
-      messages: [
-        {
-          id: MessageId.make("child-message"),
-          role: "assistant",
-          text: "I found the issue.",
-          agentId: "agent-1",
-          turnId: TurnId.make("turn-1"),
-          streaming: false,
-          createdAt: "2026-04-01T00:00:03.000Z",
-          updatedAt: "2026-04-01T00:00:03.000Z",
-        },
-      ],
-      activities: [
-        makeActivity({
-          id: EventId.make("launch-tool"),
-          kind: "tool.started",
-          tone: "tool",
-          summary: "Subagent task started",
-          createdAt: "2026-04-01T00:00:01.000Z",
-          turnId: TurnId.make("turn-1"),
-          payload: {
-            itemId: "tool-agent-1",
-            itemType: "collab_agent_tool_call",
-            data: {
-              toolName: "Agent",
-              input: { prompt: "Find why wrapped lines are hidden on iPhone." },
-            },
-          },
-        }),
-        makeActivity({
-          id: EventId.make("agent-start"),
-          kind: "task.started",
-          tone: "info",
-          summary: "Agent started",
-          createdAt: "2026-04-01T00:00:02.000Z",
-          turnId: TurnId.make("turn-1"),
-          payload: {
-            taskId: "agent-1",
-            toolUseId: "tool-agent-1",
-            agentKind: "agent",
-          },
-        }),
-      ],
-    });
-
-    const feed = buildThreadFeed(thread, { agentId: "agent-1" });
-    const messages = feed.flatMap((entry) =>
-      entry.type === "message" ? [{ role: entry.message.role, text: entry.message.text }] : [],
-    );
-
-    expect(messages).toEqual([
-      { role: "user", text: "Find why wrapped lines are hidden on iPhone." },
-      { role: "assistant", text: "I found the issue." },
-    ]);
-  });
 
   it("keeps historic work entries attributed to their turns", () => {
     const thread = makeThread({
@@ -1429,6 +1206,11 @@ describe("buildThreadFeed", () => {
         },
       ],
     });
+    if (group?.type !== "activity-group") return;
+    const row = group.activities[0]!;
+    expect(row.canExpand).toBe(true);
+    expect(row.getFullDetail()).toBeNull();
+    expect(workEntryRowLabel(row.workEntry, true)).toBe(`${imagePath.slice(0, 177)}...`);
   });
 
   it("keeps MCP inputs available to expanded mobile work rows", () => {
@@ -1506,7 +1288,8 @@ describe("buildThreadFeed", () => {
       },
     });
     expect(group.activities[0]?.getFullDetail()).toContain('"query": "work log"');
-    expect(group.activities[0]?.getFullDetail()).toContain("repository.search");
+    expect(workEntryRowLabel(group.activities[0]!.workEntry, true)).toBe("repository.search");
+    expect(group.activities[0]?.getFullDetail()).not.toContain("repository.search");
   });
 
   it.each([
@@ -2977,43 +2760,6 @@ describe("buildThreadFeed", () => {
   });
 });
 
-describe("quiet timeline: ambient tasks", () => {
-  it("keeps skip_transcript housekeeping out of the chat feed", () => {
-    const thread = makeThread({
-      id: ThreadId.make("thread-ambient"),
-      projectId: ProjectId.make("project-1"),
-      title: "Ambient tasks",
-      activities: [
-        makeActivity({
-          id: EventId.make("ambient-done"),
-          kind: "task.completed",
-          summary: "Task completed",
-          createdAt: "2026-04-01T00:00:02.000Z",
-          payload: {
-            taskId: "amb-1",
-            taskType: "local_bash",
-            agentKind: "background",
-            skipTranscript: true,
-          },
-        }),
-        makeActivity({
-          id: EventId.make("loud-done"),
-          kind: "task.completed",
-          summary: "Task completed",
-          createdAt: "2026-04-01T00:00:03.000Z",
-          payload: { taskId: "loud-1", taskType: "local_bash", agentKind: "background" },
-        }),
-      ],
-    });
-
-    const ids = buildThreadFeed(thread).flatMap((entry) =>
-      entry.type === "activity-group" ? entry.activities.map((row) => row.id) : [],
-    );
-    expect(ids).not.toContain("ambient-done");
-    expect(ids).toContain("loud-done");
-  });
-});
-
 describe("quiet timeline: nested agents", () => {
   it.each(["task.updated", "task.progress"] as const)(
     "does not mark an ordinary task complete when it resumes through %s",
@@ -3586,9 +3332,8 @@ describe("quiet timeline: nested agents", () => {
           createdAt: "2026-04-01T00:00:02.000Z",
           payload: { taskId: "sh-1", agentId: "owner", agentKind: "background" },
         }),
-        // A nested AGENT's completion folds into its spawn batch, which is the
-        // terminal signal in the feed (matching web); its transcript lives in
-        // the Agents screen.
+        // A nested AGENT's completion: mobile has no Agents sheet, so this
+        // terminal row is the only signal it ever finished.
         makeActivity({
           id: EventId.make("nested-done"),
           kind: "task.completed",

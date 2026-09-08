@@ -21,12 +21,12 @@ const { autoUpdaterMock } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("electron-updater", () => ({
-  autoUpdater: autoUpdaterMock,
-}));
-
 vi.mock("electron", () => ({
   app: { runningUnderARM64Translation: false },
+}));
+
+vi.mock("electron-updater", () => ({
+  autoUpdater: autoUpdaterMock,
 }));
 
 import * as ElectronUpdater from "./ElectronUpdater.ts";

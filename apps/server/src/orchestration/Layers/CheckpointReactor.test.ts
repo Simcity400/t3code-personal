@@ -137,9 +137,9 @@ function createProviderServiceHarness(
         },
       }),
     rollbackConversation,
+    setCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
+    clearCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
     uploadFeedback: () => unsupported(),
-    setCodexGoal: () => unsupported(),
-    clearCodexGoal: () => unsupported(),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
     },
@@ -263,6 +263,71 @@ async function waitForGitRefExists(cwd: string, ref: string, timeoutMs = 15_000)
 }
 
 describe("CheckpointReactor", () => {
+  for (const hasParent of [false, true]) {
+    effectIt.effect(`excludes child output from checkpoint selection (parent: ${hasParent})`, () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({ seedFilesystemCheckpoints: false }),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const turnId = asTurnId("turn-child-checkpoint");
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("session-child-checkpoint"),
+          threadId,
+          createdAt,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+        });
+        harness.provider.emit({
+          type: "turn.started",
+          eventId: EventId.make("start-child-checkpoint"),
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          turnId,
+          createdAt,
+        });
+        expect(yield* harness.nextReceipt).toMatchObject({ type: "checkpoint.baseline.captured" });
+        for (const owner of hasParent ? ["parent", "child"] : ["child"]) {
+          yield* harness.engine.dispatch({
+            type: "thread.message.assistant.delta",
+            commandId: CommandId.make(`delta-${owner}`),
+            threadId,
+            turnId,
+            messageId: MessageId.make(`message-${owner}`),
+            delta: `${owner} output`,
+            createdAt,
+            ...(owner === "child" ? { agentId: "child-agent" } : {}),
+          });
+        }
+        harness.provider.emit({
+          type: "turn.completed",
+          eventId: EventId.make("complete-child-checkpoint"),
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          turnId,
+          createdAt,
+          payload: { state: "interrupted" },
+        });
+        expect(yield* harness.nextReceipt).toMatchObject({ type: "checkpoint.diff.finalized" });
+        yield* Effect.promise(harness.drain);
+        const thread = (yield* Effect.promise(harness.readModel)).threads.find(
+          (entry) => entry.id === threadId,
+        );
+        expect(thread?.checkpoints[0]?.assistantMessageId).toBe(
+          hasParent ? "message-parent" : `assistant:${turnId}`,
+        );
+      }),
+    );
+  }
   let runtime: ManagedRuntime.ManagedRuntime<
     | OrchestrationEngineService
     | CheckpointReactor
@@ -1004,23 +1069,22 @@ describe("CheckpointReactor", () => {
     expect(thread?.branch).toBe("t3code/renamed-by-agent");
   });
 
-  it("does not adopt a drifted checkout when the worktree is shared by another thread", async () => {
+  it("follows a checkout from a saved placeholder branch and refreshes its pull request", async () => {
     const pullRequestRefreshCalls: string[] = [];
     const harness = await createHarness({
       seedFilesystemCheckpoints: false,
-      threadBranch: "t3code/original-branch",
-      localStatusRefName: "t3code/renamed-by-agent",
-      secondThreadSharingWorktree: true,
+      threadBranch: "t3code/fd9cbe0e",
+      localStatusRefName: "fix/mobile-tool-detail-expansion",
       pullRequestRefreshCalls,
     });
 
     harness.provider.emit({
       type: "turn.completed",
-      eventId: EventId.make("evt-turn-completed-branch-drift-shared"),
+      eventId: EventId.make("evt-turn-completed-placeholder-drift"),
       provider: ProviderDriverKind.make("codex"),
       createdAt: "2026-01-01T00:00:00.000Z",
       threadId: ThreadId.make("thread-1"),
-      turnId: asTurnId("turn-branch-drift-shared"),
+      turnId: asTurnId("turn-placeholder-drift"),
       payload: { state: "completed" },
     });
 
@@ -1028,9 +1092,41 @@ describe("CheckpointReactor", () => {
 
     const snapshot = await harness.readModel();
     const thread = snapshot.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    expect(thread?.branch).toBe("t3code/original-branch");
-    expect(pullRequestRefreshCalls).toEqual([]);
+    expect(thread?.branch).toBe("fix/mobile-tool-detail-expansion");
+    expect(thread?.worktreePath).toBe(harness.cwd);
+    expect(pullRequestRefreshCalls).toEqual([harness.cwd]);
   });
+
+  it.each(["t3code/original-branch", "t3code/fd9cbe0e"])(
+    "does not adopt a drifted checkout from %s when the worktree is shared by another thread",
+    async (threadBranch) => {
+      const pullRequestRefreshCalls: string[] = [];
+      const harness = await createHarness({
+        seedFilesystemCheckpoints: false,
+        threadBranch,
+        localStatusRefName: "t3code/renamed-by-agent",
+        secondThreadSharingWorktree: true,
+        pullRequestRefreshCalls,
+      });
+
+      harness.provider.emit({
+        type: "turn.completed",
+        eventId: EventId.make("evt-turn-completed-branch-drift-shared"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-branch-drift-shared"),
+        payload: { state: "completed" },
+      });
+
+      await harness.drain();
+
+      const snapshot = await harness.readModel();
+      const thread = snapshot.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(thread?.branch).toBe(threadBranch);
+      expect(pullRequestRefreshCalls).toEqual([]);
+    },
+  );
 
   it("does not adopt a temporary placeholder checkout as the thread branch", async () => {
     const harness = await createHarness({

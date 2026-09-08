@@ -49,23 +49,13 @@ const RATE_LIMITS_PROBE_TIMEOUT_MS = 3_000;
 type CodexRateLimitsProbe =
   | {
       readonly snapshot: CodexRateLimitSnapshot;
+      readonly rateLimitsByLimitId?:
+        | Readonly<Record<string, CodexRateLimitSnapshot>>
+        | null
+        | undefined;
       readonly resetCredits: CodexResetCreditsSummary | null | undefined;
     }
-  | { readonly failure: string; readonly authenticationFailed?: boolean };
-
-// JSON-RPC uses the same internal-error code for auth and network failures.
-// Only explicit credential rejection establishes that a saved account needs login.
-export function isCodexAuthenticationError(error: CodexErrors.CodexAppServerError): boolean {
-  return (
-    error._tag === "CodexAppServerRequestError" &&
-    /refresh_token_(?:revoked|reused|expired)|refresh token (?:was revoked|was already used|has expired)|have since logged out or signed in to another account|\b401 Unauthorized\b/i.test(
-      error.errorMessage,
-    )
-  );
-}
-
-const CODEX_SIGN_IN_MESSAGE =
-  "Codex credentials are no longer valid. Sign in again using this provider's configured Codex home directory.";
+  | { readonly failure: string };
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
 
@@ -73,13 +63,6 @@ const CODEX_PRESENTATION = {
   displayName: "Codex",
   showInteractionModeToggle: true,
 } as const;
-const CODEX_SLASH_COMMANDS = [
-  {
-    name: "goal",
-    description: "Manage the native Codex Goal for this thread",
-    input: { hint: "[status|create|steer|pause|resume|clear|reset] [objective]" },
-  },
-] as const;
 
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
@@ -455,6 +438,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       client.request("account/rateLimits/read", undefined).pipe(
         Effect.map((response): CodexRateLimitsProbe => ({
           snapshot: response.rateLimits,
+          rateLimitsByLimitId: response.rateLimitsByLimitId,
           resetCredits: response.rateLimitResetCredits,
         })),
         Effect.timeoutOption(Duration.millis(RATE_LIMITS_PROBE_TIMEOUT_MS)),
@@ -465,10 +449,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
         ),
         Effect.catch((error) =>
           Effect.logDebug("Codex rate-limit read failed.", { cause: error }).pipe(
-            Effect.as<CodexRateLimitsProbe>({
-              failure: codexRateLimitsFailureMessage(error),
-              authenticationFailed: isCodexAuthenticationError(error),
-            }),
+            Effect.as<CodexRateLimitsProbe>({ failure: codexRateLimitsFailureMessage(error) }),
           ),
         ),
       ),
@@ -515,7 +496,6 @@ const makePendingCodexProvider = (
         enabled: false,
         checkedAt,
         models,
-        slashCommands: CODEX_SLASH_COMMANDS,
         skills: [],
         probe: {
           installed: false,
@@ -532,7 +512,6 @@ const makePendingCodexProvider = (
       enabled: true,
       checkedAt,
       models,
-      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed: false,
@@ -603,7 +582,6 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       enabled: false,
       checkedAt,
       models: emptyModels,
-      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed: false,
@@ -636,18 +614,15 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       enabled: codexSettings.enabled,
       checkedAt,
       models: emptyModels,
-      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed,
         version: null,
         status: "error",
-        auth: { status: isCodexAuthenticationError(error) ? "unauthenticated" : "unknown" },
-        message: isCodexAuthenticationError(error)
-          ? CODEX_SIGN_IN_MESSAGE
-          : installed
-            ? `Codex app-server provider probe failed: ${error.message}.`
-            : "Codex CLI (`codex`) was not found on PATH.",
+        auth: { status: "unknown" },
+        message: installed
+          ? `Codex app-server provider probe failed: ${error.message}.`
+          : "Codex CLI (`codex`) was not found on PATH.",
       },
     });
   }
@@ -658,7 +633,6 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       enabled: codexSettings.enabled,
       checkedAt,
       models: emptyModels,
-      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed: true,
@@ -671,17 +645,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   }
 
   const snapshot = probeResult.success.value;
-  const account = accountProbeStatus(snapshot.account);
-  const accountStatus =
-    snapshot.rateLimits &&
-    "failure" in snapshot.rateLimits &&
-    snapshot.rateLimits.authenticationFailed
-      ? {
-          status: "error" as const,
-          auth: { ...account.auth, status: "unauthenticated" as const },
-          message: CODEX_SIGN_IN_MESSAGE,
-        }
-      : account;
+  const accountStatus = accountProbeStatus(snapshot.account);
   const usageLimits =
     snapshot.account.account?.type === "apiKey"
       ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
@@ -693,6 +657,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
           })
         : codexRateLimitsToLimits({
             snapshot: snapshot.rateLimits.snapshot,
+            rateLimitsByLimitId: snapshot.rateLimits.rateLimitsByLimitId,
             resetCredits: snapshot.rateLimits.resetCredits,
             checkedAt,
           });
@@ -705,7 +670,6 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     skills: snapshot.skills,
     slashCommands: [
       COMPACT_SLASH_COMMAND,
-      ...CODEX_SLASH_COMMANDS,
       {
         name: "feedback",
         description: "Send this thread and Codex logs to OpenAI",

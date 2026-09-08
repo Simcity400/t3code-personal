@@ -395,36 +395,6 @@ describe("buildThreadActionItems", () => {
 
     expect(items.map((item) => item.value)).toEqual(["thread:thread-active"]);
   });
-
-  it("hides side chats until they are promoted", () => {
-    const parentId = ThreadId.make("thread-parent");
-    const items = buildThreadActionItems({
-      threads: [
-        makeThread({ id: parentId, title: "Parent thread" }),
-        makeThread({
-          id: ThreadId.make("thread-side-hidden"),
-          title: "Hidden side chat",
-          forkedFromThreadId: parentId,
-          sideChatPromotedAt: null,
-        }),
-        makeThread({
-          id: ThreadId.make("thread-side-promoted"),
-          title: "Promoted side chat",
-          forkedFromThreadId: parentId,
-          sideChatPromotedAt: "2026-03-21T00:00:00.000Z",
-        }),
-      ],
-      projectTitleById: new Map([[PROJECT_ID, "Project"]]),
-      sortOrder: "updated_at",
-      icon: null,
-      runThread: async (_thread) => undefined,
-    });
-
-    expect(items.map((item) => item.value)).toEqual([
-      "thread:thread-side-promoted",
-      "thread:thread-parent",
-    ]);
-  });
 });
 
 describe("buildBrowseGroups", () => {

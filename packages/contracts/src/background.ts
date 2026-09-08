@@ -64,31 +64,6 @@ export type ClientKind = typeof ClientKind.Type;
 export const ClientActivityClientId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type ClientActivityClientId = typeof ClientActivityClientId.Type;
 
-export const ExpoPushToken = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
-export type ExpoPushToken = typeof ExpoPushToken.Type;
-
-export const ExpoPushNotificationRegistration = Schema.Union([
-  Schema.Struct({ enabled: Schema.Literal(false) }),
-  Schema.Struct({
-    enabled: Schema.Literal(true),
-    token: ExpoPushToken,
-  }),
-]);
-export type ExpoPushNotificationRegistration = typeof ExpoPushNotificationRegistration.Type;
-
-export const ExpoPushNotificationRegistrationInput = Schema.Struct({
-  clientId: ClientActivityClientId,
-  registration: ExpoPushNotificationRegistration,
-});
-export type ExpoPushNotificationRegistrationInput =
-  typeof ExpoPushNotificationRegistrationInput.Type;
-
-export const ExpoPushNotificationRegistrationResult = Schema.Struct({
-  registered: Schema.Boolean,
-});
-export type ExpoPushNotificationRegistrationResult =
-  typeof ExpoPushNotificationRegistrationResult.Type;
-
 export const ClientActivityReportInput = Schema.Struct({
   environmentId: Schema.optionalKey(EnvironmentId),
   clientId: ClientActivityClientId,

@@ -4,32 +4,11 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   RightPanelTabs,
-  closedSideChatEntries,
   shouldOpenDefaultBrowserProfileFromMenuClick,
   surfaceShortcutActionForKey,
   surfaceShortcutTargetsTypingContext,
   tabMuteMenuItem,
 } from "./RightPanelTabs";
-
-describe("closedSideChatEntries", () => {
-  it("lists side chats without an open tab, in thread order", () => {
-    const titles = new Map([
-      ["a", "Compare approaches"],
-      ["b", "Explain the diff"],
-      ["c", "Name the branch"],
-    ]);
-    const surfaces = [{ id: "side-chat:b" }, { id: "terminal:1" }, { id: "browser:tab-1" }];
-    expect(closedSideChatEntries(titles, surfaces)).toEqual([
-      ["a", "Compare approaches"],
-      ["c", "Name the branch"],
-    ]);
-  });
-
-  it("is empty without side chats", () => {
-    expect(closedSideChatEntries(undefined, [{ id: "side-chat:a" }])).toEqual([]);
-    expect(closedSideChatEntries(new Map(), [])).toEqual([]);
-  });
-});
 
 describe("browser profile submenu", () => {
   it("reserves touch clicks for opening the choices while mouse clicks use the default", () => {
@@ -148,9 +127,6 @@ function renderTabs(
       filesAvailable={false}
       pullRequestAvailable={false}
       agentsAvailable={false}
-      onAddSideChat={() => undefined}
-      onOpenSideChat={() => undefined}
-      sideChatAvailable={false}
     >
       <div>content</div>
     </RightPanelTabs>,

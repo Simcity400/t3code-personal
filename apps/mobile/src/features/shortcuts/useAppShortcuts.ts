@@ -13,7 +13,6 @@ import {
   activeThreadRef,
   buildShortcutActions,
   shortcutHref,
-  withoutRecentThreadShortcut,
   withRecentThreadShortcut,
 } from "./appShortcuts";
 
@@ -104,10 +103,8 @@ function useRecentThreadShortcutSync(state: NavigationState): void {
   const environmentId = threadRef?.environmentId ?? null;
   const threadId = threadRef?.threadId ?? null;
   const title = threadShell?.title ?? "";
-  const isUnpromotedSideChat =
-    threadShell?.forkedFromThreadId != null && threadShell.sideChatPromotedAt == null;
   useEffect(() => {
-    if (!loaded || threadShell === null || environmentId === null || threadId === null) {
+    if (!loaded || environmentId === null || threadId === null) {
       return;
     }
 
@@ -117,15 +114,13 @@ function useRecentThreadShortcutSync(state: NavigationState): void {
       if (current === null) {
         return current;
       }
-      const next = isUnpromotedSideChat
-        ? withoutRecentThreadShortcut(current, { environmentId, threadId })
-        : withRecentThreadShortcut(current, { environmentId, threadId, title });
+      const next = withRecentThreadShortcut(current, { environmentId, threadId, title });
       if (next !== current) {
         persistableRef.current = true;
       }
       return next;
     });
-  }, [loaded, threadShell, environmentId, threadId, title, isUnpromotedSideChat]);
+  }, [loaded, environmentId, threadId, title]);
 
   useEffect(() => {
     if (recents === null) {

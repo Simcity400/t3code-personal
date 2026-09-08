@@ -1,16 +1,11 @@
 import {
-  parseUserInputQuestions,
   requestKindFromRequestType,
   type PendingApproval,
 } from "@t3tools/client-runtime/pending-requests";
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
 import { shallow } from "zustand/vanilla/shallow";
-import {
-  isBackgroundTaskActivity,
-  selectSubagentRepliesFor,
-  type SubagentReplyEntry,
-} from "@t3tools/client-runtime/state/subagentRuntime";
+import { isBackgroundTaskActivity } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   commandDetailRepeatsCommand,
   extractCommandOutputText,
@@ -24,7 +19,6 @@ import {
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
 import {
   isToolLifecycleItemType,
-  MessageId,
   type AssetResource,
   type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
@@ -32,7 +26,6 @@ import {
   type ToolLifecycleItemType,
   type ThreadId,
   type TurnId,
-  type UserInputQuestion,
 } from "@t3tools/contracts";
 
 import {
@@ -136,12 +129,6 @@ export interface LatestProposedPlanState {
 }
 
 export type TimelineEntry =
-  | {
-      id: string;
-      kind: "reasoning";
-      createdAt: string;
-      content: import("@t3tools/client-runtime/state/subagentRuntime").SubagentTranscriptContent;
-    }
   | {
       id: string;
       kind: "message";
@@ -425,28 +412,6 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
   if (!payload) {
     return false;
   }
-  // Older servers persisted reopened-thread prompt recovery as task.progress.
-  // It is transcript metadata for an already-idle child, never a fresh spawn
-  // anchor. Keep this compatibility guard so existing false CTA rows vanish
-  // as soon as the client updates.
-  if (
-    activity.kind === "task.progress" &&
-    payload.timelineBypass === true &&
-    payload.status === "idle" &&
-    typeof payload.prompt === "string" &&
-    payload.prompt.trim().length > 0
-  ) {
-    return true;
-  }
-  // SDK `skip_transcript`: the provider explicitly asks clients to keep this
-  // ambient task out of the inline transcript, noting it "may still appear in
-  // a tasks panel". It now has one — the Agents surface's Tasks section — so
-  // honoring the flag hides nothing the user cannot still find. Scoped to
-  // task rows: only those have a home in that panel, and an unrelated row
-  // that happened to carry the field would otherwise vanish entirely.
-  if (payload.skipTranscript === true && activity.kind.startsWith("task.")) {
-    return true;
-  }
   const isTaskRow =
     activity.kind === "task.started" ||
     activity.kind === "task.progress" ||
@@ -482,18 +447,9 @@ export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
-  const userInputContext = collectUserInputContext(ordered);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
     if (activity.tone !== "error" && isWorktreeSetupActivity(activity.kind)) continue;
-    // Once a question is answered its "asked" row is redundant: the answered
-    // row restates every question next to its answer.
-    if (
-      activity.kind === "user-input.requested" &&
-      userInputContext.answeredRequestIds.has(userInputRequestId(activity) ?? "")
-    ) {
-      continue;
-    }
     if (activity.kind === "tool.started") continue;
     // Agent task.started rows are CTA seeds: they carry the true spawn turn,
     // which is the batch key (completions of background subagents arrive
@@ -501,130 +457,16 @@ export function deriveWorkLogEntries(
     // collapse into the batch's single CTA row, never render standalone.
     if (activity.kind === "task.started" && !isAgentTaskStartedActivity(activity)) continue;
     if (activity.kind === "task.updated") continue;
-    if (
-      activity.kind === "tool.progress" ||
-      activity.kind === "task.state" ||
-      activity.kind.startsWith("task.stop.")
-    )
-      continue;
+    if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
-    // Panel state, not a log entry: one row per thread, rewritten on each
-    // compaction edge. The Agents panel names the wait while it is live and
-    // `context-compaction` is the receipt afterwards, so leaving it in the
-    // log would park a stale "Context compaction finished" line mid-history.
-    if (activity.kind === "session.compacting") continue;
     if (activity.kind === "turn.plan.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isNoContentRuntimeWarning(activity)) continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     if (isAgentInternalActivity(activity)) continue;
-    entries.push(toDerivedWorkLogEntry(activity, userInputContext));
+    entries.push(toDerivedWorkLogEntry(activity));
   }
   return collapseDerivedWorkLogEntries(entries);
-}
-
-interface UserInputContext {
-  /** Questions by request id, so an answer row can restate what was asked. */
-  readonly questionsByRequestId: ReadonlyMap<string, ReadonlyArray<UserInputQuestion>>;
-  readonly answeredRequestIds: ReadonlySet<string>;
-}
-
-const EMPTY_USER_INPUT_CONTEXT: UserInputContext = {
-  questionsByRequestId: new Map(),
-  answeredRequestIds: new Set(),
-};
-
-function userInputRequestId(activity: OrchestrationThreadActivity): string | null {
-  const payload = asRecord(activity.payload);
-  return asTrimmedString(payload?.requestId) ?? null;
-}
-
-function collectUserInputContext(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-): UserInputContext {
-  const questionsByRequestId = new Map<string, ReadonlyArray<UserInputQuestion>>();
-  const answeredRequestIds = new Set<string>();
-  for (const activity of activities) {
-    if (activity.kind !== "user-input.requested" && activity.kind !== "user-input.resolved") {
-      continue;
-    }
-    const requestId = userInputRequestId(activity);
-    if (!requestId) continue;
-    if (activity.kind === "user-input.requested") {
-      const questions = parseUserInputQuestions(asRecord(activity.payload));
-      if (questions) questionsByRequestId.set(requestId, questions);
-    } else {
-      answeredRequestIds.add(requestId);
-    }
-  }
-  return { questionsByRequestId, answeredRequestIds };
-}
-
-function formatUserInputAnswer(value: unknown): string {
-  if (typeof value === "string") return value.trim() || "(blank)";
-  if (Array.isArray(value)) {
-    const parts = value.map(formatUserInputAnswer).filter((part) => part !== "(blank)");
-    return parts.length > 0 ? parts.join(", ") : "(blank)";
-  }
-  if (value === null || value === undefined) return "(blank)";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
-}
-
-/**
- * Transcript text for a question the agent asked. The row label carries the
- * question itself; the expanded detail lists the offered options.
- */
-function describeUserInputRequested(payload: Record<string, unknown> | null): {
-  label: string;
-  detail: string | null;
-} {
-  const questions = parseUserInputQuestions(payload) ?? [];
-  if (questions.length === 0) {
-    return { label: "Asked a question", detail: null };
-  }
-  const label =
-    questions.length === 1
-      ? `Asked: ${questions[0]!.question}`
-      : `Asked ${questions.length} questions: ${questions.map((question) => question.header).join("; ")}`;
-  const detail = questions
-    .map((question) => {
-      const options = question.options.map((option) => `  - ${option.label}`).join("\n");
-      return options ? `Q: ${question.question}\n${options}` : `Q: ${question.question}`;
-    })
-    .join("\n\n");
-  return { label, detail };
-}
-
-/**
- * Transcript text for an answered question: every question restated next to
- * the answer given, so the exchange stays readable after the fact.
- */
-function describeUserInputResolved(
-  payload: Record<string, unknown> | null,
-  context: UserInputContext,
-): { label: string; detail: string | null } {
-  const requestId = asTrimmedString(payload?.requestId);
-  const questions = (requestId && context.questionsByRequestId.get(requestId)) || [];
-  const answers = asRecord(payload?.answers) ?? {};
-  const pairs = questions.map((question) => ({
-    header: question.header,
-    question: question.question,
-    answer: formatUserInputAnswer(answers[question.id]),
-  }));
-  for (const [id, value] of Object.entries(answers)) {
-    if (questions.some((question) => question.id === id)) continue;
-    pairs.push({ header: id, question: id, answer: formatUserInputAnswer(value) });
-  }
-  if (pairs.length === 0) {
-    return { label: "Answered a question", detail: null };
-  }
-  const label =
-    pairs.length === 1
-      ? `Answered ${pairs[0]!.header}: ${pairs[0]!.answer}`
-      : `Answered ${pairs.length} questions: ${pairs.map((pair) => `${pair.header}: ${pair.answer}`).join("; ")}`;
-  const detail = pairs.map((pair) => `Q: ${pair.question}\nA: ${pair.answer}`).join("\n\n");
-  return { label, detail };
 }
 
 /** Adapters forward unknown wire-only SDK messages (background_tasks_changed,
@@ -650,10 +492,7 @@ function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): bool
   return typeof payload?.detail === "string" && payload.detail.startsWith("ExitPlanMode:");
 }
 
-function toDerivedWorkLogEntry(
-  activity: OrchestrationThreadActivity,
-  userInputContext: UserInputContext = EMPTY_USER_INPUT_CONTEXT,
-): DerivedWorkLogEntry {
+function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
   const cachedEntry = derivedWorkLogEntryByActivity.get(activity);
   if (cachedEntry) {
     return cachedEntry;
@@ -662,23 +501,6 @@ function toDerivedWorkLogEntry(
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
       : null;
-  if (activity.kind === "user-input.requested" || activity.kind === "user-input.resolved") {
-    const described =
-      activity.kind === "user-input.requested"
-        ? describeUserInputRequested(payload)
-        : describeUserInputResolved(payload, userInputContext);
-    // Not cached: the answered row's text depends on the asked row, which
-    // can arrive in a later activity batch.
-    return {
-      id: activity.id,
-      createdAt: activity.createdAt,
-      turnId: activity.turnId,
-      label: described.label,
-      tone: "info",
-      sourceActivityKind: activity.kind,
-      ...(described.detail ? { detail: described.detail } : {}),
-    };
-  }
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
   const title = extractToolTitle(payload);
@@ -706,9 +528,7 @@ function toDerivedWorkLogEntry(
       payload.detail.length > 0
       ? stripTrailingExitCode(payload.detail).output
       : null
-    : activity.kind === "runtime.error"
-      ? asTrimmedString(payload?.message)
-      : extractToolDetail(payload, title ?? activity.summary);
+    : extractToolDetail(payload, title ?? activity.summary);
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
@@ -1557,43 +1377,6 @@ function compareActivityLifecycleRank(kind: string): number {
   return 1;
 }
 
-/** A subagent's reply, rendered as an ordinary message plus its "From" label. */
-export interface SubagentReplyMessage {
-  readonly message: ChatMessage;
-  readonly agentId: string;
-  readonly label: string;
-}
-
-/**
- * Turns the replies one conversation received into ordinary chat messages.
- *
- * The parent used to see only a collapsed tool row where its subagent
- * answered. These render through the same assistant row as everything else —
- * markdown, copy button, timestamps — with a "From <agent>" header that opens
- * that agent's transcript. Identity is the persisted activity id, so the rows
- * survive reload and resume exactly as the activity they are derived from.
- */
-export function deriveSubagentReplyMessages(
-  replies: ReadonlyArray<SubagentReplyEntry>,
-  ownerAgentId: string | null,
-  labelFor: (reply: SubagentReplyEntry) => string,
-): SubagentReplyMessage[] {
-  return selectSubagentRepliesFor(replies, ownerAgentId).map((reply) => ({
-    agentId: reply.agentId,
-    label: labelFor(reply),
-    message: {
-      id: MessageId.make(reply.id),
-      role: "assistant",
-      text: reply.text,
-      agentId: reply.agentId,
-      turnId: reply.turnId,
-      streaming: false,
-      createdAt: reply.createdAt,
-      updatedAt: reply.createdAt,
-    },
-  }));
-}
-
 function timelineEntryFromMessage(message: ChatMessage): TimelineEntry {
   return {
     id: message.id,
@@ -1628,7 +1411,6 @@ function compareTimelineEntriesByCreatedAt(left: TimelineEntry, right: TimelineE
 function timelineEntrySourceOrder(entry: TimelineEntry): number {
   switch (entry.kind) {
     case "message":
-    case "reasoning":
       return 0;
     case "proposed-plan":
       return 1;

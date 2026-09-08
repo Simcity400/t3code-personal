@@ -33,10 +33,7 @@ import {
 } from "../../persistence/imperative";
 import AgentActivity, { type AgentActivityProps } from "../../widgets/AgentActivity";
 import { resolveCloudPublicConfig } from "../cloud/publicConfig";
-import {
-  supportsAgentAwarenessPush,
-  supportsRemoteAgentAwarenessLiveActivities,
-} from "./capabilities";
+import { supportsAgentAwarenessPush } from "./capabilities";
 import { makeRelayDeviceRegistrationRequest, resolveApsEnvironment } from "./registrationPayload";
 
 const REMOTE_ACTIVITY_REGISTRATION_RETRY_MS = 15_000;
@@ -85,9 +82,11 @@ const registeredActivityPushTokens = new Map<string, number>();
 let pushTokenSubscription: { remove: () => void } | null = null;
 let appStateSubscription: { remove: () => void } | null = null;
 
-// Whether the relay has actually accepted this device's registration. This is
-// operational delivery state for retries and user-facing failure messages; it
-// is deliberately separate from durable iOS permission and saved preferences.
+// Whether the relay has actually accepted this device's registration. The
+// notification/Live Activity settings toggles must reflect this rather than
+// only local iOS permission or saved preferences: if the registration request
+// never succeeded, the device cannot receive anything, so the switches must
+// not read as enabled.
 export type AgentAwarenessRegistrationStatus = "unknown" | "pending" | "registered" | "failed";
 let registrationStatus: AgentAwarenessRegistrationStatus = "unknown";
 const registrationStatusListeners = new Set<() => void>();
@@ -151,7 +150,7 @@ function readRelayConfig(): { readonly url: string } | null {
 }
 
 function canRegisterRemoteLiveActivities(): boolean {
-  return Platform.OS === "ios" && supportsRemoteAgentAwarenessLiveActivities();
+  return Platform.OS === "ios";
 }
 
 export function shouldRegisterAgentAwarenessDeviceForProvider(
@@ -194,10 +193,6 @@ export function setAgentAwarenessRelayTokenProvider(
     void clearAgentAwarenessRegistrationRecord().catch((error: unknown) => {
       logRegistrationError("clear registration record on sign-out failed", error);
     });
-    return;
-  }
-  if (!canRegisterRemoteLiveActivities()) {
-    endLocalLiveActivities("unsupported remote live activity cleanup failed");
     return;
   }
   ensurePushTokenListener();
@@ -786,7 +781,7 @@ function ensureAppStateListener(): void {
 }
 
 function endLocalLiveActivities(context: string): void {
-  if (Platform.OS !== "ios") {
+  if (!canRegisterRemoteLiveActivities()) {
     return;
   }
   try {

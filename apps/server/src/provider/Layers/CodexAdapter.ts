@@ -10,8 +10,9 @@
 import {
   EventId,
   type CanonicalItemType,
-  type CanonicalRequestType,
   type CodexGoal,
+  TurnId,
+  type CanonicalRequestType,
   type CodexSettings,
   ProviderDriverKind,
   type ProviderEvent,
@@ -23,11 +24,10 @@ import {
   type ToolActivityNativeAppReference,
   type ToolActivitySource,
   type ProviderUserInputAnswers,
+  ProviderItemId,
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
-  TurnId,
-  taskAssignmentTitle,
   type RuntimeTaskUsage,
   type TurnTokenUsage,
   ProviderApprovalDecision,
@@ -40,7 +40,6 @@ import * as Crypto from "effect/Crypto";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -64,8 +63,6 @@ import {
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { isEncryptedCollabPrompt } from "../CodexCollabPromptHistory.ts";
-import { materializePlaintextCollabModelCatalog } from "../CodexPlaintextCollabCatalog.ts";
 import {
   CodexResumeCursorSchema,
   CodexSessionRuntimeThreadIdMissingError,
@@ -76,12 +73,13 @@ import {
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 import {
-  hasCodexModelCatalogOverride,
-  resolveCodexLaunchArgs,
-  withCodexModelCatalogLaunchArgs,
-} from "./codexLaunchArgs.ts";
-import { codexRateLimitsToUpdate } from "./codexUsageLimits.ts";
+  type CodexRateLimitSnapshot,
+  codexRateLimitsToUpdate,
+  codexUsageLimitMessage,
+  mergeCodexRateLimits,
+} from "./codexUsageLimits.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
@@ -103,10 +101,6 @@ export interface CodexAdapterLiveOptions {
   >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
-  readonly plaintextCollabCatalog?: {
-    readonly modelCatalogHomePath: string;
-    readonly instanceId: ProviderInstanceId;
-  };
 }
 
 interface CodexAdapterSessionContext {
@@ -796,13 +790,6 @@ function itemDetail(itemType: CanonicalItemType, item: CodexLifecycleItem): stri
   for (const candidate of candidates) {
     const trimmed = typeof candidate === "string" ? trimText(candidate) : undefined;
     if (!trimmed) continue;
-    // An encrypted collaboration prompt is linkage, not text. Printing the
-    // Fernet token as a work-log detail is worse than printing nothing; the
-    // subagent transcript renders a proper placeholder for it instead. Scoped
-    // to collaboration calls: an assistant message that merely LOOKS like a
-    // token is real output, and ingestion finalizes such messages from this
-    // detail.
-    if (itemType === "collab_agent_tool_call" && isEncryptedCollabPrompt(trimmed)) continue;
     return trimmed;
   }
   return undefined;
@@ -1064,9 +1051,8 @@ function mapItemLifecycle(
 /**
  * Maps the session runtime's synthetic `collabAgent/*` events (native
  * multi-agent v2 child-thread signals) into the shared task.* lifecycle.
- * Agent identity = child thread id; role is agentRole (fallback: last
- * agentPath segment, then "general-purpose"). Rows carry no title — see
- * below for why a nickname is not one.
+ * Agent identity = child thread id; nickname is the display title, role is
+ * agentRole (fallback: last agentPath segment, then "general-purpose").
  * A completed child turn is idle (resumable), not terminal. timelineBypass
  * keeps these rows out of the parent chat.
  */
@@ -1086,52 +1072,39 @@ function mapCollabAgentEvent(
   const taskId = RuntimeTaskId.make(agentThreadId);
   const agentPath = typeof payload.agentPath === "string" ? payload.agentPath : undefined;
   const pathLeaf = agentPath?.split("/").findLast((segment) => segment.length > 0);
+  const nickname = typeof payload.nickname === "string" ? payload.nickname : undefined;
   const role =
     (typeof payload.role === "string" ? payload.role : undefined) ?? pathLeaf ?? "general-purpose";
-  // Neither a nickname nor a bare thread id is a name: "marlow" says nothing
-  // about what the child is doing. Rows carry no title, so the fold labels
-  // the agent from its assignment and the task-title reactor replaces that
-  // with a generated purpose name. The nickname still rides every row as an
-  // address, since the parent can send follow-ups to it. task.progress
-  // requires a description, and ingestion turns it into the row's title, so
-  // it is the bare id on purpose: an id can never displace a real name in the
-  // fold, where a nickname did.
-  const nickname = typeof payload.nickname === "string" ? payload.nickname : undefined;
-  const progressDescription = agentThreadId;
+  // A bare thread id is not a name. Omitting the title lets the client fold
+  // keep the real one from task.started instead of clobbering it (probe
+  // finding: progress rows renamed math_one to its UUID).
+  const knownName = nickname ?? pathLeaf;
+  const title = knownName ?? agentThreadId;
   const model = typeof payload.model === "string" ? payload.model.trim() : "";
   const effort = typeof payload.effort === "string" ? payload.effort.trim() : "";
   // Identity repeated on every status patch so rows are self-describing when
   // the start row ages out of activity retention (review finding: a
   // reconstructed agent had a UUID name and no role/path).
-  // The owning conversation rides every row, not just task.started. Client
-  // folds resolve a nested child's transcript and its replies from this, and a
-  // status patch is often the only row that survives activity retention — a
-  // linkage that dropped it sent a grandchild's report to the root thread.
-  const parentThreadId =
-    typeof payload.parentThreadId === "string" ? payload.parentThreadId : undefined;
   const linkage = {
     role,
-    ...(nickname ? { nickname } : {}),
+    ...(knownName ? { title: knownName } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
     ...(agentPath ? { agentPath } : {}),
-    ...(parentThreadId ? { parentAgentId: parentThreadId } : {}),
     timelineBypass: true,
   } as const;
 
   switch (event.method) {
-    case "collabAgent/contentDelta": {
-      const delta = event.textDelta ?? (typeof payload.delta === "string" ? payload.delta : "");
-      if (delta.length === 0) {
-        return [];
-      }
+    case "collabAgent/delta": {
+      if (typeof payload.delta !== "string" || typeof payload.itemId !== "string") return [];
       return [
         {
           ...base,
           type: "content.delta",
+          itemId: RuntimeItemId.make(`${taskId}:${payload.itemId}`),
           payload: {
-            streamKind: "assistant_text",
-            delta,
+            streamKind: contentStreamKindFromMethod(String(payload.method)),
+            delta: payload.delta,
             agentId: taskId,
           },
         },
@@ -1144,51 +1117,15 @@ function mapCollabAgentEvent(
           type: "task.started",
           payload: {
             taskId,
+            description: title,
+            title,
             ...linkage,
-            ...(typeof payload.prompt === "string" ? { prompt: payload.prompt } : {}),
-            ...(typeof payload.promptId === "string" ? { promptId: payload.promptId } : {}),
             ...(typeof payload.parentThreadId === "string"
               ? { parentAgentId: payload.parentThreadId }
               : {}),
           },
         },
       ];
-    case "collabAgent/prompt":
-    case "collabAgent/historicalPrompt": {
-      const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
-      if (prompt.trim().length === 0) {
-        return [];
-      }
-      const promptId = typeof payload.promptId === "string" ? { promptId: payload.promptId } : {};
-      if (event.method === "collabAgent/historicalPrompt") {
-        // Reopened-thread recovery only adds transcript metadata. Using an
-        // update keeps it out of launch-card derivation while still letting
-        // the agent fold and transcript selector consume the prompt.
-        return [
-          {
-            ...base,
-            type: "task.updated",
-            payload: { taskId, prompt, ...promptId, status: "idle" as const, ...linkage },
-          },
-        ];
-      }
-      const assignment = taskAssignmentTitle(prompt);
-      return [
-        {
-          ...base,
-          type: "task.progress",
-          payload: {
-            taskId,
-            description: progressDescription,
-            // The instruction's opening line is the child's current activity.
-            ...(assignment ? { summary: assignment } : {}),
-            prompt,
-            ...promptId,
-            ...linkage,
-          },
-        },
-      ];
-    }
     case "collabAgent/metadataUpdated":
       return [
         {
@@ -1211,15 +1148,17 @@ function mapCollabAgentEvent(
       if (activityKind === "started") {
         // Wire-probe finding: children often register via subAgentActivity
         // alone (no thread/started with a spawn source), so this is the one
-        // shot at a task.started that carries the assignment.
+        // shot at a task.started with a real name — agentPath leaf beats a
+        // bare thread-id title.
         return [
           {
             ...base,
             type: "task.started",
             payload: {
               taskId,
+              description: title,
+              title,
               ...linkage,
-              ...(typeof payload.prompt === "string" ? { prompt: payload.prompt } : {}),
             },
           },
         ];
@@ -1275,24 +1214,14 @@ function mapCollabAgentEvent(
       }
       if (statusType === "active") {
         const flags = Array.isArray(status?.activeFlags) ? status.activeFlags : [];
-        // Which flag it is answers "what is this child waiting on" — the
-        // panel's whole question. Collapsing both into a bare `waiting` threw
-        // away the only per-agent wait reason any provider reports.
-        const waitReason = flags.includes("waitingOnApproval")
-          ? ("approval" as const)
-          : flags.includes("waitingOnUserInput")
-            ? ("user-input" as const)
-            : undefined;
+        const waiting = flags.some(
+          (flag) => flag === "waitingOnApproval" || flag === "waitingOnUserInput",
+        );
         return [
           {
             ...base,
             type: "task.updated",
-            payload: {
-              taskId,
-              status: waitReason ? ("waiting" as const) : ("running" as const),
-              ...(waitReason ? { waitReason } : {}),
-              ...linkage,
-            },
+            payload: { taskId, status: waiting ? "waiting" : "running", ...linkage },
           },
         ];
       }
@@ -1341,40 +1270,17 @@ function mapCollabAgentEvent(
           ? { reasoningOutputTokens: count(total?.reasoningOutputTokens) }
           : {}),
       };
-      // The child ALSO gets a real context-window meter, identical to the
-      // parent thread's: this notification is the child's own
-      // thread/tokenUsage/updated payload, so the `last` breakdown plus
-      // modelContextWindow describe its window exactly the way the parent's do.
-      // Decode the tokenUsage struct itself: the notification wrapper also
-      // requires threadId/turnId, which this synthetic event does not carry.
-      const contextUsage = readPayload(
-        EffectCodexSchema.V2ThreadTokenUsageUpdatedNotification__ThreadTokenUsage,
-        payload.tokenUsage,
-      );
-      const agentContextUsage = contextUsage ? normalizeCodexTokenUsage(contextUsage) : undefined;
       return [
         {
           ...base,
           type: "task.progress",
           payload: {
             taskId,
-            description: progressDescription,
+            description: title,
             ...linkage,
             typedUsage,
           },
         },
-        ...(agentContextUsage
-          ? [
-              {
-                ...base,
-                type: "thread.token-usage.updated" as const,
-                payload: {
-                  usage: agentContextUsage,
-                  agentId: taskId,
-                },
-              },
-            ]
-          : []),
       ];
     }
     case "collabAgent/item": {
@@ -1382,59 +1288,42 @@ function mapCollabAgentEvent(
         typeof payload.item === "object" && payload.item !== null
           ? (payload.item as Record<string, unknown>)
           : undefined;
-      const itemTypeRaw = typeof item?.type === "string" ? item.type : undefined;
-      if (!item || !itemTypeRaw) {
-        return [];
-      }
-      // A loose summary from the raw item: the child stream is untyped at
-      // this boundary (synthetic event payload), so read best-effort fields
-      // rather than force a schema decode.
-      const looseSummary =
+      const canonical = toCanonicalItemType(typeof item?.type === "string" ? item.type : "");
+      const summary =
         (typeof item?.command === "string" ? item.command : undefined) ??
         (typeof item?.title === "string" ? item.title : undefined) ??
-        (typeof item?.query === "string" ? item.query : undefined);
-      const canonical = toCanonicalItemType(itemTypeRaw);
-      const summary = looseSummary ?? canonical.replaceAll("_", " ");
-      const lifecycle = payload.lifecycle === "started" ? "item.started" : "item.completed";
-      const lifecycleItem = item as CodexLifecycleItem;
-      const detail = itemDetail(canonical, lifecycleItem);
-      const rawStatus =
-        typeof (item as Record<string, unknown>).status === "string"
-          ? ((item as Record<string, unknown>).status as string)
+        (typeof item?.query === "string" ? item.query : undefined) ??
+        canonical.replaceAll("_", " ");
+      const progress: ProviderRuntimeEvent = {
+        ...base,
+        type: "task.progress",
+        payload: { taskId, description: title, ...linkage, summary },
+      };
+      const lifecycle =
+        item && typeof item.id === "string"
+          ? mapItemLifecycle(
+              {
+                ...event,
+                itemId: ProviderItemId.make(`${taskId}:${item.id}`),
+                payload: {
+                  threadId: taskId,
+                  turnId: event.turnId ?? "child",
+                  item,
+                  ...(payload.phase === "started" ? { startedAtMs: 0 } : { completedAtMs: 0 }),
+                },
+              },
+              canonicalThreadId,
+              payload.phase === "started" ? "item.started" : "item.completed",
+            )
           : undefined;
-      const lifecycleStatus =
-        lifecycle === "item.started"
-          ? ("inProgress" as const)
-          : rawStatus === "failed" || rawStatus === "declined"
-            ? rawStatus
-            : ("completed" as const);
       return [
-        {
-          ...base,
-          type: "task.progress",
-          payload: {
-            taskId,
-            description: progressDescription,
-            ...linkage,
-            summary,
-          },
-        },
-        {
-          ...base,
-          type: lifecycle,
-          payload: {
-            itemType: canonical,
-            status: lifecycleStatus,
-            ...(itemTitle(canonical, lifecycleItem)
-              ? { title: itemTitle(canonical, lifecycleItem) }
-              : {}),
-            ...(detail ? { detail } : {}),
-            data: payload.item,
-            agentId: taskId,
-          },
-        },
+        progress,
+        ...(lifecycle && (lifecycle.type === "item.started" || lifecycle.type === "item.completed")
+          ? [{ ...lifecycle, payload: { ...lifecycle.payload, agentId: taskId } }]
+          : []),
       ];
     }
+
     case "collabAgent/closed":
       return [
         {
@@ -1451,7 +1340,6 @@ function mapCollabAgentEvent(
 function mapToRuntimeEvents(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
-  providerThreadId?: string,
 ): ReadonlyArray<ProviderRuntimeEvent> {
   if (event.kind === "notification" && event.method.startsWith("collabAgent/")) {
     return mapCollabAgentEvent(event, canonicalThreadId);
@@ -1474,19 +1362,6 @@ function mapToRuntimeEvents(
   }
 
   if (event.kind === "request") {
-    // Codex stamps the originating thread on every request. A request from a
-    // child conversation belongs to that child, not to the main agent: child
-    // thread ids are the task ids collab agents fold under (see
-    // mapCollabAgentEvent). Without this the panel reports the main agent as
-    // blocked whenever any child asks for approval.
-    const requestAgentId = (() => {
-      const payload = event.payload;
-      if (typeof payload !== "object" || payload === null) return undefined;
-      const threadId = (payload as Record<string, unknown>).threadId;
-      if (typeof threadId !== "string" || threadId.trim().length === 0) return undefined;
-      return providerThreadId === undefined || threadId === providerThreadId ? undefined : threadId;
-    })();
-
     if (event.method === "item/tool/requestUserInput") {
       const payload =
         readPayload(EffectCodexSchema.ServerRequest__ToolRequestUserInputParams, event.payload) ??
@@ -1501,7 +1376,6 @@ function mapToRuntimeEvents(
           type: "user-input.requested",
           payload: {
             questions,
-            ...(requestAgentId ? { agentId: requestAgentId } : {}),
           },
         },
       ];
@@ -1576,7 +1450,6 @@ function mapToRuntimeEvents(
               }
             : {}),
           ...(event.payload !== undefined ? { args: event.payload } : {}),
-          ...(requestAgentId ? { agentId: requestAgentId } : {}),
         },
       },
     ];
@@ -2418,7 +2291,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("codex");
   const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* Effect.service(ServerConfig);
@@ -2455,52 +2327,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-        const configuredLaunchArgs = resolveCodexLaunchArgs(
-          codexConfig.launchArgs,
-          options?.environment,
-        );
-        const plaintextCollabModelCatalogPath =
-          options?.plaintextCollabCatalog && !hasCodexModelCatalogOverride(configuredLaunchArgs)
-            ? // Best-effort: the override only makes Codex record subagent
-              // instructions in plaintext. A missing or unreadable model
-              // cache must not block the session — clients still recover
-              // instructions from the child's own user items, and an
-              // encrypted prompt renders as a placeholder row.
-              yield* materializePlaintextCollabModelCatalog({
-                ...options.plaintextCollabCatalog,
-                outputDirectory: serverConfig.providerStatusCacheDir,
-              }).pipe(
-                Effect.provideService(FileSystem.FileSystem, fileSystem),
-                Effect.provideService(Path.Path, path),
-                Effect.catch((cause) =>
-                  Effect.logWarning(
-                    "Codex plaintext collaboration catalog unavailable; subagent instructions may be encrypted.",
-                  ).pipe(
-                    Effect.annotateLogs({
-                      threadId: input.threadId,
-                      cause: String(cause),
-                    }),
-                    Effect.as(undefined),
-                  ),
-                ),
-              )
-            : undefined;
-        const launchArgs = withCodexModelCatalogLaunchArgs(
-          configuredLaunchArgs,
-          plaintextCollabModelCatalogPath,
-        );
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
           cwd: input.cwd ?? process.cwd(),
           binaryPath: codexConfig.binaryPath,
-          launchArgs,
+          launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
           ...(options?.environment ? { environment: options.environment } : {}),
           ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
           ...(isCodexResumeCursorSchema(input.resumeCursor)
-            ? input.forkFromThreadId !== undefined
-              ? { forkResumeCursor: input.resumeCursor }
-              : { resumeCursor: input.resumeCursor }
+            ? { resumeCursor: input.resumeCursor }
             : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
@@ -2523,6 +2359,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             : {}),
         };
         const turnTokenUsage = makeCodexTurnTokenUsageState();
+        // Codex reports a usage-limit stop as OpenAI's own sentence, which on a
+        // Business workspace blames credits for a window that ran out. The
+        // snapshot naming that window arrives in its own notification, before or
+        // after the stop and often sparse, so keep the session's merged view of
+        // it and read it when a turn fails on the limit.
+        let rateLimits: CodexRateLimitSnapshot | undefined;
         const sessionScope = yield* Scope.make("sequential");
         let sessionScopeTransferred = false;
         yield* Effect.addFinalizer(() =>
@@ -2551,15 +2393,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
           Effect.gen(function* () {
             yield* writeNativeEvent(event);
-            const providerResumeCursor =
-              event.kind === "request" ? (yield* runtime.getSession).resumeCursor : undefined;
-            const providerThreadId =
-              typeof providerResumeCursor === "object" &&
-              providerResumeCursor !== null &&
-              "threadId" in providerResumeCursor &&
-              typeof providerResumeCursor.threadId === "string"
-                ? providerResumeCursor.threadId
-                : undefined;
             if (event.method === "turn/started" && event.turnId) {
               if (turnTokenUsage.activeTurnId !== event.turnId) {
                 turnTokenUsage.byTurnId.clear();
@@ -2589,37 +2422,82 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               }
             }
 
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId, providerThreadId).map(
-              (runtimeEvent) => {
-                if (runtimeEvent.type === "turn.completed" && runtimeEvent.turnId) {
-                  return {
-                    ...runtimeEvent,
-                    payload: {
-                      ...runtimeEvent.payload,
-                      tokenUsage: completeCodexTurnTokenUsage(
-                        turnTokenUsage,
-                        String(runtimeEvent.turnId),
-                        runtimeEvent.payload.state === "completed",
-                      ),
-                    },
-                  } satisfies ProviderRuntimeEvent;
-                }
-                if (runtimeEvent.type === "turn.aborted" && runtimeEvent.turnId) {
-                  return {
-                    ...runtimeEvent,
-                    payload: {
-                      ...runtimeEvent.payload,
-                      tokenUsage: completeCodexTurnTokenUsage(
-                        turnTokenUsage,
-                        String(runtimeEvent.turnId),
-                        false,
-                      ),
-                    },
-                  } satisfies ProviderRuntimeEvent;
-                }
-                return runtimeEvent;
-              },
-            );
+            if (event.method === "account/rateLimits/updated") {
+              const limitsPayload = readPayload(
+                EffectCodexSchema.V2AccountRateLimitsUpdatedNotification,
+                event.payload,
+              );
+              if (limitsPayload) {
+                rateLimits = mergeCodexRateLimits(rateLimits, limitsPayload.rateLimits);
+              }
+            } else if (event.method === "error") {
+              const errorPayload = readPayload(
+                EffectCodexSchema.V2ErrorNotification,
+                event.payload,
+              );
+              // The failed `turn/completed` repeats this sentence and is answered
+              // below; relaying both would show the limit twice.
+              if (errorPayload?.error.codexErrorInfo === "usageLimitExceeded") return;
+            }
+
+            let usageLimitError: ProviderRuntimeEvent | undefined;
+            let usageLimitMessage: string | undefined;
+            if (event.method === "turn/completed") {
+              const completedPayload = readPayload(
+                EffectCodexSchema.V2TurnCompletedNotification,
+                event.payload,
+              );
+              const turnError =
+                completedPayload?.turn.status === "failed"
+                  ? completedPayload.turn.error
+                  : undefined;
+              if (turnError?.codexErrorInfo === "usageLimitExceeded") {
+                usageLimitMessage = codexUsageLimitMessage(rateLimits, event.createdAt);
+                usageLimitError = {
+                  ...runtimeEventBase(event, event.threadId),
+                  type: "runtime.error",
+                  payload: {
+                    message: usageLimitMessage,
+                    class: "provider_error",
+                    ...(turnError.message ? { detail: turnError.message } : {}),
+                  },
+                };
+              }
+            }
+
+            const mappedEvents = mapToRuntimeEvents(event, event.threadId).map((runtimeEvent) => {
+              if (runtimeEvent.type === "turn.completed" && runtimeEvent.turnId) {
+                return {
+                  ...runtimeEvent,
+                  payload: {
+                    ...runtimeEvent.payload,
+                    ...(usageLimitMessage ? { errorMessage: usageLimitMessage } : {}),
+                    tokenUsage: completeCodexTurnTokenUsage(
+                      turnTokenUsage,
+                      String(runtimeEvent.turnId),
+                      runtimeEvent.payload.state === "completed",
+                    ),
+                  },
+                } satisfies ProviderRuntimeEvent;
+              }
+              if (runtimeEvent.type === "turn.aborted" && runtimeEvent.turnId) {
+                return {
+                  ...runtimeEvent,
+                  payload: {
+                    ...runtimeEvent.payload,
+                    tokenUsage: completeCodexTurnTokenUsage(
+                      turnTokenUsage,
+                      String(runtimeEvent.turnId),
+                      false,
+                    ),
+                  },
+                } satisfies ProviderRuntimeEvent;
+              }
+              return runtimeEvent;
+            });
+            const runtimeEvents = usageLimitError
+              ? [usageLimitError, ...mappedEvents]
+              : mappedEvents;
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                 method: event.method,
@@ -2746,13 +2624,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     return session;
   });
 
-  const mapSessionRuntimeError = (threadId: ThreadId, method: string) =>
-    Effect.mapError((cause: CodexSessionRuntimeError | ProviderAdapterSessionNotFoundError) =>
-      cause._tag === "ProviderAdapterSessionNotFoundError"
-        ? cause
-        : mapCodexRuntimeError(threadId, method, cause),
-    );
-
   const interruptTurn: CodexAdapterShape["interruptTurn"] = (threadId, turnId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) => session.runtime.interruptTurn(turnId)),
@@ -2836,13 +2707,21 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       return requireSession(threadId).pipe(
         Effect.flatMap((session) => session.runtime.setGoal(params)),
         Effect.map((response) => toCodexGoal(response.goal)),
-        mapSessionRuntimeError(threadId, "thread/goal/set"),
+        Effect.mapError((cause) =>
+          cause._tag === "ProviderAdapterSessionNotFoundError"
+            ? cause
+            : mapCodexRuntimeError(threadId, "thread/goal/set", cause),
+        ),
       );
     },
     clear: (threadId) =>
       requireSession(threadId).pipe(
         Effect.flatMap((session) => session.runtime.clearGoal),
-        mapSessionRuntimeError(threadId, "thread/goal/clear"),
+        Effect.mapError((cause) =>
+          cause._tag === "ProviderAdapterSessionNotFoundError"
+            ? cause
+            : mapCodexRuntimeError(threadId, "thread/goal/clear", cause),
+        ),
       ),
   };
 
@@ -2928,21 +2807,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     capabilities: {
       sessionModelSwitch: "in-session",
       promptlessTurnContinuation: true,
-      supportsInputSteering: true,
     },
     startSession,
     sendTurn,
     compaction: { type: "native", start: compactThread },
     interruptTurn,
-    stopTask: (threadId, taskId) =>
-      requireSession(threadId).pipe(
-        Effect.flatMap((session) => session.runtime.interruptTurn(undefined, taskId)),
-        Effect.mapError((cause) =>
-          cause._tag === "ProviderAdapterSessionNotFoundError"
-            ? cause
-            : mapCodexRuntimeError(threadId, "task/stop", cause),
-        ),
-      ),
     readThread,
     rollbackThread,
     uploadFeedback,

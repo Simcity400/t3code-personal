@@ -35,8 +35,6 @@ export const ProjectionThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
-  forkedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
-  sideChatPromotedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   goal: Schema.optional(Schema.NullOr(OrchestrationThreadGoal)),
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),

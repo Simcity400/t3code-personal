@@ -17,6 +17,61 @@ import {
 } from "./use-composer-command-menu";
 
 describe("mobile slash commands", () => {
+  it("offers one native Goal command for existing Codex threads and inserts it", () => {
+    const items = buildComposerSlashCommandItems({
+      query: "go",
+      atMessageStart: true,
+      hasThread: true,
+      allowInteractionMode: true,
+      selectedProviderStatus: {
+        driver: ProviderDriverKind.make("codex"),
+        slashCommands: [{ name: "goal", description: "Native goal" }],
+      },
+    });
+    expect(items).toHaveLength(1);
+    const item = items[0];
+    if (!item) throw new Error("Expected /goal");
+    expect(
+      resolveComposerCommandSelection({
+        draftMessage: "/go",
+        trigger: { rangeStart: 0, rangeEnd: 3 },
+        item,
+        allowInteractionMode: true,
+      }),
+    ).toEqual({ text: "/goal ", cursor: 6, interactionMode: null });
+  });
+
+  it.each([
+    { hasThread: false, atMessageStart: true },
+    { hasThread: true, atMessageStart: false },
+  ])("hides Codex /goal outside an existing thread's command position: %j", (position) => {
+    expect(
+      buildComposerSlashCommandItems({
+        query: "goal",
+        ...position,
+        allowInteractionMode: true,
+        selectedProviderStatus: {
+          driver: ProviderDriverKind.make("codex"),
+          slashCommands: [{ name: "goal" }],
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it("leaves another provider's native /goal command alone", () => {
+    const items = buildComposerSlashCommandItems({
+      query: "goal",
+      atMessageStart: true,
+      hasThread: false,
+      allowInteractionMode: false,
+      selectedProviderStatus: {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        slashCommands: [{ name: "goal", description: "Provider command" }],
+      },
+    });
+    expect(items.map((item) => item.description)).toEqual(["Provider command"]);
+  });
+
   const antigravity = {
     driver: ProviderDriverKind.make("antigravity"),
     showInteractionModeToggle: false,
@@ -92,44 +147,5 @@ describe("mobile slash commands", () => {
         allowInteractionMode: false,
       }),
     ).toEqual({ text: "/plan ", cursor: 6, interactionMode: null });
-  });
-
-  // Fork feature: `/side` lives inside the upstream-owned builder, so it is
-  // the first thing an upstream refactor of that function can drop silently.
-  it.each([false, true])(
-    "offers the fork's /side command with legacy mode enabled=%s",
-    (allowInteractionMode) => {
-      const items = buildComposerSlashCommandItems({
-        query: "sid",
-        atMessageStart: true,
-        hasThread: true,
-        allowInteractionMode,
-        selectedProviderStatus: antigravity,
-      });
-
-      expect(items.map((entry) => entry.id)).toEqual(["cmd:side"]);
-      const item = items[0];
-      if (!item) throw new Error("Expected the side-chat command");
-      expect(
-        resolveComposerCommandSelection({
-          draftMessage: "/sid",
-          trigger: { rangeStart: 0, rangeEnd: 4 },
-          item,
-          allowInteractionMode,
-        }),
-      ).toEqual({ text: "/side ", cursor: 6, interactionMode: null });
-    },
-  );
-
-  it("keeps /side listed inside the message, where provider commands are gated", () => {
-    expect(
-      buildComposerSlashCommandItems({
-        query: "side",
-        atMessageStart: false,
-        hasThread: false,
-        allowInteractionMode: false,
-        selectedProviderStatus: antigravity,
-      }).map((entry) => entry.id),
-    ).toEqual(["cmd:side"]);
   });
 });

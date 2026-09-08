@@ -197,16 +197,8 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       if (state.authRevision !== before.authRevision) return state;
       const { message: _previousMessage, ...draft } = state.draft;
       const authenticated = draft.auth.status === "authenticated";
-      const retainVerifiedStatus =
-        errorMessage !== undefined &&
-        authenticated &&
-        draft.installed &&
-        (draft.status === "ready" || draft.status === "warning") &&
-        !missingInstallation;
       const message =
-        (retainVerifiedStatus
-          ? `Could not verify provider status. Using the last successful check from ${draft.checkedAt}. ${errorMessage}`
-          : errorMessage) ??
+        errorMessage ??
         (authenticated
           ? undefined
           : draft.auth.status === "unauthenticated"
@@ -218,14 +210,8 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           ...draft,
           installed: !missingInstallation,
           version: initialized?.agentInfo?.version || draft.version,
-          status: errorMessage
-            ? retainVerifiedStatus
-              ? "warning"
-              : "error"
-            : authenticated
-              ? "ready"
-              : "warning",
-          checkedAt: retainVerifiedStatus ? draft.checkedAt : updatedAt,
+          status: errorMessage ? "error" : authenticated ? "ready" : "warning",
+          checkedAt: updatedAt,
           ...(missingInstallation
             ? {
                 models: [],

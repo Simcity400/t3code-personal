@@ -8,7 +8,6 @@ import {
   type ProviderSession,
   RuntimeItemId,
   RuntimeRequestId,
-  RuntimeTaskId,
   ThreadId,
   type ToolLifecycleItemType,
   type TurnTokenUsage,
@@ -351,21 +350,6 @@ interface OpenCodeSessionContext {
   // OpenCode permits edits to completed parts. Keep text for snapshot comparison
   // until native removal or session teardown, but do not retain other part payloads.
   readonly textPartsByMessageId: Map<string, Map<string, OpenCodeTextPartState>>;
-  /**
-   * Child sessions of this thread's root session — OpenCode's subagents.
-   *
-   * OpenCode delegates by creating a session whose `parentID` is the
-   * delegator's, and the event subscription is global, so a child's messages,
-   * parts and tool calls all arrive here. Membership is transitive: a child of
-   * a child is a subagent of this thread too.
-   */
-  readonly childAgentSessionIds: Set<string>;
-  /** Owning conversation per child session, for nested attribution. */
-  readonly childAgentParentById: Map<string, string>;
-  /** Children already announced, so repeat `session.updated` rows don't restart them. */
-  readonly startedChildAgentIds: Set<string>;
-  /** Latest per-message token occupancy per session, so repeats stay quiet. */
-  readonly lastUsedTokensBySessionId: Map<string, number>;
   turnTokenUsage: OpenCodeTurnTokenUsageAccumulator | undefined;
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
@@ -515,23 +499,6 @@ type EventBaseInput = {
   readonly raw?: unknown;
 };
 
-/**
- * Subagent support for this adapter (2026-09-04).
- *
- * OpenCode delegates by creating a SESSION whose `parentID` is the delegator's
- * (`Session.parentID`), and the adapter subscribes to the server's global event
- * stream, so a child's messages, parts, tool calls and token usage all arrive
- * here already. A child session is therefore the agent: its id is the agent id,
- * membership is transitive, and everything it emits is stamped with it.
- *
- * The wire supports the full surface except one thing: `Session`/`Message`
- * report token counts but never a context-window size, so a meter can show a
- * conversation's occupancy but not a percentage of its limit. That applies
- * equally to the thread and to its children, so the two still look identical.
- *
- * The `collab_agent_tool_call` classification below is unrelated: it is a
- * display label derived from a tool's name.
- */
 function toToolLifecycleItemType(toolName: string): ToolLifecycleItemType {
   const normalized = toolName.toLowerCase();
   if (normalized === "todowrite" || normalized === "todoread") {
@@ -1630,8 +1597,6 @@ export function makeOpenCodeAdapter(
       part: OpenCodeTextPartState,
       turnId: TurnId | undefined,
       raw: unknown,
-      /** Owning subagent when this text belongs to a delegated session. */
-      agentId?: string | undefined,
     ) {
       if (part.text === undefined) {
         return;
@@ -1652,7 +1617,6 @@ export function makeOpenCodeAdapter(
           payload: {
             streamKind: resolveTextStreamKind(part),
             delta: deltaToEmit,
-            ...(agentId ? { agentId } : {}),
           },
         });
       }
@@ -1673,7 +1637,6 @@ export function makeOpenCodeAdapter(
             status: "completed",
             title: "Assistant message",
             ...(latestText.length > 0 ? { detail: latestText } : {}),
-            ...(agentId ? { agentId } : {}),
           },
         });
       }
@@ -1747,9 +1710,6 @@ export function makeOpenCodeAdapter(
       context: OpenCodeSessionContext,
       request: PermissionRequest,
       raw: unknown,
-      // A child's approval still prompts on the thread; the stamp re-homes
-      // its timeline row into that agent's transcript.
-      agentAttribution: { readonly agentId?: string } = {},
     ) {
       const base = yield* buildEventBase({
         threadId: context.session.threadId,
@@ -1779,7 +1739,6 @@ export function makeOpenCodeAdapter(
           requestType: mapPermissionToRequestType(request.permission),
           detail,
           args: request.metadata,
-          ...agentAttribution,
           options: [
             { decision: "accept", label: "Allow once" },
             {
@@ -1806,7 +1765,6 @@ export function makeOpenCodeAdapter(
       context: OpenCodeSessionContext,
       request: PermissionRequest,
       raw: unknown,
-      agentAttribution: { readonly agentId?: string } = {},
     ) {
       const replied = yield* runOpenCodeSdk("permission.reply", (signal) =>
         context.client.permission.reply({ requestID: request.id, reply: "once" }, { signal }),
@@ -1819,7 +1777,7 @@ export function makeOpenCodeAdapter(
         // Fall back to the dialog. The id stays resolved so a recovered copy
         // of this ask cannot reopen after the user answers;
         // `pendingPermissions` gates re-asks while the dialog is open.
-        yield* openPermissionRequest(context, request, raw, agentAttribution);
+        yield* openPermissionRequest(context, request, raw);
       }
     });
 
@@ -1835,12 +1793,6 @@ export function makeOpenCodeAdapter(
         context.resolvedRequestIds.add(event.properties.id);
         return;
       }
-      // A child's approval or question still prompts on the thread; the stamp
-      // re-homes its timeline row into that agent's transcript.
-      const requestSessionId = event.properties.sessionID;
-      const agentAttribution = context.childAgentSessionIds.has(requestSessionId)
-        ? { agentId: requestSessionId }
-        : {};
       if (event.type === "permission.asked") {
         const request = event.properties;
         if (context.pendingPermissions.has(request.id)) {
@@ -1851,12 +1803,12 @@ export function makeOpenCodeAdapter(
           // progress, terminal replies, or the acknowledgment for Stop.
           context.resolvedRequestIds.add(request.id);
           context.autoRepliedRequestIds.add(request.id);
-          yield* autoReplyFullAccess(context, request, raw, agentAttribution).pipe(
+          yield* autoReplyFullAccess(context, request, raw).pipe(
             Effect.forkIn(context.sessionScope),
           );
           return;
         }
-        yield* openPermissionRequest(context, request, raw, agentAttribution);
+        yield* openPermissionRequest(context, request, raw);
         return;
       }
 
@@ -1878,7 +1830,7 @@ export function makeOpenCodeAdapter(
       emitUnsafe({
         ...base,
         type: "user-input.requested",
-        payload: { questions: normalizeQuestionRequest(request), ...agentAttribution },
+        payload: { questions: normalizeQuestionRequest(request) },
       });
     });
 
@@ -2201,56 +2153,6 @@ export function makeOpenCodeAdapter(
       yield* run.pipe(Effect.forkIn(context.sessionScope));
     });
 
-    /**
-     * Announces a child session as a subagent of this thread.
-     *
-     * OpenCode delegates by creating a session whose `parentID` is the
-     * delegator's; there is no separate task lifecycle on the wire, so the
-     * session itself is the agent. Membership is transitive so a child of a
-     * child is attributed to the child that spawned it, not to the root.
-     */
-    const registerChildAgent = Effect.fn("registerChildAgent")(function* (
-      context: OpenCodeSessionContext,
-      info: {
-        readonly id: string;
-        readonly parentID?: string | undefined;
-        readonly title?: string | undefined;
-        readonly agent?: string | undefined;
-        readonly model?: { readonly id: string } | undefined;
-      },
-      parentSessionId: string,
-      turnId: TurnId | undefined,
-      raw: unknown,
-    ) {
-      context.childAgentSessionIds.add(info.id);
-      // Only a child of another CHILD names an owning agent. A child of the
-      // root belongs to the thread itself, which is not an agent.
-      if (parentSessionId !== context.openCodeSessionId) {
-        context.childAgentParentById.set(info.id, parentSessionId);
-      }
-      if (context.startedChildAgentIds.has(info.id)) {
-        return;
-      }
-      context.startedChildAgentIds.add(info.id);
-      const owningAgentId = context.childAgentParentById.get(info.id);
-      const title = trimText(info.title);
-      const description =
-        title !== undefined && !isOpenCodeDefaultTitle(title) ? title : (info.agent ?? info.id);
-      yield* emit({
-        ...(yield* buildEventBase({ threadId: context.session.threadId, turnId, raw })),
-        type: "task.started",
-        payload: {
-          taskId: RuntimeTaskId.make(info.id),
-          description,
-          title: description,
-          taskType: "opencode_subagent",
-          ...(info.agent ? { role: info.agent } : {}),
-          ...(info.model?.id ? { model: info.model.id } : {}),
-          ...(owningAgentId ? { parentAgentId: owningAgentId } : {}),
-        },
-      });
-    });
-
     const handleSubscribedEvent = Effect.fn("handleSubscribedEvent")(function* (
       context: OpenCodeSessionContext,
       event: OpenCodeSubscribedEvent,
@@ -2308,17 +2210,6 @@ export function makeOpenCodeAdapter(
 
       const payloadSessionId = openCodeEventSessionId(event);
       const isParentEvent = payloadSessionId === context.openCodeSessionId;
-      // A delegated session's own rows. Upstream's gate admits only the parent
-      // session and request events from related sessions, so a subagent's
-      // narration, tools and usage never reached the pipeline; this also has to
-      // admit the session row that announces the child in the first place.
-      const isChildAgentEvent =
-        payloadSessionId !== undefined &&
-        (context.childAgentSessionIds.has(payloadSessionId) ||
-          ((event.type === "session.created" || event.type === "session.updated") &&
-            event.properties.info.parentID !== undefined &&
-            (event.properties.info.parentID === context.openCodeSessionId ||
-              context.childAgentSessionIds.has(event.properties.info.parentID))));
       let isKnownPendingTerminalEvent = false;
       if (
         payloadSessionId !== undefined &&
@@ -2347,42 +2238,9 @@ export function makeOpenCodeAdapter(
         payloadSessionId !== undefined &&
         isOpenCodeChildRequestEvent(event) &&
         (context.relatedSessionIds.has(payloadSessionId) || isKnownPendingTerminalEvent);
-      if (!isParentEvent && !isChildRequestEvent && !isChildAgentEvent) {
+      if (!isParentEvent && !isChildRequestEvent) {
         return;
       }
-
-      // A session whose parent chain reaches this thread's root session is one
-      // of its subagents. The subscription is global, so this is where a
-      // delegated session first becomes visible.
-      if (event.type === "session.created" || event.type === "session.updated") {
-        const info = event.properties.info;
-        const parentSessionId = info.parentID;
-        if (
-          info.id !== context.openCodeSessionId &&
-          parentSessionId !== undefined &&
-          (parentSessionId === context.openCodeSessionId ||
-            context.childAgentSessionIds.has(parentSessionId))
-        ) {
-          yield* registerChildAgent(context, info, parentSessionId, context.activeTurnId, event);
-        }
-      }
-
-      const isRootSession = payloadSessionId === context.openCodeSessionId;
-      // Everything a subagent does is stamped with its session id, which is
-      // its agent id; unrelated sessions in the same OpenCode server stay out.
-      // A related session's approval/question rows still pass unattributed:
-      // those belong to the thread's request routing, not to a subagent.
-      const agentId =
-        payloadSessionId !== undefined && context.childAgentSessionIds.has(payloadSessionId)
-          ? payloadSessionId
-          : undefined;
-      if (
-        payloadSessionId === undefined ||
-        (!isRootSession && agentId === undefined && !isChildRequestEvent)
-      ) {
-        return;
-      }
-      const agentAttribution = agentId ? { agentId } : {};
 
       const turnId = context.activeTurnId;
       yield* writeNativeEventBestEffort(context.session.threadId, {
@@ -2413,7 +2271,6 @@ export function makeOpenCodeAdapter(
 
       switch (event.type) {
         case "session.updated": {
-          if (agentId !== undefined) break;
           const title = openCodeEventSessionTitle(event);
           if (title) {
             yield* emit({
@@ -2472,52 +2329,6 @@ export function makeOpenCodeAdapter(
             context.textPartsByMessageId.delete(event.properties.info.id);
           }
           if (event.properties.info.role === "assistant") {
-            // Context OCCUPANCY, not spend: what this request actually carried
-            // (the prompt plus its cache) is what fills a context window.
-            // OpenCode reports no window size, so the meter shows the figure
-            // without a percentage — the same for the thread and its children.
-            // Read defensively: this is wire data, and a message can reach us
-            // before the model has reported any usage for it.
-            const tokens = event.properties.info.tokens as
-              | {
-                  input?: number;
-                  output?: number;
-                  reasoning?: number;
-                  cache?: { read?: number; write?: number };
-                }
-              | undefined;
-            const count = (value: unknown): number =>
-              typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
-            const inputTokens = count(tokens?.input);
-            const cachedInputTokens = count(tokens?.cache?.read) + count(tokens?.cache?.write);
-            const outputTokens = count(tokens?.output);
-            const reasoningOutputTokens = count(tokens?.reasoning);
-            const usedTokens = inputTokens + cachedInputTokens + outputTokens;
-            if (
-              usedTokens > 0 &&
-              context.lastUsedTokensBySessionId.get(payloadSessionId) !== usedTokens
-            ) {
-              context.lastUsedTokensBySessionId.set(payloadSessionId, usedTokens);
-              yield* emit({
-                ...(yield* buildEventBase({
-                  threadId: context.session.threadId,
-                  turnId,
-                  raw: event,
-                })),
-                type: "thread.token-usage.updated",
-                payload: {
-                  usage: {
-                    usedTokens,
-                    lastUsedTokens: usedTokens,
-                    inputTokens,
-                    cachedInputTokens,
-                    outputTokens,
-                    reasoningOutputTokens,
-                  },
-                  ...agentAttribution,
-                },
-              });
-            }
             const usage = context.turnTokenUsage;
             const parentMessageId =
               typeof event.properties.info.parentID === "string" &&
@@ -2552,7 +2363,7 @@ export function makeOpenCodeAdapter(
             for (const part of context.textPartsByMessageId
               .get(event.properties.info.id)
               ?.values() ?? []) {
-              yield* emitAssistantTextDelta(context, part, turnId, event, agentId);
+              yield* emitAssistantTextDelta(context, part, turnId, event);
             }
           }
           break;
@@ -2607,7 +2418,6 @@ export function makeOpenCodeAdapter(
             payload: {
               streamKind,
               delta: deltaToEmit,
-              ...agentAttribution,
             },
           });
           break;
@@ -2638,7 +2448,7 @@ export function makeOpenCodeAdapter(
           if ((part.type === "text" || part.type === "reasoning") && messageRole !== "user") {
             const state = retainOpenCodeTextPart(context, part);
             if (messageRole === "assistant") {
-              yield* emitAssistantTextDelta(context, state, turnId, event, agentId);
+              yield* emitAssistantTextDelta(context, state, turnId, event);
             }
           } else {
             const previous = context.textPartsByMessageId.get(part.messageID)?.get(part.id);
@@ -2646,33 +2456,6 @@ export function makeOpenCodeAdapter(
               // A non-text PATCH removes the current snapshot. Keep emitted text
               // so a later text PATCH still emits only the changed suffix.
               previous.text = undefined;
-            }
-          }
-
-          // A child session's own user message is the exact instruction its
-          // parent delegated to it — the only plaintext copy on this wire, and
-          // the shape the shared transcript selector already recovers
-          // instructions from.
-          if (agentId !== undefined && messageRole === "user" && part.type === "text") {
-            const promptText = part.text;
-            if (promptText !== undefined && promptText.trim().length > 0) {
-              yield* emit({
-                ...(yield* buildEventBase({
-                  threadId: context.session.threadId,
-                  turnId,
-                  itemId: part.id,
-                  raw: event,
-                })),
-                type: "item.completed",
-                payload: {
-                  itemType: "user_message",
-                  status: "completed",
-                  title: "Instruction",
-                  detail: promptText,
-                  data: { type: "userMessage", content: [{ type: "text", text: promptText }] },
-                  ...agentAttribution,
-                },
-              });
             }
           }
 
@@ -2704,7 +2487,6 @@ export function makeOpenCodeAdapter(
                   ? { result: part.state.output }
                   : {}),
               },
-              ...agentAttribution,
             };
             const runtimeEvent: ProviderRuntimeEvent = {
               ...(yield* buildEventBase({
@@ -2723,29 +2505,6 @@ export function makeOpenCodeAdapter(
               payload,
             };
             yield* emit(runtimeEvent);
-          }
-          break;
-        }
-
-        case "session.idle": {
-          // A child session going idle has finished its turn. Idle, not
-          // terminal: OpenCode sessions are resumable.
-          if (agentId !== undefined) {
-            yield* emit({
-              ...(yield* buildEventBase({
-                threadId: context.session.threadId,
-                turnId,
-                raw: event,
-              })),
-              type: "task.updated",
-              payload: {
-                taskId: RuntimeTaskId.make(agentId),
-                status: "idle",
-                ...(context.childAgentParentById.get(agentId)
-                  ? { parentAgentId: context.childAgentParentById.get(agentId) }
-                  : {}),
-              },
-            });
           }
           break;
         }
@@ -2805,22 +2564,6 @@ export function makeOpenCodeAdapter(
         }
 
         case "session.status": {
-          if (agentId !== undefined) {
-            yield* emit({
-              ...(yield* buildEventBase({
-                threadId: context.session.threadId,
-                turnId,
-                raw: event,
-              })),
-              type: "task.updated",
-              payload: {
-                taskId: RuntimeTaskId.make(agentId),
-                status: event.properties.status.type === "idle" ? "idle" : "running",
-                agentKind: "agent",
-              },
-            });
-            break;
-          }
           if (event.properties.status.type === "busy" || event.properties.status.type === "retry") {
             if (turnId === undefined) {
               break;
@@ -2879,23 +2622,6 @@ export function makeOpenCodeAdapter(
 
         case "session.error": {
           const message = sessionErrorMessage(event.properties.error);
-          if (agentId !== undefined) {
-            yield* emit({
-              ...(yield* buildEventBase({
-                threadId: context.session.threadId,
-                turnId,
-                raw: event,
-              })),
-              type: "task.updated",
-              payload: {
-                taskId: RuntimeTaskId.make(agentId),
-                status: isOpenCodeAbortError(event.properties.error) ? "interrupted" : "failed",
-                description: message,
-                agentKind: "agent",
-              },
-            });
-            break;
-          }
           const activeTurnId = context.activeTurnId;
           const cancellation = context.cancellation;
           if (isOpenCodeAbortError(event.properties.error)) {
@@ -3265,10 +2991,6 @@ export function makeOpenCodeAdapter(
           pendingQuestions: new Map(),
           textPartsByMessageId: new Map(),
           messageRoleById: new Map(),
-          childAgentSessionIds: new Set(),
-          childAgentParentById: new Map(),
-          startedChildAgentIds: new Set(),
-          lastUsedTokensBySessionId: new Map(),
           turnTokenUsage: undefined,
           activeTurnId: undefined,
           activeAgent: undefined,
@@ -4119,27 +3841,12 @@ export function makeOpenCodeAdapter(
     return {
       provider: PROVIDER,
       capabilities: {
-        // connectToOpenCodeServer treats only a nonempty trimmed serverUrl as external.
-        crossProviderAgents: !openCodeSettings.serverUrl?.trim(),
         sessionModelSwitch: "in-session",
       },
       startSession,
       sendTurn,
       compaction: { type: "native", start: compactThread },
       interruptTurn,
-      stopTask: Effect.fn("OpenCode.stopTask")(function* (threadId, taskId) {
-        const context = yield* ensureSessionContext(sessions, threadId);
-        if (!context.childAgentSessionIds.has(taskId)) {
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "session.abort",
-            detail: "The task is not a child of this session.",
-          });
-        }
-        yield* runOpenCodeSdk("session.abort", (signal) =>
-          context.client.session.abort({ sessionID: taskId }, { signal }),
-        ).pipe(Effect.asVoid, Effect.mapError(toRequestError));
-      }),
       respondToRequest,
       respondToUserInput,
       stopSession,

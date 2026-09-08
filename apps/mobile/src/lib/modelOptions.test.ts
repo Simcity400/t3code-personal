@@ -13,49 +13,6 @@ import {
 } from "./modelOptions";
 
 describe("mobile model options", () => {
-  it("prefers healthy providers for implicit defaults while preserving explicit warning-provider selections", () => {
-    const config = {
-      providers: [
-        {
-          instanceId: "codex",
-          driver: "codex",
-          enabled: true,
-          installed: true,
-          status: "warning",
-          auth: { status: "authenticated" },
-          models: [
-            { slug: "codex-model", name: "Codex model", isDefault: true, capabilities: null },
-          ],
-        },
-        {
-          instanceId: "claudeAgent",
-          driver: "claudeAgent",
-          enabled: true,
-          installed: true,
-          status: "ready",
-          auth: { status: "authenticated" },
-          models: [{ slug: "claude-model", name: "Claude model", capabilities: null }],
-        },
-      ],
-    } as unknown as ServerConfig;
-    const modelOptions = buildModelOptions(config, null);
-    const input = {
-      draftSelection: null,
-      projectDefaultSelection: null,
-      stickySelection: null,
-      modelOptions,
-    };
-    expect(resolveNewTaskModelSelection(input)).toEqual({
-      instanceId: "claudeAgent",
-      model: "claude-model",
-    });
-    const stored = { instanceId: ProviderInstanceId.make("codex"), model: "codex-model" };
-    expect(resolveNewTaskModelSelection({ ...input, stickySelection: stored })).toBe(stored);
-    expect(
-      resolveNewTaskModelSelection({ ...input, modelOptions: modelOptions.slice(0, 1) }),
-    ).toEqual(stored);
-  });
-
   it("groups models by provider and flags legacy entries", () => {
     const config = {
       providers: [

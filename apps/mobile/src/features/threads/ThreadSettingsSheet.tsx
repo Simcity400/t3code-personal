@@ -61,17 +61,12 @@ import {
   NATIVE_MAIL_SEARCH_TOOLBAR_CONTENT_INSET,
   NATIVE_MAIL_SEARCH_TOOLBAR_SUPPORTED,
 } from "../layout/native-mail-search-toolbar";
-import {
-  RUNTIME_MODE_CHOICES,
-  runtimeModeLabel,
-  selectableChoices,
-} from "./thread-settings-options";
+import { RUNTIME_MODE_CHOICES, selectableChoices } from "./thread-settings-options";
 import {
   canCommitPendingModel,
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
   providerSectionIsCollapsed,
-  providerSectionStartsExpanded,
 } from "./thread-settings-sheet-state";
 
 /**
@@ -320,7 +315,6 @@ type ThreadSettingsSubmenuPage =
 type ThreadSettingsSessionProps = {
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
-  readonly providerDriver?: string | null;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly selectedModel: ModelSelection | null;
   readonly onSelectModel: (option: ModelOption) => void;
@@ -374,7 +368,6 @@ export function useExistingThreadSettingsRoutePresentation() {
 type ThreadSettingsSessionValue = {
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
-  readonly providerDriver?: string | null;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
@@ -503,7 +496,6 @@ function ThreadSettingsSessionProvider(
     () => ({
       environmentId: props.environmentId,
       providerInstanceId: props.providerInstanceId,
-      providerDriver: props.providerDriver,
       providerGroups: props.providerGroups,
       runtimeMode: props.runtimeMode,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
@@ -533,7 +525,6 @@ function ThreadSettingsSessionProvider(
       isApplied,
       isDisplayed,
       props.environmentId,
-      props.providerDriver,
       props.providerInstanceId,
       pendingModel,
       pressModel,
@@ -640,79 +631,72 @@ function ThreadSettingsProviderListHeader(props: {
 function useThreadSettingsCatalogItems(
   session: ThreadSettingsSessionValue,
 ): ReadonlyArray<ThreadSettingsCatalogItem> {
-  return useMemo(() => {
-    const providerCountByDriver = new Map<string, number>();
-    for (const group of session.providerGroups) {
-      const groupDriver = group.models[0]?.providerDriver ?? group.providerKey;
-      providerCountByDriver.set(groupDriver, (providerCountByDriver.get(groupDriver) ?? 0) + 1);
-    }
-    return session.providerGroups.flatMap((group) => {
-      if (session.providerFilter !== null && group.providerKey !== session.providerFilter) {
-        return [];
-      }
-      const driver = group.models[0]?.providerDriver ?? group.providerKey;
-      const catalogModels = session.showLegacy
-        ? group.models
-        : group.models.filter((model) => !model.isLegacy || session.isDisplayed(model));
-      const visibleModels = catalogModels.filter((model) =>
-        modelMatchesCatalogQuery({
-          model,
-          providerLabel: group.providerLabel,
-          query: session.searchQuery,
-        }),
-      );
-      if (visibleModels.length === 0) {
-        return [];
-      }
-      const isPrimary = driver !== undefined && PRIMARY_PROVIDER_DRIVERS.has(driver);
-      // Staging a model must not change disclosure state. The applied model
-      // stays stable for the lifetime of this picker (Save closes it), so it
-      // is safe to use as the initial selected-provider default.
-      const containsAppliedSelection = group.models.some(session.isApplied);
-      const isNarrowed = session.providerFilter !== null || session.searchQuery.trim().length > 0;
-      const collapsible = !isNarrowed;
-      const collapsed = providerSectionIsCollapsed({
-        defaultExpanded: providerSectionStartsExpanded({
-          isPrimary,
-          containsAppliedSelection,
-          sameDriverProviderCount: providerCountByDriver.get(driver) ?? 1,
-        }),
-        hasExpansionOverride: session.providerExpansionOverrides.has(group.providerKey),
-        isNarrowed,
-      });
-      const provider: ThreadSettingsProviderCatalog = {
-        key: group.providerKey,
-        driver,
-        label: group.providerLabel,
-        collapsible,
-        collapsed,
-        modelCount: visibleModels.length,
-        models: collapsed ? [] : visibleModels,
-      };
-      return [
-        {
-          kind: "provider" as const,
-          key: `provider:${group.providerKey}`,
-          provider,
-        },
-        ...provider.models.map((option, index) => ({
-          kind: "model" as const,
-          key: `model:${option.key}`,
-          option,
-          isFirst: index === 0,
-          isLast: index === provider.models.length - 1,
-        })),
-      ];
-    });
-  }, [
-    session.isApplied,
-    session.isDisplayed,
-    session.providerExpansionOverrides,
-    session.providerFilter,
-    session.providerGroups,
-    session.searchQuery,
-    session.showLegacy,
-  ]);
+  return useMemo(
+    () =>
+      session.providerGroups.flatMap((group) => {
+        if (session.providerFilter !== null && group.providerKey !== session.providerFilter) {
+          return [];
+        }
+        const driver = group.models[0]?.providerDriver ?? group.providerKey;
+        const catalogModels = session.showLegacy
+          ? group.models
+          : group.models.filter((model) => !model.isLegacy || session.isDisplayed(model));
+        const visibleModels = catalogModels.filter((model) =>
+          modelMatchesCatalogQuery({
+            model,
+            providerLabel: group.providerLabel,
+            query: session.searchQuery,
+          }),
+        );
+        if (visibleModels.length === 0) {
+          return [];
+        }
+        const isPrimary = driver !== undefined && PRIMARY_PROVIDER_DRIVERS.has(driver);
+        // Staging a model must not change disclosure state. The applied model
+        // stays stable for the lifetime of this picker (Save closes it), so it
+        // is safe to use as the initial selected-provider default.
+        const containsAppliedSelection = group.models.some(session.isApplied);
+        const isNarrowed = session.providerFilter !== null || session.searchQuery.trim().length > 0;
+        const collapsible = !isNarrowed;
+        const collapsed = providerSectionIsCollapsed({
+          defaultExpanded: isPrimary || containsAppliedSelection,
+          hasExpansionOverride: session.providerExpansionOverrides.has(group.providerKey),
+          isNarrowed,
+        });
+        const provider: ThreadSettingsProviderCatalog = {
+          key: group.providerKey,
+          driver,
+          label: group.providerLabel,
+          collapsible,
+          collapsed,
+          modelCount: visibleModels.length,
+          models: collapsed ? [] : visibleModels,
+        };
+        return [
+          {
+            kind: "provider" as const,
+            key: `provider:${group.providerKey}`,
+            provider,
+          },
+          ...provider.models.map((option, index) => ({
+            kind: "model" as const,
+            key: `model:${option.key}`,
+            option,
+            isFirst: index === 0,
+            isLast: index === provider.models.length - 1,
+          })),
+        ];
+      }),
+    [
+      session.isApplied,
+      session.isDisplayed,
+      session.providerExpansionOverrides,
+      session.providerFilter,
+      session.providerGroups,
+      session.searchQuery,
+      session.showLegacy,
+    ],
+  );
 }
 
 function ThreadSettingsOptionsItem(props: {
@@ -771,7 +755,9 @@ function ThreadSettingsOptionsItem(props: {
           <DisclosureRow
             isLast
             label="Runtime"
-            value={runtimeModeLabel(session.runtimeMode)}
+            value={
+              RUNTIME_MODE_CHOICES.find((choice) => choice.mode === session.runtimeMode)?.label
+            }
             onPress={() => props.onOpenSubmenu({ kind: "runtime" })}
           />
         </Animated.View>
