@@ -1,13 +1,11 @@
 import type { StatusTone } from "../../components/StatusPill";
 import type { OrchestrationLatestTurn, OrchestrationSession } from "@t3tools/contracts";
 import { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { resolveThreadWorkState } from "@t3tools/shared/threadWorkState";
 
 export type ThreadStatusKind =
   | "pending-approval"
   | "awaiting-input"
   | "working"
-  | "waiting"
   | "connecting"
   | "error"
   | "plan-ready";
@@ -64,24 +62,6 @@ export function resolveThreadStatus(
     };
   }
 
-  // Compaction reports itself as a running session, so it is read before that
-  // check or it would show up as the agent working. Only compaction jumps the
-  // queue; ordinary background work stays below the plan prompt.
-  if (thread.compactingSince != null) {
-    const compacting = resolveThreadWorkState(thread);
-    if (compacting.state === "waiting" && compacting.label !== null) {
-      return {
-        kind: "waiting",
-        label: compacting.label,
-        pillClassName: "bg-adaptive-sky-500-a12-a16",
-        textClassName: "text-adaptive-sky-700-300",
-        iconColor: "#0a84ff",
-        iconBackground: "rgba(10,132,255,0.22)",
-        pulse: false,
-      };
-    }
-  }
-
   if (thread.session?.status === "running") {
     return {
       kind: "working",
@@ -130,24 +110,6 @@ export function resolveThreadStatus(
       textClassName: "text-foreground-secondary",
       iconColor: "#bf5af2",
       iconBackground: "rgba(191,90,242,0.22)",
-      pulse: false,
-    };
-  }
-
-  // The thread's own turn is over, but work it started is still alive. Not
-  // working — waiting: the agent will answer a message straight away. Same
-  // hue as Working so a thread reads consistently, but no pulse, because
-  // nothing of the agent's own is in flight. The label after "Waiting on" is
-  // whatever the provider called the work.
-  const backgroundWait = resolveThreadWorkState(thread);
-  if (backgroundWait.state === "waiting" && backgroundWait.label !== null) {
-    return {
-      kind: "waiting",
-      label: backgroundWait.label,
-      pillClassName: "bg-adaptive-sky-500-a12-a16",
-      textClassName: "text-adaptive-sky-700-300",
-      iconColor: "#0a84ff",
-      iconBackground: "rgba(10,132,255,0.22)",
       pulse: false,
     };
   }

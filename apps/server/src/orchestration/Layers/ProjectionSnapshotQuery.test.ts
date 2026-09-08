@@ -1,5 +1,3 @@
-import { selectSubagentTranscriptMessages } from "../../../../../packages/client-runtime/src/state/subagentRuntime.ts";
-import { taskStateActivityId, updateTaskState } from "../taskState.ts";
 import {
   type AgentSessionImportSource,
   ChatAttachment,
@@ -36,7 +34,6 @@ const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
-const encodeRecoveryJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const encodeChatAttachments = Schema.encodeEffect(
   Schema.fromJsonString(Schema.Array(ChatAttachment)),
 );
@@ -55,104 +52,6 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
-  it.effect("reads current bridge ownership and unresolved requests beyond unrelated history", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const query = yield* ProjectionSnapshotQuery;
-      const threadId = ThreadId.make("bridge-recovery");
-      const at = "2026-09-05T00:00:00.000Z";
-      yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
-        VALUES ('bridge-recovery-project', 'Bridge', '/tmp/bridge', '[]', ${at}, ${at})`;
-      yield* sql`INSERT INTO projection_threads (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, created_at, updated_at)
-        VALUES (${threadId}, 'bridge-recovery-project', 'Bridge', '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default', ${at}, ${at})`;
-      for (const [id, owner, status] of [
-        ["bridge", "cross-provider", "completed"],
-        ["native", "cross-provider", "running"],
-        ["main-native", undefined, "running"],
-      ] as const) {
-        const state = updateTaskState(undefined, {
-          id: EventId.make(id),
-          kind: "task.updated",
-          tone: "info",
-          summary: id,
-          turnId: null,
-          createdAt: at,
-          payload: { taskId: id, taskType: "subagent", executionOwner: owner, status },
-        });
-        yield* sql`INSERT INTO projection_thread_activities
-          (activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at)
-          VALUES (${taskStateActivityId(threadId, id)}, ${threadId}, 'info', 'task.state', ${id}, ${encodeRecoveryJson(state)}, 1, ${at})`;
-      }
-      for (const [id, kind, request, sequence] of [
-        ["question", "user-input.requested", "question", 2],
-        ["answered", "user-input.requested", "answered", 3],
-        ["answer", "user-input.resolved", "answered", 4],
-        ["approval", "approval.requested", "approval", 5],
-      ] as const) {
-        yield* sql`INSERT INTO projection_thread_activities
-          (activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at)
-          VALUES (${`bridge-recovery:${id}`}, ${threadId}, 'info', ${kind}, ${id},
-            ${encodeRecoveryJson({ requestId: request, bridgeAgentId: "bridge", agentId: "bridge" })}, ${sequence}, ${at})`;
-      }
-      yield* sql`WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 5000)
-        INSERT INTO projection_thread_activities
-        (activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at)
-        SELECT 'bridge-noise:' || n, ${threadId}, 'tool', 'tool.completed', 'noise', '{}', n + 10, ${at} FROM counter`;
-      const recovery = yield* query.getCrossProviderRecovery();
-      const currentTask = yield* query.getTaskState({ threadId, taskId: "bridge" });
-      assert.equal(Option.getOrThrow(currentTask).status, "completed");
-      assert.ok(Option.isNone(yield* query.getTaskState({ threadId, taskId: "missing" })));
-      assert.ok(
-        Option.isNone(
-          yield* query.getTaskState({ threadId: ThreadId.make("foreign-root"), taskId: "bridge" }),
-        ),
-      );
-      const taskPlan = yield* sql`EXPLAIN QUERY PLAN SELECT activity.payload_json AS state
-        FROM projection_thread_activities AS activity
-        JOIN projection_threads AS thread ON thread.thread_id = activity.thread_id
-        WHERE activity.activity_id = ${taskStateActivityId(threadId, "bridge")}
-          AND activity.thread_id = ${threadId} AND activity.kind = 'task.state'
-          AND thread.deleted_at IS NULL`;
-      assert.ok(taskPlan.some((row) => String(row.detail).includes("activity_id=?")));
-      assert.deepEqual(
-        recovery.tasks.map(({ state }) => [state.id, state.status]),
-        [
-          ["bridge", "completed"],
-          ["native", "running"],
-        ],
-      );
-      assert.deepEqual(recovery.requests.map(({ activity }) => activity.kind).sort(), [
-        "approval.requested",
-        "user-input.requested",
-      ]);
-      const plan =
-        yield* sql`EXPLAIN QUERY PLAN SELECT payload_json FROM projection_thread_activities
-        WHERE kind = 'task.state'
-        AND json_extract(payload_json, '$.executionOwner') = 'cross-provider'`;
-      yield* Effect.logInfo("bridge recovery task query plan", { plan });
-      assert.ok(
-        plan.some((row) => String(row.detail).includes("USING INDEX idx_projection_bridge_tasks")),
-      );
-      const requestPlan =
-        yield* sql`EXPLAIN QUERY PLAN SELECT payload_json FROM projection_thread_activities INDEXED BY idx_projection_bridge_requests
-        WHERE thread_id = ${threadId}
-          AND kind IN ('approval.requested', 'approval.resolved', 'user-input.requested', 'user-input.resolved')
-          AND json_extract(payload_json, '$.bridgeAgentId') IS NOT NULL
-          AND json_extract(payload_json, '$.requestId') IS NOT NULL`;
-      assert.ok(
-        requestPlan.some((row) =>
-          String(row.detail).includes("USING INDEX idx_projection_bridge_requests"),
-        ),
-      );
-      yield* Effect.logInfo("bridge recovery request query plan", { requestPlan });
-      yield* sql`UPDATE projection_threads SET deleted_at = ${at} WHERE thread_id = ${threadId}`;
-      assert.ok(Option.isNone(yield* query.getTaskState({ threadId, taskId: "bridge" })));
-      yield* sql`DELETE FROM projection_thread_activities WHERE thread_id = ${threadId}`;
-      yield* sql`DELETE FROM projection_threads WHERE thread_id = ${threadId}`;
-      yield* sql`DELETE FROM projection_projects WHERE project_id = 'bridge-recovery-project'`;
-    }),
-  );
-
   it.effect("hydrates read model from projection tables and computes snapshot sequence", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
@@ -607,8 +506,6 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
           backgroundLiveness: null,
-          backgroundWait: null,
-          compactingSince: null,
           planProgress: null,
         },
       ]);
@@ -1185,8 +1082,6 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           branch,
           worktree_path,
           latest_turn_id,
-          forked_from_thread_id,
-          side_chat_promoted_at,
           created_at,
           updated_at,
           archived_at,
@@ -1203,8 +1098,6 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             NULL,
             NULL,
             NULL,
-            'thread-parent',
-            NULL,
             '2026-03-01T00:00:05.000Z',
             '2026-03-01T00:00:06.000Z',
             NULL,
@@ -1220,8 +1113,6 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             NULL,
             NULL,
             NULL,
-            NULL,
-            NULL,
             '2026-03-01T00:00:07.000Z',
             '2026-03-01T00:00:08.000Z',
             NULL,
@@ -1234,8 +1125,6 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             '{"provider":"codex","model":"gpt-5-codex"}',
             'full-access',
             'default',
-            NULL,
-            NULL,
             NULL,
             NULL,
             NULL,
@@ -1266,7 +1155,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         );
         assert.equal(firstThreadId._tag, "Some");
         if (firstThreadId._tag === "Some") {
-          assert.equal(firstThreadId.value, ThreadId.make("thread-second"));
+          assert.equal(firstThreadId.value, ThreadId.make("thread-first"));
         }
       }),
   );
@@ -3132,99 +3021,6 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
         assert.deepEqual(messageIds(snapshot.value), ["pre-turn-msg"]);
         assert.equal(snapshot.value.page?.hasMore, false);
         assert.equal(snapshot.value.page?.beforeCursor, null);
-      }
-    }),
-  );
-
-  it.effect("keeps agent identity and settled status beyond the work-log window", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const snapshotQuery = yield* ProjectionSnapshotQuery;
-      const threadId = ThreadId.make("thread-agent-retention");
-      yield* sql`
-        INSERT INTO projection_projects (
-          project_id, title, workspace_root, scripts_json, created_at, updated_at
-        ) VALUES ('project-agent-retention', 'Agents', '/tmp/agent-retention', '[]',
-          '2026-03-02T00:00:00.000Z', '2026-03-02T00:00:00.000Z')
-      `;
-      yield* sql`
-        INSERT INTO projection_threads (
-          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
-          created_at, updated_at
-        ) VALUES (${threadId}, 'project-agent-retention', 'Agents',
-          '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
-          '2026-03-02T00:00:00.000Z', '2026-03-02T00:00:00.000Z')
-      `;
-      yield* sql`
-        INSERT INTO projection_thread_activities (
-          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
-        ) VALUES
-          ('agent-retention-start', ${threadId}, NULL, 'info', 'task.started', 'Reviewer',
-            '{"taskId":"reviewer","agentKind":"agent","title":"Reviewer","taskType":"local_agent"}',
-            1, '2026-03-02T00:00:01.000Z'),
-          ('agent-retention-idle', ${threadId}, NULL, 'info', 'task.updated', 'Idle',
-            '{"taskId":"reviewer","agentKind":"agent","status":"idle"}',
-            2, '2026-03-02T00:00:02.000Z'),
-          ('agent-retention-metadata', ${threadId}, NULL, 'info', 'task.updated', 'Metadata',
-            '{"taskId":"reviewer","agentKind":"agent","model":"gpt-5-codex"}',
-            3, '2026-03-02T00:00:03.000Z')
-      `;
-      const state = updateTaskState(undefined, {
-        id: asEventId("state-source"),
-        kind: "task.updated",
-        tone: "info",
-        summary: "Reviewer",
-        turnId: null,
-        createdAt: "2026-03-02T00:00:04.000Z",
-        payload: {
-          taskId: "reviewer",
-          toolUseId: "launch-reviewer",
-          taskType: "subagent",
-          title: "Reviewer",
-          status: "idle",
-          model: "gpt-5-codex",
-          typedUsage: { totalTokens: 1234 },
-        },
-      });
-      // @effect-diagnostics-next-line preferSchemaOverJson:off
-      const stateJson = JSON.stringify(state);
-      yield* sql`INSERT INTO projection_thread_activities (
-        activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
-      ) VALUES ('agent-state', ${threadId}, NULL, 'info', 'task.state', 'Reviewer', ${stateJson}, 4, '2026-03-02T00:00:04.000Z')`;
-      yield* sql`INSERT INTO projection_thread_activities (
-        activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
-      ) VALUES
-        ('launch-reviewer', ${threadId}, NULL, 'info', 'tool.completed', 'Agent', '{"itemId":"launch-reviewer","itemType":"collab_agent_tool_call","data":{"toolName":"Agent","input":{"name":"security-reviewer","prompt":"Review security."}}}', 5, '2026-03-02T00:00:04.000Z'),
-        ('follow-reviewer', ${threadId}, NULL, 'info', 'tool.completed', 'SendMessage', '{"itemId":"follow-reviewer","itemType":"collab_agent_tool_call","data":{"toolName":"SendMessage","input":{"to":"security-reviewer","message":"Check recovery too."}}}', 6, '2026-03-02T00:00:05.000Z')`;
-      yield* sql`
-        WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 510)
-        INSERT INTO projection_thread_activities (
-          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
-        ) SELECT 'agent-retention-log-' || n, ${threadId}, NULL, 'info', 'tool.completed',
-          'Work log', '{}', n + 10, '2026-03-02T00:00:04.000Z' FROM counter
-      `;
-
-      const raw = yield* snapshotQuery.getThreadDetailById(threadId);
-      const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(threadId, { turnLimit: 2 });
-      assert.equal(raw._tag, "Some");
-      assert.equal(snapshot._tag, "Some");
-      if (raw._tag !== "Some" || snapshot._tag !== "Some") return;
-      for (const activities of [raw.value.activities, snapshot.value.thread.activities]) {
-        // The current task record survives trimming in both reads, and the
-        // superseded lifecycle rows never come back.
-        assert.deepEqual(
-          activities.filter((row) => row.kind.startsWith("task.")).map((row) => row.id),
-          ["agent-state"],
-        );
-        // No other task row is pinned: the launch and follow-up collaboration
-        // rows sit outside the work-log window and only arrive when that
-        // window is widened, which keeps the first paint bounded on
-        // agent-heavy threads.
-        assert.equal(activities.filter((row) => row.kind === "tool.completed").length, 500);
-        assert.deepEqual(
-          selectSubagentTranscriptMessages([], activities, "reviewer").map((row) => row.text),
-          [],
-        );
       }
     }),
   );

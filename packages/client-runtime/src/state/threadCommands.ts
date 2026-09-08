@@ -1,3 +1,5 @@
+import * as Crypto from "effect/Crypto";
+import { Atom } from "effect/unstable/reactivity";
 import {
   type CodexGoal,
   type CodexGoalSetInput,
@@ -8,8 +10,6 @@ import {
   type OrchestrationThreadGoal,
   WS_METHODS,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
-import { Atom } from "effect/unstable/reactivity";
 
 import {
   createAtomCommandScheduler,

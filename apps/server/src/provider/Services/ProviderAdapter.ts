@@ -8,10 +8,10 @@
  * @module ProviderAdapter
  */
 import type {
-  ApprovalRequestId,
   CodexGoal,
   CodexGoalClearResult,
   CodexGoalSetInput,
+  ApprovalRequestId,
   ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderUserInputAnswers,
@@ -46,10 +46,6 @@ export type ProviderCompaction<TError> =
   | { readonly type: "slash-command"; readonly command: `/${string}` };
 
 export interface ProviderAdapterCapabilities {
-  /** True when sendTurn can deliver input during active work without cancelling it. */
-  readonly supportsInputSteering?: boolean;
-  /** False when this adapter cannot host T3-managed cross-provider agents. Omitted means allowed. */
-  readonly crossProviderAgents?: boolean;
   /**
    * Declares whether changing the model on an existing session is supported.
    */
@@ -96,14 +92,9 @@ export interface ProviderAdapterShape<TError> {
   readonly compaction?: ProviderCompaction<TError>;
 
   /**
-   * Interrupt an active turn, including the native descendants this session
-   * owns. Cross-provider children run as separate adapter sessions and are
-   * never reached through their parent's interrupt.
+   * Interrupt an active turn.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
-
-  /** Stop one native task without interrupting its parent or siblings. */
-  readonly stopTask?: (threadId: ThreadId, taskId: string) => Effect.Effect<void, TError>;
 
   /**
    * Respond to an interactive approval request.

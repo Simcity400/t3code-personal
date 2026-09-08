@@ -1,4 +1,3 @@
-import { projectTaskActivity } from "./taskState.ts";
 import {
   CommandId,
   EventId,
@@ -11,7 +10,7 @@ import * as Effect from "effect/Effect";
 import { it as effectIt } from "@effect/vitest";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createEmptyReadModel, projectEvent, retainThreadActivities } from "./projector.ts";
+import { createEmptyReadModel, projectEvent } from "./projector.ts";
 
 function makeEvent(input: {
   sequence: number;
@@ -1147,79 +1146,3 @@ describe("orchestration projector", () => {
     expect(thread?.checkpoints.at(-1)?.turnId).toBe("turn-599");
   });
 });
-
-it.each([true, false])(
-  "retains independent agent patches through successive trims (usage first: %s)",
-  (usageFirst) => {
-    const row = (id: string, kind: string, payload: Record<string, unknown>) =>
-      ({
-        id,
-        kind,
-        payload,
-        tone: "info",
-        summary: id,
-        turnId: null,
-        createdAt: "2026-09-05T00:00:00.000Z",
-      }) as Parameters<typeof retainThreadActivities>[0][number];
-    const start = row("start", "task.started", {
-      taskId: "reviewer",
-      agentKind: "agent",
-      title: "Reviewer",
-    });
-    const idle = row("idle", "task.updated", {
-      taskId: "reviewer",
-      agentKind: "agent",
-      status: "idle",
-    });
-    const metadata = row("metadata", "task.updated", {
-      taskId: "reviewer",
-      agentKind: "agent",
-      model: "codex",
-    });
-    const usage = row("usage", "task.progress", {
-      taskId: "reviewer",
-      agentKind: "agent",
-      usageSnapshot: true,
-      typedUsage: { totalTokens: 1234, inputTokens: 1200, outputTokens: 34 },
-    });
-    const progress = row("progress", "task.progress", {
-      taskId: "reviewer",
-      agentKind: "agent",
-      summary: "Checking the latest change",
-    });
-    const prompt = row("prompt", "task.updated", {
-      taskId: "reviewer",
-      agentKind: "agent",
-      prompt: "Review the implementation",
-      promptId: "prompt-1",
-    });
-    const identity = row("identity", "task.updated", {
-      taskId: "reviewer",
-      agentKind: "agent",
-      title: "Updated reviewer",
-    });
-    const anchors = [
-      start,
-      ...(usageFirst ? [usage, progress] : [progress, usage]),
-      idle,
-      metadata,
-      prompt,
-      identity,
-    ];
-    let snapshots: Parameters<typeof retainThreadActivities>[0] = [];
-    for (const activity of anchors) {
-      const updates = projectTaskActivity(ThreadId.make("test"), snapshots, activity);
-      snapshots = [
-        ...snapshots.filter((row) => !updates.some((update) => update.id === row.id)),
-        ...updates,
-      ];
-    }
-    let activities: Parameters<typeof retainThreadActivities>[0] = [...anchors, ...snapshots];
-    for (let index = 0; index < 1000; index++)
-      activities = retainThreadActivities(
-        activities.concat(row("work-" + index, "tool.completed", {})),
-      );
-    expect(activities.slice(0, 2)).toEqual([prompt, ...snapshots]);
-    expect(activities.length).toBe(502);
-  },
-);

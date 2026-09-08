@@ -12,7 +12,6 @@ import {
   threadSearchMatchKey,
   type EnvironmentThreadSearchMatch,
 } from "@t3tools/client-runtime/state/thread-search";
-import { isListedThread } from "@t3tools/client-runtime/state/threads";
 import {
   type EnvironmentId,
   resolveEnvironmentMachineKind,
@@ -52,6 +51,7 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2SnoozedShelfHeader,
 } from "../threads/thread-list-v2-items";
+import { resolveThreadProviderInstance } from "../threads/thread-provider-instance";
 import {
   buildThreadListV2Items,
   getThreadListV2OrderedSection,
@@ -355,15 +355,17 @@ export function HomeScreen(props: HomeScreenProps) {
             ),
     [threadListV2Enabled, props.projects, selectedProjectRefKeys],
   );
-  const scopedThreads = useMemo(() => {
-    if (threadListV2Enabled) return [];
-    const visibleThreads = props.threads.filter((thread) => isListedThread(thread));
-    return selectedProjectRefKeys === null
-      ? visibleThreads
-      : visibleThreads.filter((thread) =>
-          selectedProjectRefKeys.has(scopedProjectKey(thread.environmentId, thread.projectId)),
-        );
-  }, [threadListV2Enabled, props.threads, selectedProjectRefKeys]);
+  const scopedThreads = useMemo(
+    () =>
+      threadListV2Enabled
+        ? []
+        : selectedProjectRefKeys === null
+          ? props.threads
+          : props.threads.filter((thread) =>
+              selectedProjectRefKeys.has(scopedProjectKey(thread.environmentId, thread.projectId)),
+            ),
+    [threadListV2Enabled, props.threads, selectedProjectRefKeys],
+  );
   const scopedPendingTasks = useMemo(
     () =>
       threadListV2Enabled
@@ -637,16 +639,11 @@ export function HomeScreen(props: HomeScreenProps) {
       ),
     [serverConfigs],
   );
-  // Attached side chats stay out of every list and out of Move up/down.
-  const listedThreads = useMemo(
-    () => props.threads.filter((thread) => isListedThread(thread)),
-    [props.threads],
-  );
   const pendingOrder = usePendingThreadOrder(nowMinute, snoozeWakeTick);
   const threadMovePlanners = useMemo(() => {
     const sectionPlanner = (section: "pinned" | "active") =>
       createThreadMovePlanner({
-        allThreads: listedThreads,
+        allThreads: props.threads,
         section,
         reorderableEnvironmentIds: new Set(
           [...serverConfigs].flatMap(([id, config]) =>
@@ -658,7 +655,7 @@ export function HomeScreen(props: HomeScreenProps) {
           ),
         ),
         ordered: getThreadListV2OrderedSection({
-          threads: listedThreads,
+          threads: props.threads,
           section,
           pendingOrder,
           now: new Date().toISOString(),
@@ -670,7 +667,7 @@ export function HomeScreen(props: HomeScreenProps) {
     return { pinned: sectionPlanner("pinned"), active: sectionPlanner("active") };
   }, [
     serverConfigs,
-    listedThreads,
+    props.threads,
     pendingOrder,
     queuedThreadKeys,
     settlementEnvironmentIds,
@@ -693,7 +690,7 @@ export function HomeScreen(props: HomeScreenProps) {
     // "hidden from lists" meaning.
     return buildThreadListV2Items({
       pendingOrder,
-      threads: listedThreads.filter((thread) => thread.archivedAt === null),
+      threads: props.threads.filter((thread) => thread.archivedAt === null),
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,
@@ -844,15 +841,7 @@ export function HomeScreen(props: HomeScreenProps) {
           projectTitle={v2ProjectTitleByProjectKey.get(
             scopedProjectKey(thread.environmentId, thread.projectId),
           )}
-          providerDriver={
-            serverConfigs
-              .get(thread.environmentId)
-              ?.providers.find(
-                (provider) =>
-                  provider.instanceId ===
-                  (thread.session?.providerInstanceId ?? thread.modelSelection.instanceId),
-              )?.driver ?? null
-          }
+          providerInstance={resolveThreadProviderInstance(serverConfigs, thread)}
           environmentLabel={
             Object.keys(props.savedConnectionsById).length > 1
               ? (props.savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)

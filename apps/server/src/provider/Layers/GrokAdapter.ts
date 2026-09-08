@@ -39,32 +39,6 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
-/**
- * Subagent parity — explicit decision for this adapter (2026-09-03).
- *
- * NOT SUPPORTED, and not supportable from this protocol. Grok speaks ACP, and
- * ACP has no subagent, child-session, or parent-tool attribution anywhere in
- * its wire format: `session/update` carries exactly eleven variants
- * (user_message_chunk, agent_message_chunk, agent_thought_chunk, tool_call,
- * tool_call_update, plan, available_commands_update, current_mode_update,
- * config_option_update, session_info_update, usage_update) and every one of
- * them belongs to the single session it was sent on. There is no field naming
- * a child agent, so nothing can be attributed to one.
- *
- * Consequences, all unavoidable rather than unimplemented:
- * - no per-subagent transcript (no subagent-owned events exist to select);
- * - no per-subagent context meter (`usage_update` measures the session);
- * - no parent-to-subagent or subagent-to-parent messages (a Grok agent that
- *   delegates internally does so inside its own session; the delegation is
- *   opaque to the client).
- *
- * A Grok tool whose NAME looks agent-ish still classifies as
- * `collab_agent_tool_call` for display, which is a label, not attribution.
- * If ACP ever grows session parentage, the shared client-side selectors
- * (`selectSubagentTranscriptActivities`, `deriveSubagentReplies`) already do
- * the rest: this adapter only has to stamp `agentId` on the events it emits.
- */
-
 import { ServerConfig } from "../../config.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";

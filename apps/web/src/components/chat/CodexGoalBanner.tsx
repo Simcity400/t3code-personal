@@ -5,12 +5,7 @@ import {
   formatCodexGoalUsage,
   type CodexGoalSessionActivity,
 } from "@t3tools/client-runtime/state/threads";
-import {
-  CODEX_GOAL_OBJECTIVE_MAX_CHARS,
-  type MessageId,
-  type OrchestrationMessage,
-  type OrchestrationThreadGoal,
-} from "@t3tools/contracts";
+import { CODEX_GOAL_OBJECTIVE_MAX_CHARS, type OrchestrationThreadGoal } from "@t3tools/contracts";
 import { TargetIcon } from "lucide-react";
 import { useId, useState } from "react";
 
@@ -47,40 +42,26 @@ const STATUS_ACTION_LABELS: Record<CodexGoalStatusAction, string> = {
   continue: "Continue",
 };
 
-const REPORT_EXCERPT_MAX_CHARS = 240;
-
-function excerpt(text: string): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length <= REPORT_EXCERPT_MAX_CHARS
-    ? flat
-    : `${flat.slice(0, REPORT_EXCERPT_MAX_CHARS - 1).trimEnd()}…`;
-}
-
 export interface CodexGoalBannerInput {
   readonly id: string;
   readonly goal: OrchestrationThreadGoal;
   readonly activity: CodexGoalSessionActivity;
-  /** The assistant message that ended the turn Codex last reported from. */
-  readonly reportMessage: OrchestrationMessage | null;
   readonly busy: boolean;
   readonly onStatusAction: (action: CodexGoalStatusAction) => void;
   readonly onEdit: () => void;
   readonly onClear: () => void;
-  readonly onShowMessage: (messageId: MessageId) => void;
 }
 
 /**
  * The goal notice above the composer: Codex's own status wording, the
  * objective, what Codex is doing about it, and every control the native
- * client offers (pause or resume, edit, clear). A stalled goal also quotes
- * the message that explains the blocker.
+ * client offers (pause or resume, edit, clear).
  */
 export function buildCodexGoalBannerItem(input: CodexGoalBannerInput): ComposerBannerStackItem {
-  const { goal, activity, reportMessage, busy } = input;
+  const { goal, activity, busy } = input;
   const statusAction = codexGoalStatusAction(goal, activity);
   const halted =
     goal.status === "blocked" || goal.status === "usageLimited" || goal.status === "budgetLimited";
-  const showReport = goal.status === "blocked" && reportMessage !== null;
   return {
     id: input.id,
     variant: halted ? "warning" : goal.status === "complete" ? "success" : "info",
@@ -100,22 +81,6 @@ export function buildCodexGoalBannerItem(input: CodexGoalBannerInput): ComposerB
           {describeCodexGoalStatus(goal, activity)}{" "}
           <span className="tabular-nums">{formatCodexGoalUsage(goal)}</span>
         </span>
-        {showReport ? (
-          <span className="flex min-w-0 items-baseline gap-2">
-            <span className="min-w-0 text-pretty text-foreground">
-              “{excerpt(reportMessage.text)}”
-            </span>
-            <Button
-              type="button"
-              size="xs"
-              variant="ghost"
-              className="shrink-0"
-              onClick={() => input.onShowMessage(reportMessage.id)}
-            >
-              Show message
-            </Button>
-          </span>
-        ) : null}
       </div>
     ),
     actions: (
@@ -179,12 +144,10 @@ export function CodexGoalEditorDialog(props: {
             ask you when it is stuck.
           </DialogDescription>
         </DialogHeader>
-        {/* Keyed on the goal record so the form seeds from the live goal each
-            time it opens; a stale draft must not overwrite an objective Codex
-            changed since. */}
+        {/* Seed on open or goal replacement; progress updates must not reset edits. */}
         {props.open ? (
           <CodexGoalEditorForm
-            key={props.goal === null ? "new" : `${props.goal.createdAt}:${props.goal.updatedAt}`}
+            key={props.goal === null ? "new" : props.goal.createdAt}
             goal={props.goal}
             saving={props.saving}
             onClose={props.onClose}

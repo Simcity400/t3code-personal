@@ -449,43 +449,17 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
           harness.probe,
           Effect.fail(EffectAcpErrors.AcpRequestError.internalError("probe failed")),
         );
-        const verified = yield* harness.provider.snapshot.getSnapshot;
         const snapshot = yield* harness.provider.snapshot.refresh;
         expect(snapshot).toMatchObject({
           installed: true,
-          status: "warning",
+          status: "error",
           auth: { status: "authenticated" },
         });
-        expect(snapshot.checkedAt).toBe(verified.checkedAt);
-        expect(snapshot.message).toContain("last successful check");
         expect(snapshot.models).toEqual(buildAntigravityModelsFromSession(sessionSetupResult));
         expect(snapshot.slashCommands).toEqual(commands);
         expect(snapshot.workspaceSnapshots?.[0]?.cwd).toBe("/workspace");
       }),
     ),
-  );
-
-  it.effect(
-    "does not revive verified status after a missing installation and later failed checks",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const harness = yield* makeHarness();
-          yield* harness.initialize;
-          yield* harness.provider.onSessionStarted(started, "/workspace");
-          for (const code of ["ENOENT", "EACCES", "EACCES"]) {
-            yield* Ref.set(
-              harness.probe,
-              Effect.fail(new EffectAcpErrors.AcpSpawnError({ cause: { code } })),
-            );
-            const snapshot = yield* harness.provider.snapshot.refresh;
-            expect(snapshot.status).toBe("error");
-            expect(snapshot.installed).toBe(code !== "ENOENT");
-            expect(snapshot.message).not.toContain("last successful check");
-            expect(snapshot.models).toEqual([]);
-          }
-        }),
-      ),
   );
 
   it.effect("allows a slow packaged runtime health check to finish", () =>
@@ -570,7 +544,7 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
           const snapshot = yield* harness.provider.snapshot.refresh;
           expect(snapshot).toMatchObject({
             installed,
-            status: installed ? "warning" : "error",
+            status: "error",
             auth: { status: "authenticated" },
           });
           expect(snapshot.models).toHaveLength(installed ? 11 : 0);

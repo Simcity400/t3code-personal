@@ -102,7 +102,6 @@ describe("composer file attachments", () => {
     mocks.open.mockReset();
     mocks.size.mockReset();
     mocks.readBase64.mockReset();
-    mocks.readBase64.mockRejectedValue(new Error("unreadable picker cache file"));
     mocks.size.mockImplementation((uri: string) => (uri.startsWith("content:") ? null : 42));
   });
 
@@ -157,11 +156,6 @@ describe("composer file attachments", () => {
         assets: [{ ...photo, fileName: name, mimeType: original.mimeType }],
       });
       mocks.readBase64.mockResolvedValue(original.base64);
-      mocks.open.mockReturnValue({
-        readBytes: (length: number) =>
-          Uint8Array.from(Buffer.from(original.base64, "base64").subarray(0, length)),
-        close: vi.fn(),
-      });
 
       const result = await pickComposerImages({ existingCount: 0 });
 
@@ -202,7 +196,7 @@ describe("composer file attachments", () => {
       expect(result.error).toContain("not a supported image type");
     });
 
-    it("retains picker JPEG conversions when original files cannot be read", async () => {
+    it("retains a converted photo when another original cannot be read", async () => {
       mocks.pickMedia.mockResolvedValue({
         canceled: false,
         assets: [{ ...photo, fileName: "missing.gif", mimeType: "image/gif" }, photo],
@@ -211,11 +205,8 @@ describe("composer file attachments", () => {
 
       const result = await pickComposerImages({ existingCount: 0 });
 
-      expect(result.images).toEqual([
-        expect.objectContaining({ name: "missing.jpg" }),
-        expect.objectContaining({ name: "photo.jpg" }),
-      ]);
-      expect(result.error).toBeNull();
+      expect(result.images).toEqual([expect.objectContaining({ name: "photo.jpg" })]);
+      expect(result.error).toBe("Failed to read 'missing.gif'.");
     });
   });
 
@@ -226,7 +217,7 @@ describe("composer file attachments", () => {
       fileName: "photo.png",
       mimeType: "image/png",
       fileSize: 3,
-      base64: "iVBORw0KGgo=",
+      base64: "YWJj",
       width: 1,
       height: 1,
     };
@@ -255,10 +246,7 @@ describe("composer file attachments", () => {
       );
       expect(result).toEqual({
         attachments: [
-          expect.objectContaining({
-            type: "image",
-            dataUrl: "data:image/png;base64,iVBORw0KGgo=",
-          }),
+          expect.objectContaining({ type: "image", dataUrl: "data:image/png;base64,YWJj" }),
           {
             id: "attachment-id",
             type: "file",

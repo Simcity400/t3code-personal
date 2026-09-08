@@ -24,6 +24,7 @@ import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -117,7 +118,6 @@ type ThreadTitleMessage = {
   readonly role: "user" | "assistant" | "system";
   readonly text: string;
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
-  readonly agentId?: string | undefined;
 };
 
 function formatThreadTitleSection(message: ThreadTitleMessage): string | undefined {
@@ -184,8 +184,7 @@ function formatThreadTitleContext(messages: ReadonlyArray<ThreadTitleMessage>): 
   readonly message: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
 } {
-  const parentMessages = messages.filter((message) => message.agentId === undefined);
-  const recent = collectRecentThreadTitleContext(parentMessages, MAX_THREAD_TITLE_CONTEXT_CHARS);
+  const recent = collectRecentThreadTitleContext(messages, MAX_THREAD_TITLE_CONTEXT_CHARS);
   if (!recent.truncated) {
     return {
       message: recent.context,
@@ -193,7 +192,7 @@ function formatThreadTitleContext(messages: ReadonlyArray<ThreadTitleMessage>): 
     };
   }
 
-  const firstUserMessage = parentMessages.find(
+  const firstUserMessage = messages.find(
     (message) => message.role === "user" && formatThreadTitleSection(message),
   );
   const firstUserSection = firstUserMessage
@@ -732,9 +731,6 @@ const make = Effect.gen(function* () {
           ...(thread.title ? { title: thread.title } : {}),
           modelSelection: desiredModelSelection,
           ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
-          ...(thread.forkedFromThreadId != null
-            ? { forkFromThreadId: thread.forkedFromThreadId }
-            : {}),
           runtimeMode: desiredRuntimeMode,
         })
         .pipe(Effect.tap(() => refreshWorkspaceSnapshot));
@@ -975,15 +971,19 @@ const make = Effect.gen(function* () {
         const { textGenerationModelSelection: modelSelection } =
           yield* serverSettingsService.getSettings;
 
-        // No retry here: TextGeneration already tries every other signed-in
-        // instance when the selected one fails, so a retry would only repeat
-        // that whole fan-out against an account that is still over its limit.
-        const generated = yield* textGeneration.generateThreadTitle({
-          cwd: input.cwd,
-          message: input.messageText,
-          ...(attachments.length > 0 ? { attachments } : {}),
-          modelSelection,
-        });
+        const generated = yield* textGeneration
+          .generateThreadTitle({
+            cwd: input.cwd,
+            message: input.messageText,
+            ...(attachments.length > 0 ? { attachments } : {}),
+            modelSelection,
+          })
+          .pipe(
+            Effect.retry({
+              times: 2,
+              schedule: Schedule.exponential("2 seconds"),
+            }),
+          );
         if (!generated) return;
 
         const thread = yield* resolveThreadShell(input.threadId);
@@ -1448,53 +1448,22 @@ const make = Effect.gen(function* () {
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
-    if (event.payload.taskId !== undefined) {
-      const taskId = event.payload.taskId;
-      const action = event.payload.resume === true ? "resume" : "stop";
-      const recordStop = (status: "requested" | "accepted" | "failed", detail?: string) =>
-        orchestrationEngine
-          .dispatch({
-            type: "thread.activity.append",
-            commandId: CommandId.make(`task.${action}.${status}:${event.eventId}`),
-            threadId: event.payload.threadId,
-            createdAt: event.occurredAt,
-            activity: {
-              id: EventId.make(
-                `task-${action}:${JSON.stringify([event.payload.threadId, taskId])}`,
-              ),
-              kind: `task.${action}.${status}`,
-              summary:
-                status === "failed" ? `Could not ${action} task` : `Task ${action} ${status}`,
-              tone: status === "failed" ? "error" : "info",
-              turnId: null,
-              createdAt: event.occurredAt,
-              payload: { taskId, ...(detail ? { detail } : {}) },
-            },
-          })
-          .pipe(Effect.asVoid);
-      yield* recordStop("requested");
-      // Never turn a rejected individual stop into a session-wide stop.
-      yield* providerService
-        .interruptTurn({
-          threadId: event.payload.threadId,
-          taskId,
-          scope: event.payload.scope ?? "self",
-          ...(event.payload.resume !== undefined ? { resume: event.payload.resume } : {}),
-        })
-        .pipe(
-          Effect.timeout("10 seconds"),
-          Effect.andThen(recordStop("accepted")),
-          Effect.catchCause((cause) => {
-            if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
-            return recordStop("failed", formatFailureDetail(cause));
-          }),
-        );
-      return;
-    }
     const thread = yield* resolveThreadShell(event.payload.threadId);
     if (!thread) {
       return;
     }
+    const session = thread.session;
+    if (!session || session.status === "stopped") {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.interrupt.failed",
+        summary: "Provider turn interrupt failed",
+        detail: "No active provider session is bound to this thread.",
+        turnId: event.payload.turnId ?? null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+
     const recoverInterruptFailure = (cause: Cause.Cause<unknown>) => {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.interrupt;
@@ -1505,51 +1474,55 @@ const make = Effect.gen(function* () {
         const latestThread = yield* resolveThreadShell(event.payload.threadId);
         const latestSession = latestThread?.session;
         if (
-          latestSession &&
-          (((latestSession.status === "stopped" || latestSession.status === "ready") &&
-            latestSession.status !== thread.session?.status) ||
-            (event.payload.turnId !== undefined &&
-              latestSession.activeTurnId !== null &&
-              latestSession.activeTurnId !== event.payload.turnId))
+          !latestSession ||
+          latestSession.status === "stopped" ||
+          latestSession.status === "ready" ||
+          (event.payload.turnId !== undefined &&
+            latestSession.activeTurnId !== null &&
+            latestSession.activeTurnId !== event.payload.turnId)
         ) {
           return;
         }
-        // Stop all is the escape hatch for a wedged provider: when the
-        // interrupt itself fails, close the root session outright so the user
-        // is never left with a running agent and no way to end it. A plain
-        // Stop stays narrow and only reports the failure.
-        if (event.payload.scope === "tree" && latestSession?.status === "running") {
-          yield* providerService.stopSession({ threadId: event.payload.threadId }).pipe(
-            Effect.catchCause((stopCause) => {
-              if (Cause.hasInterruptsOnly(stopCause)) {
-                return Effect.interrupt;
-              }
-              return Effect.logWarning(
-                "provider command reactor failed to stop session after interrupt failure",
-                {
-                  threadId: event.payload.threadId,
-                  cause: Cause.pretty(stopCause),
-                  originalCause: Cause.pretty(cause),
-                },
-              );
-            }),
-          );
-          const stoppedThread = yield* resolveThreadShell(event.payload.threadId);
-          const stoppedSession = stoppedThread?.session;
-          if (stoppedSession && stoppedSession.status !== "stopped") {
-            yield* setThreadSession({
-              threadId: event.payload.threadId,
-              session: {
-                ...stoppedSession,
-                status: "stopped",
-                activeTurnId: null,
-                lastError: detail,
-                updatedAt: event.payload.createdAt,
+
+        yield* providerService.stopSession({ threadId: event.payload.threadId }).pipe(
+          Effect.catchCause((stopCause) => {
+            if (Cause.hasInterruptsOnly(stopCause)) {
+              return Effect.interrupt;
+            }
+            return Effect.logWarning(
+              "provider command reactor failed to stop session after interrupt failure",
+              {
+                threadId: event.payload.threadId,
+                cause: Cause.pretty(stopCause),
+                originalCause: Cause.pretty(cause),
               },
-              createdAt: event.payload.createdAt,
-            });
-          }
+            );
+          }),
+        );
+        const stoppedThread = yield* resolveThreadShell(event.payload.threadId);
+        const stoppedSession = stoppedThread?.session;
+        if (
+          !stoppedSession ||
+          stoppedSession.status === "stopped" ||
+          stoppedSession.status === "ready" ||
+          (event.payload.turnId !== undefined &&
+            stoppedSession.activeTurnId !== null &&
+            stoppedSession.activeTurnId !== event.payload.turnId)
+        ) {
+          return;
         }
+
+        yield* setThreadSession({
+          threadId: event.payload.threadId,
+          session: {
+            ...stoppedSession,
+            status: "stopped",
+            activeTurnId: null,
+            lastError: detail,
+            updatedAt: event.payload.createdAt,
+          },
+          createdAt: event.payload.createdAt,
+        });
         yield* appendProviderFailureActivity({
           threadId: event.payload.threadId,
           kind: "provider.turn.interrupt.failed",
@@ -1563,7 +1536,7 @@ const make = Effect.gen(function* () {
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     yield* providerService
-      .interruptTurn({ threadId: event.payload.threadId, scope: event.payload.scope ?? "self" })
+      .interruptTurn({ threadId: event.payload.threadId })
       .pipe(Effect.catchCause(recoverInterruptFailure));
   });
 
@@ -1574,6 +1547,19 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
+    const hasSession = thread.session && thread.session.status !== "stopped";
+    if (!hasSession) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.approval.respond.failed",
+        summary: "Provider approval response failed",
+        detail: "No active provider session is bound to this thread.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+        requestId: event.payload.requestId,
+      });
+    }
+
     yield* providerService
       .respondToRequest({
         threadId: event.payload.threadId,
@@ -1605,6 +1591,19 @@ const make = Effect.gen(function* () {
       if (!thread) {
         return;
       }
+      const hasSession = thread.session && thread.session.status !== "stopped";
+      if (!hasSession) {
+        return yield* appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.user-input.respond.failed",
+          summary: "Provider user input response failed",
+          detail: "No active provider session is bound to this thread.",
+          turnId: null,
+          createdAt: event.payload.createdAt,
+          requestId: event.payload.requestId,
+        });
+      }
+
       yield* providerService
         .respondToUserInput({
           threadId: event.payload.threadId,

@@ -3,7 +3,6 @@ import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contr
 export interface McpProviderSessionConfig {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
-  readonly visibleThreadId?: ThreadId;
   readonly providerSessionId: string;
   readonly providerInstanceId: ProviderInstanceId;
   readonly endpoint: string;

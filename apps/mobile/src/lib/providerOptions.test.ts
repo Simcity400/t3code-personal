@@ -2,12 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { ModelCapabilities } from "@t3tools/contracts";
 
-import {
-  applyProviderOptionSelection,
-  composerProviderOptionLabels,
-  providerOptionValueLabels,
-  resolveProviderOptionDescriptors,
-} from "./providerOptions";
+import { applyProviderOptionSelection, resolveProviderOptionDescriptors } from "./providerOptions";
 
 const CODEX_CAPABILITIES: ModelCapabilities = {
   optionDescriptors: [
@@ -35,16 +30,6 @@ const CODEX_CAPABILITIES: ModelCapabilities = {
 };
 
 describe("mobile provider options", () => {
-  it("summarizes the option values currently in effect", () => {
-    const descriptors = resolveProviderOptionDescriptors({
-      capabilities: CODEX_CAPABILITIES,
-      selections: undefined,
-    });
-
-    expect(providerOptionValueLabels(descriptors)).toEqual(["Medium", "Standard"]);
-    expect(composerProviderOptionLabels(descriptors)).toEqual(["Medium", "Standard"]);
-  });
-
   it("updates generic select options without knowing provider-specific ids", () => {
     const descriptors = resolveProviderOptionDescriptors({
       capabilities: CODEX_CAPABILITIES,
@@ -72,30 +57,8 @@ describe("mobile provider options", () => {
       selections: undefined,
     });
 
-    expect(providerOptionValueLabels(descriptors)).toEqual([]);
-    expect(composerProviderOptionLabels(descriptors)).toEqual(["Fast Mode off"]);
     expect(applyProviderOptionSelection(descriptors, { id: "fastMode", value: true })).toEqual([
       { id: "fastMode", value: true },
     ]);
-  });
-
-  it("keeps reasoning and speed visible instead of filling the composer with other options", () => {
-    const descriptors = resolveProviderOptionDescriptors({
-      capabilities: {
-        optionDescriptors: [
-          CODEX_CAPABILITIES.optionDescriptors![0]!,
-          {
-            id: "contextWindow",
-            label: "Context Window",
-            type: "select",
-            options: [{ id: "200k", label: "200k", isDefault: true }],
-          },
-          { id: "fastMode", label: "Fast Mode", type: "boolean" },
-        ],
-      },
-      selections: undefined,
-    });
-
-    expect(composerProviderOptionLabels(descriptors)).toEqual(["Medium", "Fast Mode off"]);
   });
 });

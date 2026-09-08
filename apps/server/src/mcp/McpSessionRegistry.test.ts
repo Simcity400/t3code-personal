@@ -74,36 +74,6 @@ it.effect("builds MCP endpoints from the bound server host", () =>
   }),
 );
 
-it.effect("retains child identity and credentials when its visible root is revoked", () =>
-  Effect.gen(function* () {
-    const registry = yield* makeRegistry(() => 1_000);
-    const root = ThreadId.make("visible-root");
-    const hidden = ThreadId.make("cross-provider-session:child");
-    const parent = yield* registry.issue({
-      threadId: root,
-      providerInstanceId: ProviderInstanceId.make("codex"),
-    });
-    const child = yield* registry.issue({
-      threadId: hidden,
-      visibleThreadId: root,
-      providerInstanceId: ProviderInstanceId.make("claude"),
-    });
-    const token = child.config.authorizationHeader.replace(/^Bearer\s+/, "");
-    expect(child.config.threadId).toBe(hidden);
-    expect(child.config.visibleThreadId).toBe(root);
-    expect(child.config.providerSessionId).not.toBe(parent.config.providerSessionId);
-    yield* registry.revokeThread(root);
-    expect(yield* registry.resolve(token)).toMatchObject({
-      threadId: hidden,
-      visibleThreadId: root,
-      providerSessionId: child.config.providerSessionId,
-      providerInstanceId: child.config.providerInstanceId,
-    });
-    yield* registry.revokeThread(hidden);
-    expect(yield* registry.resolve(token)).toBeUndefined();
-  }),
-);
-
 it.effect("expires credentials once their session stops showing signs of life", () =>
   Effect.gen(function* () {
     let timestamp = 1_000;

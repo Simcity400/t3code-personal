@@ -6,22 +6,6 @@ and custom binaries or environment variables.
 
 ## Use multiple accounts
 
-In the web or desktop app, open **Settings > Providers**, select the computer
-where you want to run agents, and choose **Add account > Codex**. Name the account
-and choose **Add account and sign in**. T3 creates a separate login directory and
-shares conversations with your default Codex account. If you already have separate
-conversation groups, choose which account's conversations to continue.
-
-Complete the ChatGPT sign-in. T3 checks the account when the sign-in finishes.
-If Codex is missing, the setup panel runs its standalone installer first.
-For a remote computer, select the device-code option.
-
-The account appears in the model picker for compatible existing threads. Account
-setup belongs to the selected computer; repeat sign-in when adding the same account
-to another computer. You do not need to copy credentials between computers.
-
-### Custom directory setup
-
 A shared Codex home with a shadow home lets work and personal accounts continue
 the same threads. The accounts share Codex sessions and configuration while keeping
 their own login and available models.
@@ -81,30 +65,16 @@ in the thread on web, desktop, or mobile. Some tools offer access for one reques
 the current session, or permanently. See [Permission modes](./permission-modes.md)
 for command and file approvals.
 
+## Codex says I hit a usage limit
+
+When Codex stops on a usage limit, the thread names the window that ran out and
+when it resets, when Codex reports them. Send the message again after the reset. On a workspace plan the
+message also says whether your workspace owner needs to add credits or raise the
+spend limit to continue sooner.
+
 ## Send feedback to OpenAI
 
 In an existing Codex thread, send `/feedback` with an optional description, for
 example `/feedback The agent stopped before finishing the tests`. This uploads
 the conversation and Codex logs to OpenAI. The returned thread ID can be shared
 with OpenAI support.
-
-## Manage a Codex Goal
-
-A Goal gives Codex a long-running objective. Codex keeps starting turns on its own
-until it can verify the objective is done, and stops to ask you when it is stuck.
-
-Send `/goal` in a started Codex thread to open the goal editor, or
-`/goal <objective>` to start one straight away. The banner above the composer shows
-the goal status, the objective, what Codex is doing about it, and the tokens and
-time used, with Pause, Resume, Edit, and Clear. The goal stays visible after the
-thread stops; Continue wakes the thread so Codex picks the goal back up.
-
-- **Stalled**: Codex hit the same blocker on three turns in a row and needs your
-  input or an outside change. The banner quotes the message that explains the
-  blocker. Reply in the thread, or Resume once the blocker is gone.
-- **Usage limited**: your usage limit stopped the goal. Resume once it resets.
-- **Budget limited**: the token budget is used up. Raise it in Edit, then Resume.
-- **Complete**: Codex verified the objective. Clear the goal to finish.
-
-`/goal status`, `/goal pause`, `/goal resume`, `/goal steer <objective>`, and
-`/goal clear` do the same from the composer.

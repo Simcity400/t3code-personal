@@ -39,7 +39,6 @@ function renderPendingActions(isRunning: boolean) {
       hasSendableContent: false,
       onPreviousPendingQuestion: () => {},
       onInterrupt: () => {},
-      onStopAll: () => {},
       onImplementPlanInNewThread: () => {},
     }),
   );
@@ -62,7 +61,6 @@ function renderRunningActions(showSendWhileRunning: boolean, hasSendableContent:
       showSendWhileRunning,
       onPreviousPendingQuestion: () => {},
       onInterrupt: () => {},
-      onStopAll: () => {},
       onImplementPlanInNewThread: () => {},
     }),
   );
@@ -84,7 +82,6 @@ function renderSendButton(sendDisabledReason: string | null = null) {
       hasSendableContent: true,
       onPreviousPendingQuestion: () => {},
       onInterrupt: () => {},
-      onStopAll: () => {},
       onImplementPlanInNewThread: () => {},
     }),
   );

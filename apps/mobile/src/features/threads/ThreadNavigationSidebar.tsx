@@ -8,7 +8,6 @@ import {
   type EnvironmentThreadSearchMatch,
 } from "@t3tools/client-runtime/state/thread-search";
 import { LegendList } from "@legendapp/list/react-native";
-import { isListedThread } from "@t3tools/client-runtime/state/threads";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
 import { type EnvironmentId, resolveEnvironmentMachineKind } from "@t3tools/contracts";
@@ -79,6 +78,7 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2SnoozedShelfHeader,
 } from "./thread-list-v2-items";
+import { resolveThreadProviderInstance } from "./thread-provider-instance";
 import {
   buildThreadListV2Items,
   getThreadListV2OrderedSection,
@@ -285,15 +285,17 @@ function ThreadNavigationSidebarPane(
             ),
     [threadListV2Enabled, projects, selectedProjectRefs],
   );
-  const scopedThreads = useMemo(() => {
-    if (threadListV2Enabled) return [];
-    const visibleThreads = threads.filter((thread) => isListedThread(thread));
-    return selectedProjectRefs === null
-      ? visibleThreads
-      : visibleThreads.filter((thread) =>
-          selectedProjectRefs.has(scopedProjectKey(thread.environmentId, thread.projectId)),
-        );
-  }, [threadListV2Enabled, selectedProjectRefs, threads]);
+  const scopedThreads = useMemo(
+    () =>
+      threadListV2Enabled
+        ? []
+        : selectedProjectRefs === null
+          ? threads
+          : threads.filter((thread) =>
+              selectedProjectRefs.has(scopedProjectKey(thread.environmentId, thread.projectId)),
+            ),
+    [threadListV2Enabled, selectedProjectRefs, threads],
+  );
   const scopedPendingTasks = useMemo(
     () =>
       threadListV2Enabled
@@ -471,16 +473,11 @@ function ThreadNavigationSidebarPane(
       ),
     [serverConfigs],
   );
-  // Attached side chats stay out of every list and out of Move up/down.
-  const listedThreads = useMemo(
-    () => threads.filter((thread) => isListedThread(thread)),
-    [threads],
-  );
   const pendingOrder = usePendingThreadOrder(nowMinute, snoozeWakeTick);
   const threadMovePlanners = useMemo(() => {
     const sectionPlanner = (section: "pinned" | "active") =>
       createThreadMovePlanner({
-        allThreads: listedThreads,
+        allThreads: threads,
         section,
         reorderableEnvironmentIds: new Set(
           [...serverConfigs].flatMap(([id, config]) =>
@@ -492,7 +489,7 @@ function ThreadNavigationSidebarPane(
           ),
         ),
         ordered: getThreadListV2OrderedSection({
-          threads: listedThreads,
+          threads,
           section,
           pendingOrder,
           now: new Date().toISOString(),
@@ -504,7 +501,7 @@ function ThreadNavigationSidebarPane(
     return { pinned: sectionPlanner("pinned"), active: sectionPlanner("active") };
   }, [
     serverConfigs,
-    listedThreads,
+    threads,
     pendingOrder,
     queuedThreadKeys,
     settlementEnvironmentIds,
@@ -525,7 +522,7 @@ function ThreadNavigationSidebarPane(
       };
     return buildThreadListV2Items({
       pendingOrder,
-      threads: listedThreads.filter((thread) => thread.archivedAt === null),
+      threads: threads.filter((thread) => thread.archivedAt === null),
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,
@@ -905,15 +902,7 @@ function ThreadNavigationSidebarPane(
               snoozeWakeLabelText={item.snoozeWakeLabelText}
               project={projectByKey.get(scopeKey) ?? null}
               projectTitle={projectTitleByProjectKey.get(scopeKey)}
-              providerDriver={
-                serverConfigs
-                  .get(thread.environmentId)
-                  ?.providers.find(
-                    (provider) =>
-                      provider.instanceId ===
-                      (thread.session?.providerInstanceId ?? thread.modelSelection.instanceId),
-                  )?.driver ?? null
-              }
+              providerInstance={resolveThreadProviderInstance(serverConfigs, thread)}
               environmentLabel={
                 Object.keys(savedConnectionsById).length > 1
                   ? (savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)

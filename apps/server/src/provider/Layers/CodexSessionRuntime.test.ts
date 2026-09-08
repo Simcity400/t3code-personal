@@ -12,20 +12,13 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
-  type CodexThreadItem,
   buildTurnStartParams,
   describeMcpElicitation,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
-  makeCodexGoalRequests,
   makeMemoryConsolidationNotificationFilter,
-  mergeCollabPromptRecords,
-  reconcileHistoricalCollabPromptLinks,
+  makeCodexGoalRequests,
   openCodexThread,
-  readCollabPromptLinks,
-  readCollabPromptForAgent,
-  readCollabPromptLinksFromItems,
-  readHistoricalCollabPromptLinks,
   toMcpElicitationResponse,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
@@ -56,6 +49,8 @@ describe("makeCodexGoalRequests", () => {
       const requests = makeCodexGoalRequests(client, Effect.succeed("provider-thread-42"));
 
       yield* requests.setGoal({ objective: "Steer Goal", status: "paused", tokenBudget: 42 });
+      const snapshot = yield* requests.getGoal;
+      NodeAssert.deepStrictEqual(snapshot.goal, goal);
       yield* requests.clearGoal;
 
       NodeAssert.deepStrictEqual(calls, [
@@ -68,6 +63,7 @@ describe("makeCodexGoalRequests", () => {
             tokenBudget: 42,
           },
         },
+        { method: "thread/goal/get", payload: { threadId: "provider-thread-42" } },
         { method: "thread/goal/clear", payload: { threadId: "provider-thread-42" } },
       ]);
     }),
@@ -91,270 +87,6 @@ describe("CodexSessionRuntimeIdentifierGenerationError", () => {
   });
 });
 
-describe("readCollabPromptLinks", () => {
-  it("keeps first-class prompt data authoritative across later native scans", () => {
-    const child = "child-1";
-    const native = mergeCollabPromptRecords(
-      new Map(),
-      [{ receiverThreadId: child, prompt: "Native fallback" }],
-      "native",
-    );
-    const firstClass = mergeCollabPromptRecords(
-      native.records,
-      [{ receiverThreadId: child, prompt: "  First-class prompt\n" }],
-      "first-class",
-    );
-    const laterNative = mergeCollabPromptRecords(
-      firstClass.records,
-      [{ receiverThreadId: child, prompt: "Stale native fallback" }],
-      "native",
-    );
-
-    NodeAssert.deepEqual(laterNative.acceptedLinks, []);
-    NodeAssert.deepEqual(laterNative.records.get(child), {
-      prompt: "  First-class prompt\n",
-      promptId: undefined,
-      source: "first-class",
-      seenPromptKeys: new Set([
-        JSON.stringify([null, "Native fallback"]),
-        JSON.stringify([null, "  First-class prompt\n"]),
-      ]),
-    });
-  });
-
-  it("associates the exact native prompt with every receiving child", () => {
-    const notification = {
-      method: "item/completed",
-      params: {
-        threadId: "parent-thread",
-        turnId: "parent-turn",
-        completedAtMs: 1,
-        item: {
-          type: "collabAgentToolCall",
-          id: "spawn-1",
-          tool: "spawnAgent",
-          status: "completed",
-          senderThreadId: "parent-thread",
-          receiverThreadIds: ["child-1", "child-2"],
-          prompt: "Review the exact diff.",
-          agentsStates: {},
-        },
-      },
-    } as Parameters<typeof readCollabPromptLinks>[0];
-
-    NodeAssert.deepStrictEqual(readCollabPromptLinks(notification), [
-      { receiverThreadId: "child-1", prompt: "Review the exact diff.", promptId: "spawn-1" },
-      { receiverThreadId: "child-2", prompt: "Review the exact diff.", promptId: "spawn-1" },
-    ]);
-  });
-
-  it("recovers launch and follow-up prompts from a resumed thread snapshot", () => {
-    const items = [
-      {
-        type: "collabAgentToolCall",
-        id: "spawn-1",
-        tool: "spawnAgent",
-        status: "completed",
-        senderThreadId: "parent-thread",
-        receiverThreadIds: ["child-1"],
-        prompt: "Review the exact diff.",
-        agentsStates: {},
-      },
-      {
-        type: "collabAgentToolCall",
-        id: "send-1",
-        tool: "sendInput",
-        status: "completed",
-        senderThreadId: "parent-thread",
-        receiverThreadIds: ["child-1"],
-        prompt: "Also inspect the desktop composer.",
-        agentsStates: {},
-      },
-    ] as Parameters<typeof readCollabPromptLinksFromItems>[0];
-
-    NodeAssert.deepStrictEqual(readCollabPromptLinksFromItems(items), [
-      { receiverThreadId: "child-1", prompt: "Review the exact diff.", promptId: "spawn-1" },
-      {
-        receiverThreadId: "child-1",
-        prompt: "Also inspect the desktop composer.",
-        promptId: "send-1",
-      },
-    ]);
-    NodeAssert.deepStrictEqual(
-      readHistoricalCollabPromptLinks({
-        turns: [{ items }],
-        resumeThreadId: "parent-thread",
-        forkThreadId: undefined,
-      }),
-      [
-        { receiverThreadId: "child-1", prompt: "Review the exact diff.", promptId: "spawn-1" },
-        {
-          receiverThreadId: "child-1",
-          prompt: "Also inspect the desktop composer.",
-          promptId: "send-1",
-        },
-      ],
-    );
-  });
-
-  it("recovers one child's launch prompt from a parent thread snapshot", () => {
-    const items = [
-      {
-        type: "collabAgentToolCall",
-        id: "spawn-1",
-        tool: "spawnAgent",
-        status: "completed",
-        senderThreadId: "parent-thread",
-        receiverThreadIds: ["child-1"],
-        prompt: "Inspect the exact mobile behavior.",
-        agentsStates: {},
-      },
-    ] as unknown as ReadonlyArray<CodexThreadItem>;
-
-    NodeAssert.equal(
-      readCollabPromptForAgent({
-        turns: [{ items }],
-        agentThreadId: "child-1",
-      }),
-      "Inspect the exact mobile behavior.",
-    );
-    NodeAssert.equal(
-      readCollabPromptForAgent({
-        turns: [{ items }],
-        agentThreadId: "child-2",
-      }),
-      undefined,
-    );
-  });
-
-  it("does not import inherited agent prompts into a provider fork", () => {
-    const items = [
-      {
-        type: "collabAgentToolCall",
-        id: "spawn-1",
-        tool: "spawnAgent",
-        status: "completed",
-        senderThreadId: "parent-thread",
-        receiverThreadIds: ["child-1"],
-        prompt: "Review the parent thread.",
-        agentsStates: {},
-      },
-    ] as Parameters<typeof readCollabPromptLinksFromItems>[0];
-
-    NodeAssert.deepStrictEqual(
-      readHistoricalCollabPromptLinks({
-        turns: [{ items }],
-        resumeThreadId: undefined,
-        forkThreadId: "parent-thread",
-      }),
-      [],
-    );
-  });
-
-  it("records later sendInput text as a transcript prompt", () => {
-    const notification = {
-      method: "item/completed",
-      params: {
-        threadId: "parent-thread",
-        turnId: "parent-turn",
-        completedAtMs: 2,
-        item: {
-          type: "collabAgentToolCall",
-          id: "send-1",
-          tool: "sendInput",
-          status: "completed",
-          senderThreadId: "parent-thread",
-          receiverThreadIds: ["child-1"],
-          prompt: "Also inspect the desktop composer.",
-          agentsStates: {},
-        },
-      },
-    } as Parameters<typeof readCollabPromptLinks>[0];
-
-    NodeAssert.deepStrictEqual(readCollabPromptLinks(notification), [
-      {
-        receiverThreadId: "child-1",
-        prompt: "Also inspect the desktop composer.",
-        promptId: "send-1",
-      },
-    ]);
-  });
-
-  it("retains identical first-class follow-ups with different item ids", () => {
-    const first = mergeCollabPromptRecords(
-      new Map(),
-      [{ receiverThreadId: "child-1", prompt: "Check again.", promptId: "send-1" }],
-      "first-class",
-    );
-    const replay = mergeCollabPromptRecords(
-      first.records,
-      [{ receiverThreadId: "child-1", prompt: "Check again.", promptId: "send-1" }],
-      "first-class",
-    );
-    const repeated = mergeCollabPromptRecords(
-      replay.records,
-      [{ receiverThreadId: "child-1", prompt: "Check again.", promptId: "send-2" }],
-      "first-class",
-    );
-
-    NodeAssert.equal(first.acceptedLinks.length, 1);
-    NodeAssert.deepStrictEqual(replay.acceptedLinks, []);
-    NodeAssert.deepStrictEqual(repeated.acceptedLinks, [
-      { receiverThreadId: "child-1", prompt: "Check again.", promptId: "send-2" },
-    ]);
-  });
-
-  it("keeps a distinct native launch prompt beside first-class follow-ups", () => {
-    NodeAssert.deepStrictEqual(
-      reconcileHistoricalCollabPromptLinks(
-        [{ receiverThreadId: "child-1", prompt: "Initial review." }],
-        [
-          {
-            receiverThreadId: "child-1",
-            prompt: "Follow up.",
-            promptId: "send-1",
-          },
-        ],
-      ),
-      [
-        { receiverThreadId: "child-1", prompt: "Initial review." },
-        { receiverThreadId: "child-1", prompt: "Follow up.", promptId: "send-1" },
-      ],
-    );
-  });
-
-  it("keeps encrypted collaboration arguments as prompt linkage", () => {
-    const notification = {
-      method: "item/completed",
-      params: {
-        threadId: "parent-thread",
-        turnId: "parent-turn",
-        completedAtMs: 3,
-        item: {
-          type: "collabAgentToolCall",
-          id: "spawn-encrypted",
-          tool: "spawnAgent",
-          status: "completed",
-          senderThreadId: "parent-thread",
-          receiverThreadIds: ["child-1"],
-          prompt: `gAAAAA${"x".repeat(90)}`,
-          agentsStates: {},
-        },
-      },
-    } as Parameters<typeof readCollabPromptLinks>[0];
-
-    // Ciphertext is the only record that an instruction was sent; clients
-    // render it as a placeholder row, never as the parent's words.
-    NodeAssert.deepStrictEqual(readCollabPromptLinks(notification), [
-      {
-        receiverThreadId: "child-1",
-        prompt: `gAAAAA${"x".repeat(90)}`,
-        promptId: "spawn-encrypted",
-      },
-    ]);
-  });
-});
-
 function makeThreadOpenResponse(
   threadId: string,
 ): CodexRpc.ClientRequestResponsesByMethod["thread/start"] {
@@ -364,21 +96,15 @@ function makeThreadOpenResponse(
     modelProvider: "openai",
     approvalPolicy: "never",
     approvalsReviewer: "user",
-    sandbox: { type: "dangerFullAccess" },
+    sandbox: { type: "danger-full-access" },
     thread: {
       id: threadId,
-      createdAt: 1,
-      updatedAt: 1,
-      cliVersion: "test",
-      cwd: "/tmp/project",
-      ephemeral: false,
-      modelProvider: "openai",
-      preview: "",
-      sessionId: "session-1",
-      source: "cli",
+      createdAt: "2026-04-18T00:00:00.000Z",
+      source: { session: "cli" },
       turns: [],
       status: {
-        type: "idle",
+        state: "idle",
+        activeFlags: [],
       },
     },
   } as unknown as CodexRpc.ClientRequestResponsesByMethod["thread/start"];
@@ -1102,88 +828,7 @@ describe("isRecoverableThreadResumeError", () => {
   });
 });
 
-it("does not redispatch recovered launch and follow-up prompts on every history refresh", () => {
-  const links = [
-    { receiverThreadId: "child", prompt: "Launch", promptId: "launch" },
-    { receiverThreadId: "child", prompt: "Follow up", promptId: "follow-up" },
-  ];
-  const first = mergeCollabPromptRecords(new Map(), links, "first-class");
-  const replay = mergeCollabPromptRecords(first.records, links, "first-class");
-  NodeAssert.deepEqual(replay.acceptedLinks, []);
-  NodeAssert.equal(replay.records.get("child")?.promptId, "follow-up");
-  const next = mergeCollabPromptRecords(
-    replay.records,
-    [{ ...links[0]!, promptId: "new-dispatch" }],
-    "first-class",
-  );
-  NodeAssert.equal(next.acceptedLinks.length, 1);
-});
-
-it.effect("resumes the same provider thread without requesting unsupported turn history", () =>
-  Effect.gen(function* () {
-    const calls: Array<{ method: string; payload: unknown }> = [];
-    const response = makeThreadOpenResponse("provider-root");
-    const opened = yield* openCodexThread({
-      client: {
-        request: () => Effect.die("resume must use the transport that preserves excludeTurns"),
-        raw: {
-          request: (method, payload) => {
-            calls.push({ method, payload });
-            return Effect.succeed(response);
-          },
-        },
-      },
-      threadId: ThreadId.make("t3-thread"),
-      runtimeMode: "full-access",
-      cwd: "/tmp/project",
-      requestedModel: undefined,
-      serviceTier: undefined,
-      resumeThreadId: "provider-root",
-    });
-    NodeAssert.equal(opened.thread.id, "provider-root");
-    NodeAssert.equal(calls.length, 1);
-    NodeAssert.equal(calls[0]?.method, "thread/resume");
-    NodeAssert.equal((calls[0]!.payload as { excludeTurns: boolean }).excludeTurns, true);
-  }),
-);
 describe("openCodexThread", () => {
-  it.effect("creates a durable provider fork for a side chat", () =>
-    Effect.gen(function* () {
-      const calls: Array<{ method: string; payload: unknown }> = [];
-      const forked = makeThreadOpenResponse("forked-thread");
-      const client = {
-        request: (method: string, payload: unknown) => {
-          calls.push({ method, payload });
-          return Effect.succeed(forked);
-        },
-      };
-
-      const opened = yield* openCodexThread({
-        client: { ...client, raw: client },
-        threadId: ThreadId.make("side-thread"),
-        runtimeMode: "full-access",
-        cwd: "/tmp/project",
-        requestedModel: "gpt-5.3-codex",
-        serviceTier: undefined,
-        resumeThreadId: undefined,
-        forkThreadId: "parent-provider-thread",
-      });
-
-      NodeAssert.equal(opened.thread.id, "forked-thread");
-      NodeAssert.equal(calls[0]?.method, "thread/fork");
-      NodeAssert.deepStrictEqual(calls[0]?.payload, {
-        cwd: "/tmp/project",
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
-        approvalsReviewer: "user",
-        model: "gpt-5.3-codex",
-        threadId: "parent-provider-thread",
-        ephemeral: false,
-        excludeTurns: true,
-      });
-    }),
-  );
-
   it.effect("resumes metadata when historical turns contain unknown error values", () =>
     Effect.gen(function* () {
       const response = makeThreadOpenResponse("saved-thread");
@@ -1222,11 +867,11 @@ describe("openCodexThread", () => {
         resumeThreadId: "saved-thread",
       });
 
-      NodeAssert.equal(opened.cwd, response.cwd);
-      NodeAssert.equal(opened.model, response.model);
-      NodeAssert.equal(opened.thread.id, "saved-thread");
-      // The undecodable historical turn is dropped instead of failing the resume.
-      NodeAssert.deepStrictEqual(opened.thread.turns, []);
+      NodeAssert.deepStrictEqual(opened, {
+        cwd: response.cwd,
+        model: response.model,
+        thread: { id: "saved-thread" },
+      });
       NodeAssert.deepStrictEqual(calls, [
         {
           method: "thread/resume",
@@ -1278,7 +923,7 @@ describe("openCodexThread", () => {
 
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
-      const calls: Array<{ method: string; payload: unknown }> = [];
+      const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
       const started = makeThreadOpenResponse("fresh-thread");
       const client = {
         raw: {

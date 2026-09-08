@@ -293,176 +293,6 @@ function projectMcpToolCallData(data: Record<string, unknown>): Record<string, u
   return projectedData;
 }
 
-/**
- * Parent-to-agent instructions are transcript content, not disposable tool
- * metadata. Keep only the fields required to associate the exact prompt with
- * its child while continuing to drop the rest of the provider payload.
- *
- * Claude launch shape: `{ toolName, input: { prompt } }`, linked by the
- * activity's top-level itemId to task.*.toolUseId.
- * Claude follow-up shape: `{ toolName: "SendMessage", input: { to, message } }`,
- * linked by the recipient name/id carried in `to`.
- * Codex shape: `{ item: { ..., prompt, receiverThreadIds } }`, linked directly
- * to the child provider thread id.
- */
-const COLLAB_TOOL_INPUT_KEPT_FIELDS = [
-  "prompt",
-  // The name the launching call gave the agent. Follow-ups address the agent
-  // by that name, so without it a SendMessage cannot be linked to its target.
-  "name",
-  // SendMessage (Claude follow-up instruction): recipient plus body.
-  "to",
-  "agent_id",
-  "agentId",
-  "message",
-  "summary",
-] as const;
-
-/**
- * Upper bound on the reply text kept from a collaboration tool result.
- *
- * The reply is the subagent's own message back to its parent, and the parent
- * timeline renders it as a message rather than a collapsed tool row, so unlike
- * ordinary tool output it cannot be reduced to a one-line summary. It is still
- * bounded: a runaway report must not turn one activity row into an unbounded
- * websocket frame.
- */
-const MAX_COLLAB_AGENT_REPLY_CHARS = 20_000;
-
-function boundedCollabAgentReply(value: string): string | undefined {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    return undefined;
-  }
-  return trimmed.length <= MAX_COLLAB_AGENT_REPLY_CHARS
-    ? trimmed
-    : `${trimmed.slice(0, MAX_COLLAB_AGENT_REPLY_CHARS)}…`;
-}
-
-/**
- * Text a subagent sent back to its parent through a collaboration tool.
- *
- * Providers disagree on the envelope: Claude nests an Anthropic `tool_result`
- * block under `result` (its `content` is a string or a text-part array), while
- * the ACP-shaped adapters put a plain string on `result`/`output`, sometimes
- * one level down inside `item`.
- */
-function collabAgentReplyText(data: Record<string, unknown>): string | undefined {
-  const candidates: Array<unknown> = [data.result, data.output];
-  const item = asRecord(data.item);
-  if (item) {
-    candidates.push(item.result, item.output);
-  }
-
-  for (const candidate of candidates) {
-    if (typeof candidate === "string") {
-      const reply = boundedCollabAgentReply(candidate);
-      if (reply) {
-        return reply;
-      }
-      continue;
-    }
-    const record = asRecord(candidate);
-    if (!record) {
-      continue;
-    }
-    const content = record.content;
-    if (typeof content === "string") {
-      const reply = boundedCollabAgentReply(content);
-      if (reply) {
-        return reply;
-      }
-      continue;
-    }
-    if (!Array.isArray(content)) {
-      continue;
-    }
-    const text = content
-      .flatMap((entry) => {
-        const part = asRecord(entry);
-        return part?.type === "text" && typeof part.text === "string" ? [part.text] : [];
-      })
-      .join("\n");
-    const reply = boundedCollabAgentReply(text);
-    if (reply) {
-      return reply;
-    }
-  }
-
-  return undefined;
-}
-
-function projectCollabAgentToolCallData(data: Record<string, unknown>): Record<string, unknown> {
-  const projectedData: Record<string, unknown> = {};
-  const item = asRecord(data.item) ?? (data.type === "collabAgentToolCall" ? data : undefined);
-  if (item) {
-    const projectedItem: Record<string, unknown> = {};
-    for (const key of ["type", "id", "tool", "prompt", "receiverThreadIds"] as const) {
-      if (key in item) {
-        projectedItem[key] = item[key];
-      }
-    }
-    if (Object.keys(projectedItem).length > 0) {
-      projectedData.item = projectedItem;
-    }
-  }
-
-  if ("toolName" in data) {
-    projectedData.toolName = data.toolName;
-  }
-  const input = asRecord(data.input);
-  if (input) {
-    const projectedInput: Record<string, unknown> = {};
-    for (const key of COLLAB_TOOL_INPUT_KEPT_FIELDS) {
-      if (key in input) {
-        projectedInput[key] = input[key];
-      }
-    }
-    if (Object.keys(projectedInput).length > 0) {
-      projectedData.input = projectedInput;
-    }
-  }
-  if ("toolCallId" in data) {
-    projectedData.toolCallId = data.toolCallId;
-  }
-  // The subagent's reply to its parent. Every other tool result is summarized
-  // to a line here; this one is the message the parent actually received, and
-  // the parent timeline renders it as such.
-  const agentReply = collabAgentReplyText(data);
-  if (agentReply !== undefined) {
-    projectedData.agentReply = agentReply;
-  }
-
-  return projectedData;
-}
-
-/**
- * A child agent's own user message is the exact instruction its parent sent
- * to it — the only plaintext copy when the provider encrypts the parent-side
- * collaboration tool arguments. Keep the identity and the text parts in full
- * (like collaboration prompts) and drop everything else.
- */
-function projectUserMessageData(data: Record<string, unknown>): Record<string, unknown> {
-  const projectedData: Record<string, unknown> = {};
-  for (const key of ["type", "id"] as const) {
-    if (key in data) {
-      projectedData[key] = data[key];
-    }
-  }
-  const content = Array.isArray(data.content)
-    ? data.content.flatMap((entry) => {
-        const part = asRecord(entry);
-        return part?.type === "text" && typeof part.text === "string"
-          ? [{ type: "text", text: part.text }]
-          : [];
-      })
-    : [];
-  if (content.length > 0) {
-    projectedData.content = content;
-  }
-  return projectedData;
-}
-
 function projectRawOutput(value: unknown): Record<string, unknown> | undefined {
   const direct = asTrimmedString(value);
   if (direct) {
@@ -551,26 +381,6 @@ export function projectActivityPayload(
     };
   }
 
-  if (payload.itemType === "collab_agent_tool_call") {
-    return {
-      ...activity,
-      payload: {
-        ...payload,
-        data: projectCollabAgentToolCallData(data),
-      },
-    };
-  }
-
-  if (payload.itemType === "user_message") {
-    return {
-      ...activity,
-      payload: {
-        ...payload,
-        data: projectUserMessageData(data),
-      },
-    };
-  }
-
   const projectedData: Record<string, unknown> = {};
   const item = projectCommandData(data);
   if (item) {
@@ -635,54 +445,33 @@ function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity
 }
 
 /**
- * Owner of a context-window row: the parent thread, or one subagent whose own
- * meter this row feeds. Mirrors `contextWindowActivityOwner` in the client's
- * thread reducer.
- */
-function contextWindowActivityOwner(activity: OrchestrationThreadActivity): string | null {
-  const agentId = asRecord(activity.payload)?.agentId;
-  return typeof agentId === "string" && agentId.length > 0 ? agentId : null;
-}
-
-/**
- * Key a context-window row is deduplicated under: its turn AND its owner. The
- * parent and its subagents report under the same turn id, so a turn-only key
- * would let the newest row evict every other meter's only value.
- */
-function contextWindowRetentionKey(activity: OrchestrationThreadActivity): string {
-  return `${activity.turnId ?? ""}\u0000${contextWindowActivityOwner(activity) ?? ""}`;
-}
-
-/**
- * Drops all but the last resolvable context-window activity per turn and owner
- * from a snapshot. Clients only ever read the latest usage value per meter
- * (walking the array backwards), so shipping the full history — often
- * thousands of rows on long threads — buys nothing. Retention is per turn
- * rather than per thread because a live `thread.reverted` makes the client
- * discard whole turns; keeping each turn's latest row means the meter can
- * still resolve a value from the turns that survive. It is also per owner so a
- * subagent's meter survives the parent's newer rows and vice versa. Malformed
- * rows pass through untouched rather than shadowing a valid earlier row. Live
- * `thread.activity-appended` events are untouched: newer updates still stream
- * through and supersede the retained rows on the client.
+ * Drops all but the last resolvable context-window activity per turn from a
+ * snapshot. Clients only ever read the latest usage value (walking the array
+ * backwards), so shipping the full history — often thousands of rows on long
+ * threads — buys nothing. Retention is per turn rather than per thread because
+ * a live `thread.reverted` makes the client discard whole turns; keeping each
+ * turn's latest row means the meter can still resolve a value from the turns
+ * that survive. Malformed rows pass through untouched rather than shadowing a
+ * valid earlier row. Live `thread.activity-appended` events are untouched:
+ * newer updates still stream through and supersede the retained rows on the
+ * client.
  */
 function dropStaleContextWindowActivities(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ReadonlyArray<OrchestrationThreadActivity> {
-  const latestIndexByOwner = new Map<string, number>();
+  const latestIndexByTurn = new Map<string | null, number>();
   for (let index = 0; index < activities.length; index += 1) {
-    const activity = activities[index]!;
-    if (isResolvableContextWindowActivity(activity)) {
-      latestIndexByOwner.set(contextWindowRetentionKey(activity), index);
+    if (isResolvableContextWindowActivity(activities[index]!)) {
+      latestIndexByTurn.set(activities[index]!.turnId, index);
     }
   }
-  if (latestIndexByOwner.size === 0) {
+  if (latestIndexByTurn.size === 0) {
     return activities;
   }
   return activities.filter(
     (activity, index) =>
       !isResolvableContextWindowActivity(activity) ||
-      latestIndexByOwner.get(contextWindowRetentionKey(activity)) === index,
+      latestIndexByTurn.get(activity.turnId) === index,
   );
 }
 

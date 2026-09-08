@@ -10,12 +10,8 @@ import {
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
 export type ComposerTriggerKind = "path" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default" | "side";
+export type ComposerSlashCommand = "model" | "plan" | "default";
 export type ComposerSubmissionIntent = "foreground" | "background";
-
-export interface SideChatSlashCommand {
-  readonly prompt: string;
-}
 
 export interface ComposerTrigger {
   kind: ComposerTriggerKind;
@@ -267,7 +263,7 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
 
 export function parseStandaloneComposerSlashCommand(
   text: string,
-): Exclude<ComposerSlashCommand, "model" | "side"> | null {
+): Exclude<ComposerSlashCommand, "model"> | null {
   const match = /^\/(plan|default)\s*$/i.exec(text.trim());
   if (!match) {
     return null;
@@ -275,41 +271,6 @@ export function parseStandaloneComposerSlashCommand(
   const command = match[1]?.toLowerCase();
   if (command === "plan") return "plan";
   return "default";
-}
-
-export function parseSideChatSlashCommand(text: string): SideChatSlashCommand | null {
-  const match = /^\/side(?:\s+([\s\S]*))?$/i.exec(text.trim());
-  return match ? { prompt: (match[1] ?? "").trim() } : null;
-}
-
-/**
- * Everything a bare `/side` would throw away. Opening a side chat with no
- * message navigates to a brand-new empty thread and clears the composer, so
- * any attached content would be silently discarded — the send handler warns
- * instead. Counted here rather than inline so a new attachment kind is a
- * compile error at the call site instead of a silently uncounted field: that
- * is exactly how `files` (upstream's PDF/ZIP attachments) went missing.
- */
-export interface SideChatAttachedContentCounts {
-  readonly images: number;
-  readonly files: number;
-  readonly terminalContexts: number;
-  readonly elementContexts: number;
-  readonly previewAnnotations: number;
-  readonly reviewComments: number;
-}
-
-export function sideChatWouldDiscardAttachedContent(
-  counts: SideChatAttachedContentCounts,
-): boolean {
-  return (
-    counts.images > 0 ||
-    counts.files > 0 ||
-    counts.terminalContexts > 0 ||
-    counts.elementContexts > 0 ||
-    counts.previewAnnotations > 0 ||
-    counts.reviewComments > 0
-  );
 }
 
 export function replaceTextRange(

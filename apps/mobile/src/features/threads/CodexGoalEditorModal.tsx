@@ -15,7 +15,7 @@ function parseTokenBudget(raw: string): number | null | "invalid" {
   const trimmed = raw.replace(/[,\s_]/g, "");
   if (trimmed === "") return null;
   const value = Number(trimmed);
-  return Number.isInteger(value) && value > 0 ? value : "invalid";
+  return Number.isSafeInteger(value) && value > 0 ? value : "invalid";
 }
 
 /** Objective and token budget for a new or existing native Codex Goal. */
@@ -35,12 +35,11 @@ export function CodexGoalEditorModal(props: {
       navigationBarTranslucent
       onRequestClose={props.onClose}
     >
-      {/* Keyed on the goal record so the form seeds from the live goal each
-          time it opens; a stale draft must not overwrite an objective Codex
-          changed since. */}
+      {/* Mount from the current goal when opened. Usage updates must not
+          reset the objective while the user is editing it. */}
       {props.visible ? (
         <CodexGoalEditorForm
-          key={props.goal === null ? "new" : `${props.goal.createdAt}:${props.goal.updatedAt}`}
+          key={props.goal === null ? "new" : props.goal.createdAt}
           goal={props.goal}
           saving={props.saving}
           onClose={props.onClose}

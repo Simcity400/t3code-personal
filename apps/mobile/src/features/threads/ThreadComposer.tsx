@@ -26,14 +26,7 @@ import {
   useState,
   type RefObject,
 } from "react";
-import {
-  Alert,
-  Platform,
-  Pressable,
-  useWindowDimensions,
-  View,
-  type ViewStyle,
-} from "react-native";
+import { Alert, Platform, Pressable, View, type ViewStyle } from "react-native";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
 import {
   composerAttachmentUploadBlockReason,
@@ -79,11 +72,9 @@ import {
 } from "../../lib/modelOptions";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
-import {
-  composerProviderOptionLabels,
-  resolveProviderOptionDescriptors,
-} from "../../lib/providerOptions";
+import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
+import { resolveComposerEditorHeight } from "./composerEditorHeight";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
 import {
   ComposerDictationCancelAction,
@@ -96,16 +87,9 @@ import {
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
 import {
-  resolveComposerEditorHeight,
-  resolveComposerSettingsControlHeight,
-  resolveMobileComposerEditorMaxHeight,
-} from "./composerEditorHeight";
-import { runtimeModeCompactLabel, runtimeModeLabel } from "./thread-settings-options";
-import {
   type ExistingThreadSettingsRouteSession,
   useExistingThreadSettingsRoutePresentation,
 } from "./ThreadSettingsSheet";
-import { compatibleProviderInstanceIdsForThread } from "./thread-settings-sheet-state";
 import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
@@ -121,7 +105,7 @@ export const COMPOSER_COLLAPSED_CHROME = 60;
  * Height of the expanded composer (card + toolbar + vertical padding, excluding safe-area inset).
  * Used by the parent to compute the larger feed bottom inset when the composer is focused.
  */
-export const COMPOSER_EXPANDED_CHROME = 156;
+export const COMPOSER_EXPANDED_CHROME = 108;
 
 export interface ThreadComposerProps {
   readonly draftMessage: string;
@@ -146,10 +130,7 @@ export interface ThreadComposerProps {
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
-  readonly onStopAll?: (() => void) | undefined;
-  readonly onSendMessage: () => Promise<
-    { readonly messageId: MessageId | null } | MessageId | null
-  >;
+  readonly onSendMessage: () => Promise<MessageId | null>;
   /** `/usage-limits` resolves locally; the host decides where the report shows. Null clears it. */
   readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
@@ -248,15 +229,18 @@ export function ComposerSurface(props: {
 
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
   const navigation = useNavigation();
-  const { fontScale, height: windowHeight } = useWindowDimensions();
   const foregroundColor = useUniwindTheme()["--color-foreground"];
   const bodyText = useScaledTextRole("body");
-  const modelText = useScaledTextRole("footnote");
-  const settingsDetailText = useScaledTextRole("caption");
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
   const [isFocused, setIsFocused] = useState(false);
-  const [editorTextLayoutHeight, setEditorTextLayoutHeight] = useState(bodyText.lineHeight);
+  const [measuredTextHeight, setMeasuredTextHeight] = useState(0);
+  const editorHeight = resolveComposerEditorHeight({
+    lineHeight: bodyText.lineHeight,
+    explicitLineCount: props.draftMessage.split("\n").length,
+    measuredTextHeight: props.draftMessage.length > 0 ? measuredTextHeight : 0,
+    maxHeight: 160,
+  });
   const settingsSheetPresentation = useThreadSettingsSheetPresentation({
     editorRef: inputRef,
     isEditorFocused: isFocused,
@@ -361,20 +345,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const isVoiceInputPresented = voicePresentation.statusLabel !== null;
   // An open draft stays visible; only a collapsed composer becomes a voice strip.
   const isExpanded = isFocused || settingsSheetPresentation.isActive;
-  const composerEditorMaxHeight = resolveMobileComposerEditorMaxHeight(windowHeight);
-  const composerSettingsControlHeight = resolveComposerSettingsControlHeight({
-    detailLineHeight: settingsDetailText.lineHeight,
-    fontScale,
-    modelLineHeight: modelText.lineHeight,
-  });
-  // Fork: the composer opens at one line and grows with its text instead of
-  // the fixed three-line box upstream ships.
-  const { desiredHeight: desiredEditorHeight, height: editorHeight } = resolveComposerEditorHeight({
-    lineHeight: bodyText.lineHeight,
-    explicitLineCount: props.draftMessage.split("\n").length,
-    measuredTextHeight: editorTextLayoutHeight,
-    maxHeight: composerEditorMaxHeight,
-  });
   const showsCompactDictation = isVoiceInputPresented && !isExpanded;
   const isToolbarVisible = isExpanded || isVoiceInputPresented;
   const attachmentBlockReason = composerAttachmentUploadBlockReason({
@@ -447,43 +417,27 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       return;
     }
     if (voiceInput.blocksSubmission) return;
-    const threadKey = composerOwnerKey;
+    const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
-    // Marked before the send, not after it: the draft store clears
-    // synchronously inside `onSendMessage`, so the cleared composer renders
-    // while this call is still awaiting, and the native events the submit
-    // provokes are delivered from here on. Marking afterwards would land past
-    // the blur handoff that provokes the event racing the clear.
-    const finishSubmit = inputRef.current?.markSubmitted();
     try {
-      const sent = await onSendMessage();
+      const messageId = await onSendMessage();
+      if (messageId === null) {
+        return;
+      }
       // Sending a prompt starts agent work: arm the lock-screen card while the
       // app is foregrounded and the activity token can be registered. Armed
       // after the send so its preference read and native Activity start don't
-      // contend with the queued-message feedback on the tap frame. Only a send
-      // that actually started work arms it - a bailed-out or empty submit must
-      // not leave a phantom "agent working" card on the lock screen. Two send
-      // paths feed this composer: the route screen passes the composer state's
-      // { messageId } result, the detail screen unwraps to a bare id.
-      const sentMessageId = typeof sent === "string" ? sent : sent?.messageId;
-      if (sentMessageId != null) {
-        armAgentAwarenessLiveActivityForLocalWork({
-          environmentId: props.environmentId,
-          threadTitle: props.selectedThread.title,
-          projectTitle: props.environmentLabel ?? "T3 Code",
-        });
-      }
+      // contend with the queued-message feedback on the tap frame.
+      armAgentAwarenessLiveActivityForLocalWork({
+        environmentId: props.environmentId,
+        threadTitle: props.selectedThread.title,
+        projectTitle: props.environmentLabel ?? "T3 Code",
+      });
     } finally {
-      // Releases the composer's post-submit settle window: a send that bailed
-      // out has no clear coming, and one that cleared asynchronously only just
-      // did, so the window's countdown is measured from here.
-      finishSubmit?.();
       inFlightThreadIdsRef.current.delete(threadKey);
     }
   }, [
-    composerOwnerKey,
-    inputRef,
     props.draftMessage,
     props.draftAttachments.length,
     onChangeDraftMessage,
@@ -492,6 +446,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     onSendMessage,
     props.environmentId,
     props.environmentLabel,
+    props.selectedThread.id,
     props.selectedThread.title,
     voiceInput.blocksSubmission,
   ]);
@@ -502,23 +457,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     [props.serverConfig, currentModelSelection],
   );
   const providerGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);
-  const lockedProviderInstanceId =
-    props.selectedThread.session?.providerInstanceId ?? currentModelSelection.instanceId;
-  const lockedProviderDriver = props.selectedThread.session?.providerName;
-  const compatibleProviderInstanceIds = useMemo(
-    () =>
-      compatibleProviderInstanceIdsForThread({
-        providers: props.serverConfig?.providers ?? [],
-        instanceId: lockedProviderInstanceId,
-        driver: lockedProviderDriver,
-      }),
-    [lockedProviderDriver, lockedProviderInstanceId, props.serverConfig?.providers],
-  );
-  // Existing threads can move between account instances only when the server
-  // reports that they share the same provider resume state.
+  // An existing thread is bound to its harness: sessions can't move between
+  // provider instances, so the picker only offers the thread's own group.
   const threadProviderGroups = useMemo(
-    () => providerGroups.filter((group) => compatibleProviderInstanceIds.has(group.providerKey)),
-    [compatibleProviderInstanceIds, providerGroups],
+    () => providerGroups.filter((group) => group.providerKey === currentModelSelection.instanceId),
+    [providerGroups, currentModelSelection.instanceId],
   );
   const currentModelOption =
     modelOptions.find(
@@ -534,20 +477,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       }),
     [currentModelOption?.capabilities, currentModelSelection.options],
   );
-  const currentModelLabel = currentModelOption?.label ?? currentModelSelection.model;
-  const providerSettingsSummary = useMemo(
-    () => composerProviderOptionLabels(providerOptionDescriptors).join(" · "),
-    [providerOptionDescriptors],
-  );
-  const currentRuntimeModeLabel = runtimeModeLabel(currentRuntimeMode);
-  const currentRuntimeModeCompactLabel = runtimeModeCompactLabel(currentRuntimeMode);
   const settingsOwnerId = composerOwnerKey;
   const settingsRouteSession = useMemo<ExistingThreadSettingsRouteSession>(
     () => ({
       ownerId: settingsOwnerId,
       environmentId: props.environmentId,
-      providerInstanceId: lockedProviderInstanceId,
-      providerDriver: lockedProviderDriver,
+      providerInstanceId: currentModelSelection.instanceId,
       providerGroups: threadProviderGroups,
       selectedModel: currentModelSelection,
       onSelectModel: (option) => props.onUpdateModelSelection(option.selection),
@@ -560,8 +495,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     [
       currentModelSelection,
       currentRuntimeMode,
-      lockedProviderDriver,
-      lockedProviderInstanceId,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
       providerOptionDescriptors,
@@ -699,25 +632,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               className={isExpanded ? "px-[14px]" : "min-w-0 flex-1 px-[4px]"}
               layout={COMPOSER_LAYOUT_TRANSITION}
             >
-              {isExpanded ? (
-                <Text
-                  accessible={false}
-                  pointerEvents="none"
-                  style={[
-                    bodyText,
-                    {
-                      left: 0,
-                      opacity: 0,
-                      position: "absolute",
-                      right: 0,
-                      top: 0,
-                    },
-                  ]}
-                  onLayout={(event) => setEditorTextLayoutHeight(event.nativeEvent.layout.height)}
-                >
-                  {`${props.draftMessage}\u200b`}
-                </Text>
-              ) : null}
               <ComposerEditor
                 ref={inputRef}
                 multiline
@@ -725,15 +639,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 readOnly={voiceInput.freezesEditor}
                 skills={composerMenu.skills}
                 selection={composerMenu.selection}
-                ownerKey={composerOwnerKey}
                 onChangeText={props.onChangeDraftMessage}
+                onContentSizeChange={setMeasuredTextHeight}
                 onSelectionChange={composerMenu.onSelectionChange}
                 onPasteImages={(uris) => void props.onNativePasteImages(uris)}
                 placeholder={props.placeholder}
                 onFocus={handleFocus}
                 onBlur={handleBlur}
                 onSubmit={handleSend}
-                scrollEnabled={isExpanded && desiredEditorHeight > composerEditorMaxHeight}
+                scrollEnabled={isExpanded}
                 // Android: collapsed single line centers natively (gravity) in
                 // a pill-height box matching the send button; iOS keeps insets.
                 singleLineCentered={!isExpanded}
@@ -741,8 +655,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 style={
                   isExpanded
                     ? {
-                        height: editorHeight,
-                        maxHeight: composerEditorMaxHeight,
+                        height: editorHeight + 8,
+                        paddingVertical: 4,
                       }
                     : {
                         height: 36,
@@ -786,24 +700,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   onCancel={voiceInput.cancel}
                 />
                 {showStopAction ? (
-                  <View className="flex-row items-center">
-                    <ComposerActionButton
-                      accessibilityLabel="Stop agent"
-                      icon="stop.fill"
-                      variant="danger"
-                      onPress={props.onStopThread}
-                    />
-                    {props.onStopAll ? (
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="Stop all"
-                        onPress={props.onStopAll}
-                        className="min-h-11 justify-center px-2"
-                      >
-                        <Text className="text-xs text-danger-foreground">Stop all</Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
+                  <ComposerActionButton
+                    accessibilityLabel="Stop agent"
+                    icon="stop.fill"
+                    variant="danger"
+                    onPress={props.onStopThread}
+                  />
                 ) : (
                   <ComposerActionButton
                     accessibilityLabel={sendBlockedReason ?? sendLabel}
@@ -835,8 +737,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             }
           >
             <ComposerDictationToolbar
-              expanded={isExpanded && !isVoiceInputPresented}
-              expandedHeight={composerSettingsControlHeight}
               showsDictation={isVoiceInputPresented}
               visible={isToolbarVisible}
             >
@@ -867,19 +767,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       onPickMedia={props.onPickDraftMedia}
                       onPickFiles={props.onPickDraftFiles}
                     />
-                    <View className="min-w-0 shrink" style={{ maxWidth: 240 }}>
+                    <View className="min-w-0 shrink" style={{ maxWidth: 152 }}>
                       <ComposerInlineControl
-                        accessibilityLabel={`Model and reasoning settings: ${currentModelLabel}, ${providerSettingsSummary ? `${providerSettingsSummary}, ` : ""}${currentRuntimeModeLabel}`}
+                        accessibilityLabel="Model and reasoning settings"
                         emphasized
-                        height={composerSettingsControlHeight}
                         iconNode={
                           <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
                         }
-                        label={currentModelLabel}
-                        maxWidth={240}
+                        label={currentModelOption?.label ?? currentModelSelection.model}
+                        maxWidth={152}
                         onPress={openSettings}
-                        secondaryLabel={providerSettingsSummary || undefined}
-                        trailingLabel={`Approval: ${currentRuntimeModeCompactLabel}`}
                       />
                     </View>
                   </View>
@@ -894,24 +791,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     onCancel={voiceInput.cancel}
                   />
                   {showStopAction ? (
-                    <View className="flex-row items-center">
-                      <ComposerActionButton
-                        accessibilityLabel="Stop agent"
-                        icon="stop.fill"
-                        variant="danger"
-                        onPress={props.onStopThread}
-                      />
-                      {props.onStopAll ? (
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel="Stop all"
-                          onPress={props.onStopAll}
-                          className="min-h-11 justify-center px-2"
-                        >
-                          <Text className="text-xs text-danger-foreground">Stop all</Text>
-                        </Pressable>
-                      ) : null}
-                    </View>
+                    <ComposerActionButton
+                      accessibilityLabel="Stop agent"
+                      icon="stop.fill"
+                      variant="danger"
+                      onPress={props.onStopThread}
+                    />
                   ) : voicePresentation.showsSend ? (
                     <ComposerActionButton
                       accessibilityLabel={sendBlockedReason ?? sendLabel}

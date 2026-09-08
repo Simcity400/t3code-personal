@@ -224,6 +224,7 @@ const make = Effect.gen(function* () {
       readonly messages: ReadonlyArray<{
         readonly id: MessageId;
         readonly role: string;
+        readonly agentId?: string | undefined;
         readonly turnId: TurnId | null;
       }>;
     };
@@ -303,7 +304,12 @@ const make = Effect.gen(function* () {
       input.assistantMessageId ??
       input.thread.messages
         .toReversed()
-        .find((entry) => entry.role === "assistant" && entry.turnId === input.turnId)?.id ??
+        .find(
+          (entry) =>
+            entry.role === "assistant" &&
+            entry.agentId === undefined &&
+            entry.turnId === input.turnId,
+        )?.id ??
       MessageId.make(`assistant:${input.turnId}`);
 
     yield* orchestrationEngine.dispatch({

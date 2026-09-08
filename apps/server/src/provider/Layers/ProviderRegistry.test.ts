@@ -143,7 +143,6 @@ type TestClaudeCapabilities = {
   readonly tokenSource: string | undefined;
   readonly apiProvider: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
-  readonly usage?: { readonly rate_limits_available: boolean; readonly rate_limits: null };
 };
 
 function claudeCapabilities(overrides: Partial<TestClaudeCapabilities> = {}) {
@@ -409,13 +408,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           ]);
           assert.deepStrictEqual(status.slashCommands.slice(1), [
             {
-              name: "goal",
-              description: "Manage the native Codex Goal for this thread",
-              input: {
-                hint: "[status|create|steer|pause|resume|clear|reset] [objective]",
-              },
-            },
-            {
               name: "feedback",
               description: "Send this thread and Codex logs to OpenAI",
               input: { hint: "Describe the issue (optional)" },
@@ -436,53 +428,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
 
           assert.strictEqual(status.status, "ready");
           assert.strictEqual(observedLaunchArgs, "--strict-config --enable foo");
-        }),
-      );
-
-      it.effect("invalidates a saved account when the usage probe rejects its credentials", () =>
-        Effect.gen(function* () {
-          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
-            Effect.succeed(
-              makeCodexProbeSnapshot({
-                rateLimits: { failure: "Codex could not read usage.", authenticationFailed: true },
-              }),
-            ),
-          );
-          assert.strictEqual(status.status, "error");
-          assert.strictEqual(status.auth.status, "unauthenticated");
-          assert.strictEqual(status.auth.email, "test@example.com");
-          assert.include(status.message, "Sign in again");
-        }),
-      );
-
-      it.effect("keeps a saved account for transient usage failures and successful probes", () =>
-        Effect.gen(function* () {
-          for (const rateLimits of [
-            { failure: "Codex did not answer the usage request." },
-            undefined,
-          ]) {
-            const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
-              Effect.succeed(makeCodexProbeSnapshot(rateLimits ? { rateLimits } : {})),
-            );
-            assert.strictEqual(status.status, "ready");
-            assert.strictEqual(status.auth.status, "authenticated");
-          }
-        }),
-      );
-
-      it.effect("reports rejected credentials from account reads as unauthenticated", () =>
-        Effect.gen(function* () {
-          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
-            Effect.fail(
-              new CodexErrors.CodexAppServerRequestError({
-                code: -32603,
-                errorMessage:
-                  "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.",
-              }),
-            ),
-          );
-          assert.strictEqual(status.auth.status, "unauthenticated");
-          assert.strictEqual(status.status, "error");
         }),
       );
 
@@ -2700,34 +2645,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
     // ── checkClaudeProviderStatus tests ──────────────────────────
 
     describe("checkClaudeProviderStatus", () => {
-      for (const account of [
-        {
-          tokenSource: "CLAUDE_CODE_OAUTH_TOKEN",
-          apiProvider: "firstParty",
-          reason: "probeFailed",
-        },
-        { tokenSource: "ANTHROPIC_AUTH_TOKEN", apiProvider: "firstParty", reason: "unsupported" },
-        { tokenSource: undefined, apiProvider: "bedrock", reason: "unsupported" },
-      ] as const) {
-        it.effect(
-          `classifies unavailable claude limits for ${account.tokenSource ?? account.apiProvider}`,
-          () =>
-            Effect.gen(function* () {
-              const status = yield* checkClaudeProviderStatus(
-                defaultClaudeSettings,
-                claudeCapabilities({
-                  tokenSource: account.tokenSource,
-                  apiProvider: account.apiProvider,
-                  usage: { rate_limits_available: false, rate_limits: null },
-                }),
-              );
-              assert.strictEqual(status.usageLimits?.unavailable?.reason, account.reason);
-              assert.strictEqual(status.auth.status, "authenticated");
-            }).pipe(
-              Effect.provide(mockSpawnerLayer(() => ({ stdout: "1.0.0\n", stderr: "", code: 0 }))),
-            ),
-        );
-      }
       it.effect("returns ready when claude is installed and authenticated", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(

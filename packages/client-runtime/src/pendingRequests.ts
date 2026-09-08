@@ -84,18 +84,6 @@ function parseQuestions(value: unknown): UserInputQuestion[] {
   });
 }
 
-/**
- * Questions a `user-input.requested` payload carries, or null when it has none.
- * The transcript restates them next to the answer once the request resolves.
- */
-export function parseUserInputQuestions(
-  payload: Record<string, unknown> | null,
-): ReadonlyArray<UserInputQuestion> | null {
-  if (!payload) return null;
-  const questions = parseQuestions(payload.questions);
-  return questions.length > 0 ? questions : null;
-}
-
 const requestActivityKinds = new Set([
   "approval.requested",
   "approval.resolved",

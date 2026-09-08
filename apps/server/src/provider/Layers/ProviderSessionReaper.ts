@@ -13,7 +13,6 @@ import {
 } from "../Services/ProviderSessionReaper.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
-import { isCrossProviderSessionId } from "../CrossProviderAgentBridge.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
@@ -41,8 +40,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       let reapedCount = 0;
 
       for (const binding of bindings) {
-        // Recovery bindings are not projected threads; the bridge owns child liveness.
-        if (binding.status === "stopped" || isCrossProviderSessionId(binding.threadId)) {
+        if (binding.status === "stopped") {
           continue;
         }
 

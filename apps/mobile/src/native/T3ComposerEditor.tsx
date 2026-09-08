@@ -17,7 +17,6 @@ export function ComposerEditor({
   textStyle,
   contentInsetVertical = 0,
   singleLineCentered: _singleLineCentered,
-  ownerKey: _ownerKey,
   readOnly = false,
   ...props
 }: ComposerEditorProps) {
@@ -33,9 +32,6 @@ export function ComposerEditor({
       blur: () => inputRef.current?.blur(),
       setSelection: (nextSelection) =>
         inputRef.current?.setSelection(nextSelection.start, nextSelection.end),
-      // A plain TextInput is fully controlled by React: there is no revision
-      // handshake for the post-submit clear to lose, so nothing to mark.
-      markSubmitted: () => () => {},
     }),
     [],
   );
@@ -47,9 +43,9 @@ export function ComposerEditor({
         {...props}
         editable={(props.editable ?? true) && !readOnly}
         selection={selection}
-        onContentSizeChange={(event) => onContentSizeChange?.(event.nativeEvent.contentSize)}
         onSelectionChange={(event) => props.onSelectionChange?.(event.nativeEvent.selection)}
         multiline={props.multiline ?? true}
+        onContentSizeChange={(event) => onContentSizeChange?.(event.nativeEvent.contentSize.height)}
         placeholderTextColorClassName={"accent-placeholder"}
         className="text-foreground"
         style={[

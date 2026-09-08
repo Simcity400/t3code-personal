@@ -1,24 +1,9 @@
-/* Fork tweaks layered on top of the default palette in index.css.
-   The fork's own color themes (Contrast/Paper/Ocean) and custom color picker
-   were retired 2026-08-08 in favor of the official theme library; only the
-   presentation tweaks below remain. */
-
-/* ── Fork tweak: full-brightness chat text ─────────────────────────────
-   ChatMarkdown's root class dims assistant messages to text-foreground/80;
-   this unlayered rule outranks the Tailwind utility layer and renders chat
-   markdown at 100% foreground in every theme. */
-
+/* Keep chat text at full foreground brightness in every theme. */
 .chat-markdown {
   color: var(--foreground);
 }
 
-/* ── Fork tweak: brighter dark-mode text ──────────────────────────────
-   Raises the default dark palette's text one step across the board while
-   keeping the primary/secondary hierarchy: foreground goes to white and
-   muted-foreground to a lighter gray; every opacity-derived shade scales
-   with them. Scoped via :not([data-theme-id]) to the default palette only —
-   official themes (built-in or custom) carry their own values. */
-
+/* Brighten the default dark palette; official and custom themes keep their colors. */
 :root.dark:not([data-theme-id]) {
   --foreground: #ffffff;
   --card-foreground: #ffffff;

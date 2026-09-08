@@ -59,8 +59,7 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
-import { makeClaudeCapabilitiesCacheKey } from "./ClaudeHome.ts";
-import { materializeClaudeSharedHome, resolveClaudeHomeLayout } from "./ClaudeSharedHome.ts";
+import { makeClaudeCapabilitiesCacheKey, makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
 import { discoverClaudeSkills } from "./ClaudeSkills.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -136,28 +135,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           Effect.provideService(Path.Path, path),
         ),
       );
-      const homeLayout = yield* resolveClaudeHomeLayout(effectiveConfig, processEnv);
-      yield* materializeClaudeSharedHome(homeLayout).pipe(
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: cause.message,
-              cause,
-            }),
-        ),
-      );
-      const continuationGroupKey = homeLayout.continuationKey;
+      const continuationGroupKey = yield* makeClaudeContinuationGroupKey(effectiveConfig);
       const stampIdentity = withInstanceIdentity({
         instanceId,
         driverKind: DRIVER_KIND,
         displayName,
         accentColor,
         continuationGroupKey,
-        conversationHomePath: homeLayout.conversationHomePath,
       });
 
       // One per instance: the status probe writes the model-scoped bucket
@@ -271,8 +255,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         enabled,
         snapshot,
         snapshotForCwd,
-        // Explicit refresh after login must not reuse the pre-login account probe.
-        refreshModels: () => Cache.invalidate(capabilitiesProbeCache, capabilitiesCacheKey),
         adapter,
         textGeneration,
       } satisfies ProviderInstance;

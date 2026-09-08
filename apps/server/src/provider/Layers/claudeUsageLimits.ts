@@ -157,21 +157,11 @@ export function claudeRateLimitEventToUpdate(
 export function claudeUsageResponseToLimits(input: {
   readonly response: Pick<SDKControlGetUsageResponse, "rate_limits_available" | "rate_limits">;
   readonly checkedAt: string;
-  readonly usesApiBilling?: boolean;
 }): { readonly limits: ServerProviderUsageLimits; readonly names: ClaudeScopedLimitNames } {
   const { response, checkedAt } = input;
   if (!response.rate_limits_available || !response.rate_limits) {
     return {
-      limits:
-        !response.rate_limits_available && input.usesApiBilling
-          ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
-          : makeUnavailableUsageLimits({
-              checkedAt,
-              reason: "probeFailed",
-              message: response.rate_limits_available
-                ? "Claude returned no usage data. Try refreshing limits."
-                : "Claude cannot read subscription limits with this sign-in. Check the account's OAuth profile access and any configured token scopes.",
-            }),
+      limits: makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" }),
       names: { overageIncluded: undefined },
     };
   }
@@ -205,7 +195,5 @@ export const recordClaudeUsageResponse = (
   input: Parameters<typeof claudeUsageResponseToLimits>[0],
 ): Effect.Effect<ServerProviderUsageLimits> => {
   const { limits, names } = claudeUsageResponseToLimits(input);
-  return limits.unavailable?.reason === "probeFailed"
-    ? Effect.succeed(limits)
-    : Ref.set(namesRef, names).pipe(Effect.as(limits));
+  return Ref.set(namesRef, names).pipe(Effect.as(limits));
 };

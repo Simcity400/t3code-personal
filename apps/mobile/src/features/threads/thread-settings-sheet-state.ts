@@ -1,37 +1,4 @@
-import type { ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
-
-/** Match the server's continuation guard when switching an existing thread's account. */
-export function compatibleProviderInstanceIdsForThread(input: {
-  readonly providers: ReadonlyArray<ServerProvider>;
-  readonly instanceId: ProviderInstanceId;
-  readonly driver?: string | null;
-}): ReadonlySet<string> {
-  const compatible = new Set<string>([input.instanceId]);
-  const lockedProvider = input.providers.find(
-    (provider) => provider.instanceId === input.instanceId,
-  );
-  const lockedDriver = lockedProvider?.driver ?? input.driver;
-  if (!lockedDriver) {
-    return compatible;
-  }
-
-  const continuationGroupKey = lockedProvider?.continuation?.groupKey;
-  if (lockedDriver === "antigravity" && continuationGroupKey === undefined) {
-    return compatible;
-  }
-
-  for (const provider of input.providers) {
-    if (
-      provider.driver === lockedDriver &&
-      (continuationGroupKey === undefined ||
-        provider.continuation?.groupKey === continuationGroupKey)
-    ) {
-      compatible.add(provider.instanceId);
-    }
-  }
-  return compatible;
-}
 
 /** Match the terms a user can actually see or recognize in the model picker. */
 export function modelMatchesCatalogQuery(input: {
@@ -78,18 +45,6 @@ export function canCommitPendingModel(
  * Primary and selected providers start open; all other catalogs start closed.
  * A user's disclosure tap inverts that default until the picker is dismissed.
  */
-/** Keep sibling account headers visible instead of burying them under several model catalogs. */
-export function providerSectionStartsExpanded(input: {
-  readonly isPrimary: boolean;
-  readonly containsAppliedSelection: boolean;
-  readonly sameDriverProviderCount: number;
-}): boolean {
-  if (input.sameDriverProviderCount > 1) {
-    return false;
-  }
-  return input.isPrimary || input.containsAppliedSelection;
-}
-
 export function providerSectionIsCollapsed(input: {
   readonly defaultExpanded: boolean;
   readonly hasExpansionOverride: boolean;

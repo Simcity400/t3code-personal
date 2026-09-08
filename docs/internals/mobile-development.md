@@ -23,12 +23,3 @@ only when the generated stylesheet and theme list are unchanged. Skipping compil
 would lose new classes; invalidating every consumer for unchanged output makes an
 ordinary component edit refresh the whole app. The fingerprint is recorded only
 after initialization succeeds.
-
-## Personal preview runtime compatibility
-
-Personal preview and production builds use the Expo fingerprint runtime policy. The personal
-iPhone workflow uses Expo's continuous deployment action to locate a compatible binary or build
-a new one before updating its branch. A native dependency, plugin, entitlement, or native source
-change requires installing the resulting preview binary. JavaScript updates must never retain an
-arbitrary runtime identifier across incompatible native changes. Development uses the app version
-policy to avoid fingerprint work during Metro launches.

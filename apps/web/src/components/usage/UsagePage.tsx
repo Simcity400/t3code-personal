@@ -90,22 +90,8 @@ function isUsageWindowDays(value: number): value is UsagePagePreferences["window
   return WINDOW_OPTIONS.some((option) => option.days === value);
 }
 
-/**
- * `initialMetric` is the fork's deep link (`/usage?view=limits` from the
- * composer's context meter): when set it wins over the remembered metric for
- * this mount only, and the saved preference is left alone until the user
- * picks a metric here.
- */
-export function UsagePage({
-  initialMetric,
-}: {
-  initialMetric?: UsageMetric | undefined;
-} = {}) {
-  const [preferences, setPreferences] = useState(
-    initialMetric === undefined
-      ? readUsagePagePreferences
-      : () => ({ ...readUsagePagePreferences(), metric: initialMetric }),
-  );
+export function UsagePage() {
+  const [preferences, setPreferences] = useState(readUsagePagePreferences);
   const [windowSelection, setWindowSelection] = useState(() => ({
     days: preferences.windowDays,
     window: makeWindow(

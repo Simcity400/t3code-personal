@@ -65,24 +65,6 @@ function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity
 }
 
 /**
- * Owner of a context-window row: the parent thread (null) or one subagent.
- *
- * Supersession is per owner as well as per turn. The parent and its children
- * report usage under the SAME turn id, so an owner-blind rule would let the
- * newest row — whichever conversation produced it — evict every other meter's
- * only value, and the surviving meters would read whatever agent happened to
- * speak last.
- */
-function contextWindowActivityOwner(activity: OrchestrationThreadActivity): string | null {
-  const payload =
-    activity.payload && typeof activity.payload === "object"
-      ? (activity.payload as Record<string, unknown>)
-      : null;
-  const agentId = payload?.agentId;
-  return typeof agentId === "string" && agentId.length > 0 ? agentId : null;
-}
-
-/**
  * Apply a single orchestration event to an `OrchestrationThread`, returning
  * the updated thread, a deletion signal, or an "unchanged" marker when the
  * event doesn't affect this thread.
@@ -115,12 +97,6 @@ export function applyThreadDetailEvent(
           interactionMode: event.payload.interactionMode,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
-          ...(event.payload.forkedFromThreadId != null
-            ? { forkedFromThreadId: event.payload.forkedFromThreadId }
-            : {}),
-          ...(event.payload.sideChatPromotedAt != null
-            ? { sideChatPromotedAt: event.payload.sideChatPromotedAt }
-            : {}),
           branchPullRequest: null,
           latestTurn: null,
           createdAt: event.payload.createdAt,
@@ -216,10 +192,7 @@ export function applyThreadDetailEvent(
     case "thread.goal-set":
       return {
         kind: "updated",
-        thread: {
-          ...thread,
-          goal: event.payload.goal,
-        },
+        thread: { ...thread, goal: event.payload.goal },
       };
 
     case "thread.pinned":
@@ -273,9 +246,6 @@ export function applyThreadDetailEvent(
           ...(event.payload.worktreePath !== undefined
             ? { worktreePath: event.payload.worktreePath }
             : {}),
-          ...(event.payload.sideChatPromotedAt !== undefined
-            ? { sideChatPromotedAt: event.payload.sideChatPromotedAt }
-            : {}),
           ...(event.payload.linkedPullRequest !== undefined
             ? { linkedPullRequest: event.payload.linkedPullRequest }
             : {}),
@@ -325,7 +295,7 @@ export function applyThreadDetailEvent(
       };
 
     case "thread.turn-interrupt-requested": {
-      if (event.payload.taskId !== undefined || event.payload.turnId === undefined) {
+      if (event.payload.turnId === undefined) {
         return { kind: "unchanged" };
       }
       const latestTurn = thread.latestTurn;
@@ -353,10 +323,10 @@ export function applyThreadDetailEvent(
         id: event.payload.messageId,
         role: event.payload.role,
         text: event.payload.text,
+        ...(event.payload.agentId !== undefined ? { agentId: event.payload.agentId } : {}),
         ...(event.payload.attachments !== undefined
           ? { attachments: event.payload.attachments }
           : {}),
-        ...(event.payload.agentId !== undefined ? { agentId: event.payload.agentId } : {}),
         turnId: event.payload.turnId,
         streaming: event.payload.streaming,
         createdAt: event.payload.createdAt,
@@ -364,6 +334,7 @@ export function applyThreadDetailEvent(
       };
 
       const existingMessage = thread.messages.find((entry) => entry.id === message.id);
+      const isParentMessage = (message.agentId ?? existingMessage?.agentId) === undefined;
       const messages = existingMessage
         ? Arr.map(thread.messages, (entry) =>
             entry.id !== message.id
@@ -376,12 +347,12 @@ export function applyThreadDetailEvent(
                       ? message.text
                       : entry.text,
                   streaming: message.streaming,
+                  ...(message.agentId !== undefined ? { agentId: message.agentId } : {}),
                   ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
                   ...(message.streaming ? {} : { updatedAt: message.updatedAt }),
                   ...(message.attachments !== undefined
                     ? { attachments: message.attachments }
                     : {}),
-                  ...(message.agentId !== undefined ? { agentId: message.agentId } : {}),
                 },
           )
         : Arr.append(thread.messages, message);
@@ -399,7 +370,7 @@ export function applyThreadDetailEvent(
       const latestTurn = reuseLatestTurn(
         thread.latestTurn,
         event.payload.role === "assistant" &&
-          event.payload.agentId === undefined &&
+          isParentMessage &&
           event.payload.turnId !== null &&
           (thread.latestTurn === null || thread.latestTurn.turnId === event.payload.turnId)
           ? {
@@ -432,7 +403,7 @@ export function applyThreadDetailEvent(
       // Rebind checkpoint assistant message IDs for assistant messages. The
       // helper hands back the same array when the entry is already bound.
       const checkpoints =
-        event.payload.role === "assistant" && event.payload.turnId !== null
+        event.payload.role === "assistant" && isParentMessage && event.payload.turnId !== null
           ? rebindCheckpointAssistantMessage(
               thread.checkpoints,
               event.payload.turnId,
@@ -679,9 +650,6 @@ export function applyThreadDetailEvent(
           },
         };
       }
-      const contextWindowOwner = supersedesContextWindow
-        ? contextWindowActivityOwner(activity)
-        : null;
       const activities = pipe(
         thread.activities,
         Arr.filter(
@@ -690,7 +658,6 @@ export function applyThreadDetailEvent(
             !(
               supersedesContextWindow &&
               entry.turnId === activity.turnId &&
-              contextWindowActivityOwner(entry) === contextWindowOwner &&
               isResolvableContextWindowActivity(entry)
             ),
         ),
@@ -817,6 +784,7 @@ function retainMessagesAfterRevert(
     const retainedCount = messages.filter(
       (message) =>
         message.role === role &&
+        message.agentId === undefined &&
         !isImportedAgentSessionMessageId(message.id) &&
         retainedMessageIds.has(message.id),
     ).length;
@@ -825,6 +793,7 @@ function retainMessagesAfterRevert(
       .filter(
         (message) =>
           message.role === role &&
+          message.agentId === undefined &&
           !retainedMessageIds.has(message.id) &&
           (message.turnId === null || retainedTurnIds.has(message.turnId)),
       )

@@ -47,7 +47,7 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   const scope = yield* McpInvocationContext.requireMcpCapability("preview");
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   return yield* broker.invoke<A>({
-    scope: { ...scope, threadId: scope.visibleThreadId ?? scope.threadId },
+    scope,
     operation,
     input,
     ...(timeoutMs === undefined ? {} : { timeoutMs }),

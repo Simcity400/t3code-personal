@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { isAgentMessage } from "@t3tools/client-runtime/state/agent-transcripts";
 import { useRoute, type RouteProp } from "@react-navigation/native";
 import { useMemo, useRef, useState } from "react";
 import {
@@ -41,7 +42,7 @@ function firstRouteParam(value: string | string[] | undefined): string | null {
 function latestUserMessageAt(thread: OrchestrationThread): OrchestrationThread["updatedAt"] | null {
   for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
     const message = thread.messages[index];
-    if (message?.role === "user") {
+    if (message?.role === "user" && !isAgentMessage(message)) {
       return message.createdAt;
     }
   }

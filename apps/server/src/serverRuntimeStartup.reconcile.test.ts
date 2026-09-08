@@ -2,8 +2,6 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   type OrchestrationCommand,
   type OrchestrationSessionStatus,
-  type TaskState,
-  EventId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSendTurnInput,
@@ -29,229 +27,9 @@ import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDi
 import { ServerActivation } from "./serverActivation.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
-import type { CrossProviderAgentRecord } from "./provider/CrossProviderAgentRecovery.ts";
-import { updateTaskState } from "./orchestration/taskState.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const updatedAt = "2026-08-20T12:00:00.000Z";
-const emptyRecoveryDirectory: ProviderSessionDirectory.ProviderSessionDirectory["Service"] = {
-  getBinding: () => Effect.succeed(Option.none()),
-  getProvider: () => Effect.die("unused"),
-  upsert: () => Effect.die("startup must not write recovery bindings"),
-  listBindings: () => Effect.die("startup must not scan recovery bindings"),
-  listThreadIds: () => Effect.die("startup must not enumerate hidden sessions"),
-  recordImportedTranscript: () => Effect.die("startup must not record imported transcripts"),
-};
-
-it.effect(
-  "settles lost bridge executions without losing task identity and cancels requests truthfully",
-  () =>
-    Effect.gen(function* () {
-      const threadId = ThreadId.make("bridge-root");
-      const state = updateTaskState(undefined, {
-        id: EventId.make("original"),
-        kind: "task.updated",
-        tone: "info",
-        summary: "Reviewer",
-        turnId: null,
-        createdAt: updatedAt,
-        payload: {
-          taskId: "child",
-          taskType: "cross_provider",
-          title: "Reviewer",
-          model: "child-model",
-          executionOwner: "cross-provider",
-          status: "running",
-          canStop: true,
-        },
-      })!;
-      const commands: OrchestrationCommand[] = [];
-      yield* ServerRuntimeStartup.reconcileCrossProviderExecutions.pipe(
-        Effect.provideService(
-          ProviderSessionDirectory.ProviderSessionDirectory,
-          emptyRecoveryDirectory,
-        ),
-        Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-          getCrossProviderRecovery: () =>
-            Effect.succeed({
-              tasks: [{ threadId, state }],
-              requests: [
-                {
-                  threadId,
-                  activity: {
-                    id: EventId.make("question"),
-                    createdAt: updatedAt,
-                    kind: "user-input.requested",
-                    tone: "info",
-                    summary: "Question",
-                    turnId: null,
-                    payload: { requestId: "question", bridgeAgentId: "child", agentId: "child" },
-                  },
-                },
-              ],
-            }),
-        } as unknown as ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]),
-        Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
-          dispatch: (command: OrchestrationCommand) =>
-            Effect.sync(() => {
-              commands.push(command);
-              return { sequence: commands.length };
-            }),
-        } as unknown as OrchestrationEngine.OrchestrationEngineService["Service"]),
-      );
-      assert.equal(commands.length, 2);
-      const request = commands[0];
-      const task = commands[1];
-      assert.ok(
-        request?.type === "thread.activity.append" && task?.type === "thread.activity.append",
-      );
-      if (request?.type !== "thread.activity.append" || task?.type !== "thread.activity.append")
-        return;
-      assert.equal(request.activity.summary, "User input cancelled after server restart");
-      assert.equal((request.activity.payload as { cancelled: boolean }).cancelled, true);
-      assert.equal(task.activity.kind, "task.state");
-      assert.deepEqual(task.activity.payload, {
-        ...state,
-        status: "interrupted",
-        canStop: false,
-        canResume: false,
-        waitReason: null,
-        waitingSince: null,
-        completedAt: task.createdAt,
-        updatedAt: task.createdAt,
-        error:
-          "The child provider session did not survive a server restart. Start a new child to continue.",
-      });
-    }),
-);
-
-it.effect(
-  "offers durable wrapper recovery without resuming or scanning history, including closed sessions",
-  () =>
-    Effect.gen(function* () {
-      const root = ThreadId.make("durable-root");
-      const cases = [
-        { id: "running", status: "running", resumable: true },
-        { id: "completed", status: "completed", resumable: true },
-        { id: "failed", status: "failed", resumable: true },
-        { id: "interrupted", status: "interrupted", resumable: true },
-        { id: "idle", status: "idle", resumable: true },
-        { id: "closed", status: "completed", resumable: true },
-        { id: "deleted", status: "interrupted", resumable: false },
-        { id: "legacy", status: "running", resumable: false },
-        { id: "missing", status: "running", resumable: false },
-        { id: "invalid", status: "running", resumable: false },
-        { id: "wrong-root", status: "running", resumable: false },
-        { id: "native", status: "running", resumable: false },
-      ] as const;
-      let tasks = cases.map(({ id, status }) => ({
-        threadId: root,
-        state: updateTaskState(undefined, {
-          id: EventId.make(id),
-          kind: "task.updated",
-          tone: "info",
-          summary: id,
-          turnId: null,
-          createdAt: updatedAt,
-          payload: {
-            taskId: id,
-            taskType: id === "native" ? "local_agent" : "cross_provider",
-            executionOwner: "cross-provider",
-            status,
-            title: id,
-            canResume: id === "deleted" || id === "native",
-            canStop: true,
-          },
-        })!,
-      }));
-      const reads: ThreadId[] = [];
-      const commands: OrchestrationCommand[] = [];
-      const directory = {
-        ...emptyRecoveryDirectory,
-        getBinding: (threadId: ThreadId) =>
-          Effect.sync(() => {
-            reads.push(threadId);
-            const id = threadId.slice("cross-provider-session:".length);
-            if (id === "missing") return Option.none();
-            const record: CrossProviderAgentRecord = {
-              version: 1,
-              id,
-              root: id === "wrong-root" ? ThreadId.make("other-root") : root,
-              provider: ProviderDriverKind.make("codex"),
-              instance: providerInstanceId,
-              sourceSession: {
-                provider: ProviderDriverKind.make("codex"),
-                providerInstanceId,
-                threadId: root,
-                status: "closed",
-                runtimeMode: "full-access",
-                createdAt: updatedAt,
-                updatedAt,
-              },
-              title: id,
-              providerName: "Codex",
-              status: "completed",
-              manualStop: true,
-              closed: id === "closed",
-              deleted: id === "deleted",
-              generation: 1,
-              assignment: "Review",
-              context: "Saved context",
-              reply: "",
-              turnAccepted: true,
-              forceFresh: true,
-            };
-            return Option.some({
-              threadId,
-              provider: ProviderDriverKind.make("codex"),
-              providerInstanceId,
-              runtimePayload:
-                id === "legacy"
-                  ? {}
-                  : { crossProviderRecovery: id === "invalid" ? { id } : record },
-            });
-          }),
-      } satisfies ProviderSessionDirectory.ProviderSessionDirectory["Service"];
-      const reconcile = ServerRuntimeStartup.reconcileCrossProviderExecutions.pipe(
-        Effect.provideService(ProviderSessionDirectory.ProviderSessionDirectory, directory),
-        Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-          getCrossProviderRecovery: () => Effect.sync(() => ({ tasks, requests: [] })),
-        } as unknown as ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]),
-        Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
-          dispatch: (command: OrchestrationCommand) =>
-            Effect.sync(() => {
-              commands.push(command);
-              assert.equal(command.type, "thread.activity.append");
-              if (command.type === "thread.activity.append") {
-                const state = command.activity.payload as TaskState;
-                tasks = tasks.map((entry) =>
-                  entry.state.id === state.id ? { ...entry, state } : entry,
-                );
-              }
-              return { sequence: commands.length };
-            }),
-        } as unknown as OrchestrationEngine.OrchestrationEngineService["Service"]),
-      );
-      yield* reconcile;
-      assert.equal(commands.length, cases.length);
-      assert.ok(reads.every((id) => id !== "cross-provider-session:native"));
-      for (const fixture of cases) {
-        const state = tasks.find((entry) => entry.state.id === fixture.id)!.state;
-        assert.equal(state.canResume, fixture.resumable, fixture.id);
-        assert.equal(state.canStop, false);
-        assert.equal(
-          state.status,
-          fixture.status === "running" || fixture.status === "idle"
-            ? "interrupted"
-            : fixture.status,
-        );
-        if (fixture.resumable && (fixture.status === "running" || fixture.status === "idle"))
-          assert.ok(state.error?.includes("Resume this agent"));
-      }
-      yield* reconcile;
-      assert.equal(commands.length, cases.length, "second startup is idempotent");
-    }),
-);
 
 const makeThread = (
   id: string,
@@ -290,17 +68,15 @@ const makeProviderService = (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
     assertConversationRollbackSupported: () => Effect.die("unused"),
     getInstanceInfo: () => Effect.die("unused"),
     rollbackConversation: () => Effect.die("unused"),
+    setCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
+    clearCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
     uploadFeedback: () => Effect.die("unused"),
-    setCodexGoal: () => Effect.die("unused"),
-    clearCodexGoal: () => Effect.die("unused"),
     streamEvents: Stream.empty,
   }) satisfies ProviderService.ProviderService["Service"];
 
 const queryWithThreads = (threads: ReadonlyArray<ReturnType<typeof makeThread>>) =>
   ({
-    getCrossProviderRecovery: () => Effect.succeed({ tasks: [], requests: [] }),
     getUserInputActivity: () => Effect.die("unused"),
-    getTaskState: () => Effect.die("unused"),
     getCommandReadModel: () => Effect.succeed({ threads } as never),
   }) as unknown as ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"];
 
@@ -350,7 +126,6 @@ it.effect("marks active running sessions that have persisted resume state", () =
     updatedAt,
   );
   const ready = makeThread("thread-mark-ready", "ready");
-  const manual = makeThread("thread-manual-stop", "running", TurnId.make("turn-manual"));
   const missingResumeState = makeThread(
     "thread-mark-missing-resume-state",
     "running",
@@ -362,7 +137,7 @@ it.effect("marks active running sessions that have persisted resume state", () =
   return ServerRuntimeStartup.markRunningProviderSessionsForContinuation.pipe(
     Effect.provideService(
       ProjectionSnapshotQuery.ProjectionSnapshotQuery,
-      queryWithThreads([active, archived, ready, missingResumeState, manual]),
+      queryWithThreads([active, archived, ready, missingResumeState]),
     ),
     Effect.provideService(ProviderSessionDirectory.ProviderSessionDirectory, {
       getBinding: (threadId) =>
@@ -372,13 +147,8 @@ it.effect("marks active running sessions that have persisted resume state", () =
               threadId,
               provider: ProviderDriverKind.make("codex"),
               providerInstanceId,
-              ...(threadId === active.id || threadId === manual.id
-                ? { resumeCursor: { threadId } }
-                : {}),
-              runtimePayload: {
-                activeTurnId: "turn-mark-active",
-                ...(threadId === manual.id ? { manualStopped: true } : {}),
-              },
+              ...(threadId === active.id ? { resumeCursor: { threadId } } : {}),
+              runtimePayload: { activeTurnId: "turn-mark-active" },
             }),
           ),
         ),
@@ -390,7 +160,7 @@ it.effect("marks active running sessions that have persisted resume state", () =
     }),
     Effect.tap((marked) =>
       Effect.sync(() => {
-        assert.deepStrictEqual(bindingReads, [active.id, missingResumeState.id, manual.id]);
+        assert.deepStrictEqual(bindingReads, [active.id, missingResumeState.id]);
         assert.deepStrictEqual(marked, [active.id]);
         assert.deepStrictEqual(upserts[0]?.runtimePayload, {
           activeTurnId: "turn-mark-active",
@@ -598,7 +368,7 @@ it.effect.each(
     }),
 );
 
-it.effect("does not continue archived, deleted, or manually stopped marked sessions", () => {
+it.effect("does not continue archived or deleted marked sessions", () => {
   const archived = makeThread(
     "thread-continue-archived",
     "running",
@@ -616,11 +386,7 @@ it.effect("does not continue archived, deleted, or manually stopped marked sessi
   const dispatched: OrchestrationCommand[] = [];
 
   return runReconciliation({
-    threads: [
-      archived,
-      deleted,
-      makeThread("manual-marked", "running", TurnId.make("manual-turn")),
-    ],
+    threads: [archived, deleted],
     providerService: {
       ...makeProviderService(),
       sendTurn: (input) =>
@@ -643,9 +409,7 @@ it.effect("does not continue archived, deleted, or manually stopped marked sessi
             status: "running" as const,
             resumeCursor: { cursor: threadId },
             runtimePayload: {
-              continueAfterServerUpdate:
-                threadId === "manual-marked" ? "manual-turn" : thread.session.activeTurnId,
-              ...(threadId === "manual-marked" ? { manualStopped: true } : {}),
+              continueAfterServerUpdate: thread.session.activeTurnId,
             },
           }),
         );
@@ -671,7 +435,6 @@ it.effect("does not continue archived, deleted, or manually stopped marked sessi
           [
             { threadId: archived.id, status: "error" },
             { threadId: deleted.id, status: "error" },
-            { threadId: ThreadId.make("manual-marked"), status: "error" },
           ],
         );
       }),
@@ -935,7 +698,6 @@ it.effect("does not fail startup when the live provider session inventory cannot
   return ServerRuntimeStartup.reconcileProviderSessions.pipe(
     Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
       getUserInputActivity: () => Effect.die("unused"),
-      getTaskState: () => Effect.die("unused"),
       getCommandReadModel: () =>
         Effect.sync(() => {
           queried = true;

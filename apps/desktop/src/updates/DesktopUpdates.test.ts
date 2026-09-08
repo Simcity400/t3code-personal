@@ -1,15 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as References from "effect/References";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
@@ -110,159 +107,6 @@ describe("DesktopUpdates", () => {
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
-
-  it.effect("carries a blocked nightly sync into the update state on every check", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const resourcesPath = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-desktop-updates-",
-        });
-        yield* fileSystem.writeFileString(
-          path.join(resourcesPath, "app-update.yml"),
-          "provider: github\nowner: Simcity400\nrepo: t3code-personal\nprivate: true\n",
-        );
-        const upstreamMerge = {
-          repository: "Simcity400/t3code-personal",
-          tag: "v0.0.39-nightly.20260906.1291",
-          commit: "bd16b86d50c1df49afeb7c0a7568a4908ade4048",
-          conflicts: ["apps/web/src/components/ChatView.tsx"],
-          reason: null,
-          runUrl: "https://github.com/Simcity400/t3code-personal/actions/runs/1",
-          at: "2026-09-06T10:00:00.000Z",
-        };
-        const harness = makeHarness({
-          resourcesPath,
-          mockUpdates: false,
-          githubToken: "test-private-token",
-          upstreamMerge,
-        });
-
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const updates = yield* DesktopUpdates.DesktopUpdates;
-            yield* updates.configure;
-            assert.equal((yield* updates.getState).upstreamMerge, null);
-
-            const result = yield* updates.check("poll");
-            assert.deepEqual(result.state.upstreamMerge, upstreamMerge);
-
-            // The release feed's own answer must not clear the notice.
-            harness.emit("update-not-available");
-            yield* flushCallbacks;
-            assert.deepEqual((yield* updates.getState).upstreamMerge, upstreamMerge);
-          }),
-        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
-      }),
-    ).pipe(Effect.provide(NodeServices.layer)),
-  );
-
-  it.effect("leaves the blocked-sync notice off without private feed credentials", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const resourcesPath = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-desktop-updates-",
-        });
-        yield* fileSystem.writeFileString(
-          path.join(resourcesPath, "app-update.yml"),
-          "provider: github\nowner: Simcity400\nrepo: t3code-personal\nprivate: true\n",
-        );
-        const harness = makeHarness({
-          resourcesPath,
-          mockUpdates: false,
-          upstreamMerge: {
-            repository: "Simcity400/t3code-personal",
-            tag: "v0.0.39-nightly.20260906.1291",
-            commit: null,
-            conflicts: [],
-            reason: "The sync run failed.",
-            runUrl: null,
-            at: "2026-09-06T10:00:00.000Z",
-          },
-        });
-
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const updates = yield* DesktopUpdates.DesktopUpdates;
-            yield* updates.configure;
-            const result = yield* updates.check("poll");
-            assert.equal(result.state.upstreamMerge, null);
-          }),
-        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
-      }),
-    ).pipe(Effect.provide(NodeServices.layer)),
-  );
-
-  it.effect("keeps private GitHub credentials inside the updater", () => {
-    const tokenBeforeConfigure = process.env.GH_TOKEN;
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const resourcesPath = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-desktop-updates-",
-        });
-        yield* fileSystem.writeFileString(
-          path.join(resourcesPath, "app-update.yml"),
-          "provider: github\nowner: Simcity400\nrepo: t3code-personal\nprivate: true\n",
-        );
-        const harness = makeHarness({
-          resourcesPath,
-          mockUpdates: false,
-          githubToken: "test-private-token\n",
-        });
-
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const updates = yield* DesktopUpdates.DesktopUpdates;
-            yield* updates.configure;
-
-            assert.deepEqual(harness.feedUrls(), [
-              {
-                provider: "github",
-                owner: "Simcity400",
-                repo: "t3code-personal",
-                private: true,
-                token: "test-private-token",
-              },
-            ]);
-            assert.equal(process.env.GH_TOKEN, tokenBeforeConfigure);
-          }),
-        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
-      }),
-    ).pipe(Effect.provide(NodeServices.layer));
-  });
-
-  it.effect("checks a public GitHub feed without a GitHub login", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const resourcesPath = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-public-updates-",
-        });
-        yield* fileSystem.writeFileString(
-          path.join(resourcesPath, "app-update.yml"),
-          "provider: github\nowner: Simcity400\nrepo: t3code-personal\nchannel: nightly\n",
-        );
-        const harness = makeHarness({ resourcesPath, mockUpdates: false });
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const updates = yield* DesktopUpdates.DesktopUpdates;
-            yield* updates.configure;
-            const result = yield* updates.check("manual");
-            assert.isTrue(result.checked);
-            assert.isTrue(result.state.enabled);
-            assert.equal(harness.checkCount(), 1);
-            assert.isTrue(Option.isNone(yield* updates.disabledReason));
-          }),
-        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
-      }),
-    ).pipe(Effect.provide(NodeServices.layer)),
-  );
 
   it.effect("updates and broadcasts state from updater events", () => {
     const harness = makeHarness();

@@ -114,9 +114,6 @@ export function resolveOnboardingProviderLoginCommand(
       instance ? (instance.config ?? {}) : settings.providers.claudeAgent,
     );
     const binaryPath = Option.isSome(config) ? config.value.binaryPath : "claude";
-    if (platform === "windows" && binaryPath === "claude") {
-      return "& (Get-Command claude -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source) auth login";
-    }
     return `${quoteProviderBinary(binaryPath, "claude", platform)} auth login`;
   }
 
@@ -125,16 +122,7 @@ export function resolveOnboardingProviderLoginCommand(
       instance ? (instance.config ?? {}) : settings.providers.codex,
     );
     const binaryPath = Option.isSome(config) ? config.value.binaryPath : "codex";
-    const loginArgs =
-      Option.isSome(config) && config.value.shadowHomePath
-        ? "login --config cli_auth_credentials_store=file"
-        : "login";
-    // npm also installs a PowerShell script, which execution policy may block.
-    // Resolve the application shim so both npm (.cmd) and native (.exe) installs work.
-    if (platform === "windows" && binaryPath === "codex") {
-      return `& (Get-Command codex -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source) ${loginArgs}`;
-    }
-    return `${quoteProviderBinary(binaryPath, "codex", platform)} ${loginArgs}`;
+    return `${quoteProviderBinary(binaryPath, "codex", platform)} login`;
   }
 
   return provider.driver;

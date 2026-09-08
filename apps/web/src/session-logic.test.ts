@@ -8,19 +8,11 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { resolveWorkEntryToolPresentation } from "@t3tools/client-runtime/work-log/presentation";
-import {
-  deriveAgentPanelModel,
-  deriveSubagentReplies,
-  flattenAgentPanelRoster,
-  foldSubagentActivities,
-  formatSubagentTitle,
-} from "@t3tools/client-runtime/state/subagentRuntime";
 
 import {
   createMessageAttachmentPreviewProjector,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
-  deriveSubagentReplyMessages,
   deriveTimelineEntries,
   deriveTimelineEntriesWithState,
   deriveWorkLogEntries,
@@ -458,28 +450,6 @@ describe("workEntryIndicatesToolNeutralStatus", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
-  it("shows the provider reason from legacy runtime error activities", () => {
-    const reason = "You've hit your Codex usage limit. Try again later.";
-    const entries = deriveWorkLogEntries([
-      makeActivity({
-        id: "runtime-error",
-        kind: "runtime.error",
-        summary: "Runtime error",
-        tone: "error",
-        payload: { message: reason },
-      }),
-    ]);
-
-    expect(entries).toMatchObject([
-      {
-        id: "runtime-error",
-        label: "Runtime error",
-        detail: reason,
-        tone: "error",
-      },
-    ]);
-  });
-
   it("keeps the latest task progress without emitting plan-update log entries", () => {
     const activities = [
       makeActivity({ id: "before", kind: "tool.completed", summary: "Read files", sequence: 0 }),
@@ -2249,25 +2219,6 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     expect(entries[0]!.agentSpawn?.agentTaskIds).toEqual(["child-1", "child-2"]);
   });
 
-  it("does not turn reopened child prompt recovery into a subagent launch row", () => {
-    const entries = deriveWorkLogEntries([
-      makeActivity({
-        id: "historical-child-prompt",
-        kind: "task.progress",
-        summary: "child-thread-1",
-        tone: "info",
-        payload: {
-          taskId: "child-thread-1",
-          status: "idle",
-          prompt: "Review the old diff.",
-          timelineBypass: true,
-        },
-      }),
-    ]);
-
-    expect(entries).toEqual([]);
-  });
-
   it("timelineBypass non-agent rows (background shells) stay suppressed", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
@@ -2278,27 +2229,6 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
       }),
     ]);
     expect(entries).toHaveLength(0);
-  });
-
-  it("keeps ambient skip_transcript tasks out of the work log", () => {
-    // The SDK marks housekeeping tasks skip_transcript and says they belong
-    // in a tasks panel instead; the Agents surface now has one.
-    const entries = deriveWorkLogEntries([
-      makeActivity({
-        kind: "task.completed",
-        payload: {
-          taskId: "ambient-1",
-          status: "completed",
-          taskType: "local_bash",
-          skipTranscript: true,
-        },
-      }),
-      makeActivity({
-        kind: "task.completed",
-        payload: { taskId: "loud-1", status: "completed", taskType: "local_bash" },
-      }),
-    ]);
-    expect(entries.map((entry) => entry.taskId)).toEqual(["loud-1"]);
   });
 
   it("drops task.updated and tool.progress from the work log (fold input only)", () => {
@@ -2443,283 +2373,5 @@ describe("session activity performance", () => {
       command: "git diff",
       toolLifecycleStatus: "completed",
     });
-  });
-});
-
-describe("subagent replies in the parent timeline", () => {
-  it("turns a recovered reply into a message row the timeline can render", () => {
-    const replies = deriveSubagentReplies([
-      makeActivity({
-        id: "task-start",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        kind: "task.started",
-        summary: "Agent started",
-        tone: "info",
-        payload: {
-          taskId: "agent-1",
-          title: "Reviewer",
-          toolUseId: "toolu_1",
-          taskType: "local_agent",
-        },
-      }),
-      makeActivity({
-        id: "tool-done",
-        createdAt: "2026-02-23T00:00:09.000Z",
-        kind: "tool.completed",
-        summary: "Task",
-        tone: "tool",
-        turnId: "turn-1",
-        payload: {
-          itemType: "collab_agent_tool_call",
-          itemId: "toolu_1",
-          data: { agentReply: "Everything checks out." },
-        },
-      }),
-    ]);
-
-    const replyMessages = deriveSubagentReplyMessages(replies, null, (reply) =>
-      formatSubagentTitle(reply.agentTitle ?? reply.agentId),
-    );
-    expect(replyMessages).toHaveLength(1);
-    expect(replyMessages[0]?.label).toBe("Reviewer");
-    expect(replyMessages[0]?.message).toMatchObject({
-      role: "assistant",
-      text: "Everything checks out.",
-      agentId: "agent-1",
-      createdAt: "2026-02-23T00:00:09.000Z",
-    });
-
-    const entries = deriveTimelineEntries([replyMessages[0]!.message], [], []);
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.kind).toBe("message");
-  });
-});
-
-describe("subagent reply labels", () => {
-  it("names a workflow member by its title, not its raw task id", () => {
-    // Reply labels used to be resolved from `directAgents` alone, so a
-    // workflow member replying to the thread rendered as its task id.
-    const activities: OrchestrationThreadActivity[] = [
-      makeActivity({
-        id: "wf-start",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        kind: "task.started",
-        summary: "Workflow started",
-        tone: "info",
-        payload: {
-          taskId: "wf-1",
-          taskType: "local_workflow",
-          title: "audit-auth-flow",
-          workflowName: "audit-auth-flow",
-        },
-      }),
-      makeActivity({
-        id: "wf-member",
-        createdAt: "2026-02-23T00:00:02.000Z",
-        kind: "task.progress",
-        summary: "Member running",
-        tone: "info",
-        payload: {
-          taskId: "wf-1:wf:0",
-          title: "audit_entrypoints",
-          status: "running",
-          parentAgentId: "wf-1",
-          agentIndex: 0,
-          phaseIndex: 0,
-          phaseTitle: "Audit",
-          timelineBypass: true,
-        },
-      }),
-      makeActivity({
-        id: "wf-member-done",
-        createdAt: "2026-02-23T00:00:09.000Z",
-        kind: "task.completed",
-        summary: "Member finished",
-        tone: "info",
-        payload: {
-          taskId: "wf-1:wf:0",
-          title: "audit_entrypoints",
-          status: "completed",
-          parentAgentId: "wf-1",
-          summary: "Three unguarded entrypoints.",
-        },
-      }),
-    ];
-
-    const model = deriveAgentPanelModel({
-      agents: foldSubagentActivities([
-        ...activities,
-        ...[
-          {
-            id: "wf-1",
-            kind: "workflow",
-            title: "audit-auth-flow",
-            taskType: "local_workflow",
-            parentAgentId: null,
-            agentIndex: null,
-            phaseIndex: null,
-          },
-          {
-            id: "wf-1:wf:0",
-            kind: "workflow_agent",
-            title: "audit_entrypoints",
-            taskType: "subagent",
-            parentAgentId: "wf-1",
-            agentIndex: 0,
-            phaseIndex: 0,
-          },
-        ].map((identity) =>
-          makeActivity({
-            id: `state:${identity.id}`,
-            kind: "task.state",
-            tone: "info",
-            summary: identity.title,
-            payload: {
-              ...identity,
-              agentKind: "agent",
-              status: "completed",
-              role: null,
-              model: null,
-              effort: null,
-              waitReason: null,
-              waitingSince: null,
-              asynchronous: false,
-              activationCount: 1,
-              usage: null,
-              progress: null,
-              lastToolName: null,
-              result: null,
-              error: null,
-              outputFile: null,
-              phaseTitle: "Audit",
-              attempt: null,
-              workflowName: "audit-auth-flow",
-              phases: [],
-              runHandles: null,
-              recentActivity: [],
-              command: null,
-              server: null,
-              tool: null,
-              canStop: false,
-              backgrounded: false,
-              ambient: false,
-              firstSeenAt: "2026-02-23T00:00:01.000Z",
-              startedAt: "2026-02-23T00:00:01.000Z",
-              completedAt: "2026-02-23T00:00:09.000Z",
-              updatedAt: "2026-02-23T00:00:09.000Z",
-            },
-          }),
-        ),
-      ]),
-    });
-    // The member is reachable only through its workflow group, which is the
-    // whole point: a direct-spawn-only lookup misses it.
-    expect(model.directAgents.some((agent) => agent.id === "wf-1:wf:0")).toBe(false);
-    expect(flattenAgentPanelRoster(model).some((agent) => agent.id === "wf-1:wf:0")).toBe(true);
-
-    const titleById = new Map(
-      flattenAgentPanelRoster(model).map((agent) => [agent.id, agent.title]),
-    );
-    const replyMessages = deriveSubagentReplyMessages(
-      deriveSubagentReplies(activities),
-      "wf-1",
-      (reply) =>
-        formatSubagentTitle(titleById.get(reply.agentId) ?? reply.agentTitle ?? reply.agentId),
-    );
-
-    expect(replyMessages).toHaveLength(1);
-    expect(replyMessages[0]?.label).toBe("Audit entrypoints");
-    expect(replyMessages[0]?.message.text).toBe("Three unguarded entrypoints.");
-  });
-});
-
-describe("deriveWorkLogEntries question rows", () => {
-  const questions = [
-    {
-      id: "which-run",
-      header: "Which run",
-      question: "Which agent run had the broken transcript?",
-      options: [
-        { label: "Just now", description: "In this thread" },
-        { label: "Earlier", description: "Before the composer change" },
-      ],
-    },
-    {
-      id: "which-provider",
-      header: "Which provider",
-      question: "Which provider was running?",
-      options: [
-        { label: "OpenCode", description: "Muse Spark" },
-        { label: "Codex", description: "GPT" },
-      ],
-    },
-  ];
-
-  it("shows the question text while it is still open", () => {
-    const entries = deriveWorkLogEntries([
-      makeActivity({
-        id: "asked",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        kind: "user-input.requested",
-        summary: "User input requested",
-        tone: "info",
-        payload: { requestId: "req-1", questions: [questions[0]] },
-      }),
-    ]);
-
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.label).toBe("Asked: Which agent run had the broken transcript?");
-    expect(entries[0]?.detail).toBe(
-      "Q: Which agent run had the broken transcript?\n  - Just now\n  - Earlier",
-    );
-  });
-
-  it("restates every question next to its answer once answered", () => {
-    const entries = deriveWorkLogEntries([
-      makeActivity({
-        id: "asked",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        kind: "user-input.requested",
-        summary: "User input requested",
-        tone: "info",
-        payload: { requestId: "req-1", questions },
-      }),
-      makeActivity({
-        id: "answered",
-        createdAt: "2026-02-23T00:00:02.000Z",
-        kind: "user-input.resolved",
-        summary: "User input submitted",
-        tone: "info",
-        payload: {
-          requestId: "req-1",
-          answers: { "which-run": "Just now", "which-provider": ["OpenCode", "Codex"] },
-        },
-      }),
-    ]);
-
-    // The asked row folds into the answered row.
-    expect(entries.map((entry) => entry.id)).toEqual(["answered"]);
-    expect(entries[0]?.label).toBe(
-      "Answered 2 questions: Which run: Just now; Which provider: OpenCode, Codex",
-    );
-    expect(entries[0]?.detail).toBe(
-      "Q: Which agent run had the broken transcript?\nA: Just now\n\nQ: Which provider was running?\nA: OpenCode, Codex",
-    );
-  });
-
-  it("still shows answers when the asked row is missing", () => {
-    const entries = deriveWorkLogEntries([
-      makeActivity({
-        id: "answered",
-        createdAt: "2026-02-23T00:00:02.000Z",
-        kind: "user-input.resolved",
-        summary: "User input submitted",
-        tone: "info",
-        payload: { requestId: "req-missing", answers: { mode: "fast" } },
-      }),
-    ]);
-
-    expect(entries[0]?.label).toBe("Answered mode: fast");
-    expect(entries[0]?.detail).toBe("Q: mode\nA: fast");
   });
 });
