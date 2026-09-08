@@ -139,6 +139,8 @@ overrides:
   "expo-sharing>@expo/config-types": 57.0.2
   lightningcss: "catalog:"
   tailwindcss: "catalog:"
+  # Archive extraction limits: GHSA-23hp-3jrh-7fpw.
+  "tar@>=7 <7.5.19": 7.5.19
   vite: "catalog:"
   yaml: "catalog:"
 
