@@ -83,7 +83,8 @@ jobs:
         uses: expo/expo-github-action@v8
         with:
           eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
+          # Setup's token validation prints the account email. Authenticate only
+          # the commands below, which already receive EXPO_TOKEN explicitly.
           packager: npm
 
       - name: Pull preview environment variables
