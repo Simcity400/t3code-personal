@@ -1,0 +1,15 @@
+{
+  "repository": "Simcity400/t3code-personal",
+  "tag": "v0.0.41-nightly.20260908.1377",
+  "commit": "299404a754f52c02c69634528d8856b3c93b378c",
+  "conflicts": [
+    "apps/desktop/src/main.ts",
+    "apps/server/src/provider/Layers/CodexAdapter.ts",
+    "apps/server/src/provider/Layers/ProviderService.ts",
+    "apps/web/src/components/chat/ChatComposer.tsx",
+    "docs/README.md"
+  ],
+  "reason": null,
+  "runUrl": "https://github.com/Simcity400/t3code-personal/actions/runs/34189424359",
+  "at": "2026-09-08T05:07:55.544Z"
+}
