@@ -8,7 +8,7 @@ import { SymbolView } from "../../components/AppSymbol";
 import * as Effect from "effect/Effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Alert, Linking, Platform, Pressable, ScrollView, View } from "react-native";
+import { Alert, AppState, Linking, Platform, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -20,13 +20,21 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
-import { supportsAgentAwarenessPush } from "../agent-awareness/capabilities";
+import {
+  supportsAgentAwarenessPush,
+  supportsRemoteAgentAwarenessLiveActivities,
+  usesPersonalExpoPushAlerts,
+} from "../agent-awareness/capabilities";
+import {
+  getPersonalExpoPushRegistrationStatus,
+  requestPersonalExpoPushRegistrationRefresh,
+  subscribePersonalExpoPushRegistrationStatus,
+} from "../agent-awareness/expoPushRegistration";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import {
   getAgentAwarenessRegistrationStatus,
   refreshAgentAwarenessRegistration,
-  subscribeAgentAwarenessRegistrationStatus,
 } from "../agent-awareness/remoteRegistration";
 import { refreshManagedRelayEnvironments } from "../cloud/managedRelayState";
 import { hasCloudPublicConfig, resolveRelayClerkTokenOptions } from "../cloud/publicConfig";
@@ -60,23 +68,16 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
-import { resolveAgentAwarenessPlatformPresentation } from "./SettingsRouteScreen.logic";
+import {
+  resolveAgentAwarenessPlatformPresentation,
+  resolveLiveActivityRowSubtitle,
+  resolveLiveActivitySwitchValue,
+  resolveNotificationRowSubtitle,
+  resolveNotificationSwitchValue,
+} from "./SettingsRouteScreen.logic";
 
 type NotificationStatus = "checking" | "enabled" | "disabled" | "unsupported";
 type LiveActivityStatus = "checking" | "enabled" | "disabled" | "signed-out" | "linking";
-
-// Reflects whether the relay actually accepted this device's registration.
-// The notification and Live Activity switches are gated on this so they can
-// never read as enabled when the device cannot receive anything (e.g. the
-// registration request timed out).
-function useDeviceRegistered(): boolean {
-  const status = useSyncExternalStore(
-    subscribeAgentAwarenessRegistrationStatus,
-    getAgentAwarenessRegistrationStatus,
-    () => "unknown" as const,
-  );
-  return status === "registered";
-}
 
 export function SettingsRouteScreen() {
   const navigation = useNavigation();
@@ -158,7 +159,9 @@ function LocalSettingsRouteScreen() {
 function ConfiguredSettingsRouteScreen() {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
-  const agentAwarenessPushAvailable = supportsAgentAwarenessPush();
+  const personalExpoPushAlerts = usesPersonalExpoPushAlerts();
+  const agentAwarenessPushAvailable = supportsAgentAwarenessPush() || personalExpoPushAlerts;
+  const remoteLiveActivitiesAvailable = supportsRemoteAgentAwarenessLiveActivities();
   const agentAwarenessPlatform = resolveAgentAwarenessPlatformPresentation(Platform.OS);
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
@@ -167,8 +170,14 @@ function ConfiguredSettingsRouteScreen() {
   const { savedConnectionsById } = useSavedRemoteConnections();
   const [notificationStatus, setNotificationStatus] = useState<NotificationStatus>("checking");
   const [liveActivityStatus, setLiveActivityStatus] = useState<LiveActivityStatus>("checking");
-  const deviceRegistered = useDeviceRegistered();
-  const liveActivitiesPreferenceEnabled = AsyncResult.isSuccess(preferencesResult)
+  // Registration is the half of the pipeline the permission switch cannot show.
+  const pushRegistrationStatus = useSyncExternalStore(
+    subscribePersonalExpoPushRegistrationStatus,
+    getPersonalExpoPushRegistrationStatus,
+    getPersonalExpoPushRegistrationStatus,
+  );
+  const hasLoadedLiveActivitiesPreference = AsyncResult.isSuccess(preferencesResult);
+  const liveActivitiesPreferenceEnabled = hasLoadedLiveActivitiesPreference
     ? preferencesResult.value.liveActivitiesEnabled !== false
     : true;
 
@@ -194,8 +203,25 @@ function ConfiguredSettingsRouteScreen() {
     setNotificationStatus(result.value.granted ? "enabled" : "disabled");
   }, []);
 
+  // Opening Settings is when a failed registration should be retried. The
+  // background reporter already re-reads the token on every foreground
+  // transition, so this only covers arriving at this screen while the app is
+  // already active — and it fires once, not on every AppState change, so it
+  // cannot race that reporter into acquiring an Expo token twice.
+  useEffect(() => {
+    if (!personalExpoPushAlerts) return;
+    if (getPersonalExpoPushRegistrationStatus() !== "failed") return;
+    requestPersonalExpoPushRegistrationRefresh();
+  }, [personalExpoPushAlerts]);
+
   useEffect(() => {
     void refreshNotifications();
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        void refreshNotifications();
+      }
+    });
+    return () => subscription.remove();
   }, [refreshNotifications]);
 
   useEffect(() => {
@@ -226,7 +252,11 @@ function ConfiguredSettingsRouteScreen() {
       runtime.runPromiseExit(
         requestAgentNotificationPermission.pipe(
           Effect.tap((permission) =>
-            permission.type === "granted" ? refreshAgentAwarenessRegistration() : Effect.void,
+            permission.type === "granted"
+              ? personalExpoPushAlerts
+                ? Effect.sync(requestPersonalExpoPushRegistrationRefresh)
+                : refreshAgentAwarenessRegistration()
+              : Effect.void,
           ),
         ),
       ),
@@ -243,6 +273,13 @@ function ConfiguredSettingsRouteScreen() {
     }
     if (result.value.type === "granted") {
       setNotificationStatus("enabled");
+      if (personalExpoPushAlerts) {
+        Alert.alert(
+          "Notifications enabled",
+          "Connected T3 Code environments will register this device for agent alerts.",
+        );
+        return;
+      }
       // Permission alone is not enough: the switch stays off until the relay
       // registration succeeds, so tell the user the truth about which happened.
       if (getAgentAwarenessRegistrationStatus() === "registered") {
@@ -279,7 +316,7 @@ function ConfiguredSettingsRouteScreen() {
         { text: "Open Settings", onPress: () => void Linking.openSettings() },
       ],
     );
-  }, []);
+  }, [personalExpoPushAlerts]);
 
   const promptSignIn = useCallback(() => {
     Alert.alert(
@@ -494,17 +531,24 @@ function ConfiguredSettingsRouteScreen() {
               notificationStatus === "checking" ||
               notificationStatus === "unsupported"
             }
-            subtitle={agentAwarenessPlatform.subtitle}
-            // Only reads as on when this device is actually registered with the
-            // relay; otherwise notifications cannot be delivered regardless of
-            // the local iOS permission.
-            value={
-              agentAwarenessPushAvailable && notificationStatus === "enabled" && deviceRegistered
-            }
+            subtitle={resolveNotificationRowSubtitle({
+              personalExpoPushAlerts,
+              platformSubtitle: agentAwarenessPlatform.subtitle,
+              permissionStatus: notificationStatus,
+              registrationStatus: pushRegistrationStatus,
+            })}
+            // iOS permission is the durable user setting. Registration is an
+            // operational state that retries in the background and must not
+            // make an enabled switch visually turn itself off.
+            value={resolveNotificationSwitchValue({
+              pushAvailable: agentAwarenessPushAvailable,
+              permissionStatus: notificationStatus,
+            })}
             onValueChange={handleDeviceNotificationsChange}
           />
           <SettingsSwitchRow
             disabled={
+              !remoteLiveActivitiesAvailable ||
               !agentAwarenessPlatform.supported ||
               !agentAwarenessPushAvailable ||
               !isLoaded ||
@@ -513,14 +557,18 @@ function ConfiguredSettingsRouteScreen() {
             }
             icon="bolt.circle"
             label="Live Activity Updates"
-            subtitle={agentAwarenessPlatform.subtitle}
-            // Same gate: a saved preference is meaningless until the device
-            // registration the relay needs to push updates has succeeded.
-            value={
-              agentAwarenessPushAvailable &&
-              (liveActivityStatus === "enabled" || liveActivityStatus === "linking") &&
-              deviceRegistered
-            }
+            subtitle={resolveLiveActivityRowSubtitle({
+              personalExpoPushAlerts,
+              platformSubtitle: agentAwarenessPlatform.subtitle,
+            })}
+            // The preference is durable; relay registration is transient and
+            // reports failures separately without rewriting the switch.
+            value={resolveLiveActivitySwitchValue({
+              liveActivitiesAvailable: remoteLiveActivitiesAvailable,
+              pushAvailable: agentAwarenessPushAvailable,
+              preferenceEnabled:
+                hasLoadedLiveActivitiesPreference && liveActivitiesPreferenceEnabled,
+            })}
             onValueChange={handleLiveActivitiesChange}
           />
         </SettingsSection>

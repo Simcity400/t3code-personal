@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -43,6 +44,7 @@ import {
 } from "../cloud/config.ts";
 import { getOrCreateEnvironmentKeyPairFromSecretStore } from "../cloud/environmentKeys.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ExpoPushAlerts from "../notifications/ExpoPushAlerts.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -106,6 +108,19 @@ export function agentAwarenessPublishIdentity(state: RelayAgentActivityState | n
   return JSON.stringify(meaningfulState);
 }
 
+export function resolveAgentAwarenessDeliveryNeeds(input: {
+  readonly identity: string;
+  readonly relayIdentity: string | undefined;
+  readonly expoIdentity: string | undefined;
+  readonly canPublishToRelay: boolean;
+  readonly hasExpoPushRegistrations: boolean;
+}): { readonly relay: boolean; readonly expo: boolean } {
+  return {
+    relay: input.canPublishToRelay && input.relayIdentity !== input.identity,
+    expo: input.hasExpoPushRegistrations && input.expoIdentity !== input.identity,
+  };
+}
+
 export function resolveAgentActivityPublishingStartupState(input: {
   readonly relayConfigured: boolean;
   readonly publishEnabled: boolean;
@@ -118,6 +133,25 @@ export function resolveAgentActivityPublishingStartupState(input: {
 
 const RELAY_AGENT_ACTIVITY_DETAIL_MAX_LENGTH = 160;
 const REDACTED_RELAY_AGENT_FAILURE_DETAIL = "The agent run failed.";
+// Identity maps are process-lifetime; without a cap they retain one entry per
+// thread ever published for the whole server run and the tombstone check pays
+// for all of it.
+const MAX_PUBLISHED_THREAD_IDENTITIES = 512;
+const MAX_EXPO_PUSH_SEND_ATTEMPTS = 3;
+const EXPO_PUSH_RETRY_DELAY_MS = 10_000;
+// Relay link settings live in the secret store and change rarely; the hot
+// per-event publish path reads them through this TTL cache instead of paying
+// a secret-file read per orchestration event.
+const DELIVERY_CONFIG_CACHE_TTL_MS = 15_000;
+
+function setBounded<K, V>(map: Map<K, V>, key: K, value: V, cap: number): void {
+  map.set(key, value);
+  while (map.size > cap) {
+    const oldest = map.keys().next();
+    if (oldest.done) break;
+    map.delete(oldest.value);
+  }
+}
 
 export function sanitizeRelayAgentActivityState(
   state: RelayAgentActivityState | null,
@@ -296,10 +330,12 @@ export const make = Effect.gen(function* () {
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const snapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const expoPushAlerts = yield* ExpoPushAlerts.ExpoPushAlerts;
   const crypto = yield* Crypto.Crypto;
   const cloudLinkKeyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
   const activeSnapshotPublishedRef = yield* Ref.make(false);
   const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
+  const expoStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
 
   const readSecretString = (name: string) =>
     secrets
@@ -325,6 +361,29 @@ export const make = Effect.gen(function* () {
     Effect.map(isAgentActivityPublishingEnabledValue),
   );
 
+  type DeliveryConfig = {
+    readonly publishEnabled: boolean;
+    readonly relayConfig: {
+      readonly url: string;
+      readonly issuer: string;
+      readonly environmentCredential: string;
+    } | null;
+  };
+  let deliveryConfigCache: (DeliveryConfig & { readonly at: number }) | null = null;
+  const readDeliveryConfigCached: Effect.Effect<DeliveryConfig> = Effect.gen(function* () {
+    const nowMs = (yield* DateTime.now).epochMilliseconds;
+    if (deliveryConfigCache && nowMs - deliveryConfigCache.at < DELIVERY_CONFIG_CACHE_TTL_MS) {
+      return deliveryConfigCache;
+    }
+    const [publishEnabled, relayConfig] = yield* Effect.all([
+      readPublishAgentActivityEnabled.pipe(Effect.orElseSucceed(() => false)),
+      readRelayConfig.pipe(Effect.orElseSucceed(() => null)),
+    ]);
+    const cached = { at: nowMs, publishEnabled, relayConfig };
+    deliveryConfigCache = cached;
+    return cached;
+  });
+
   const makeRelayClient = (relayConfig: {
     readonly url: string;
     readonly environmentCredential: string;
@@ -341,25 +400,36 @@ export const make = Effect.gen(function* () {
   // clears the deadline. Assigned after the worker exists.
   const publishConfirmDeadlines = new Map<ThreadId, number>();
   let schedulePublishConfirm: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
+  // Expo send budget per thread, keyed to the identity so each state change
+  // gets a fresh budget and cleared on a successful or intentionally
+  // suppressed delivery. `nextEligibleAtMs` gates retries by time rather than
+  // an in-flight flag: any run (retry timer or ordinary event) that arrives
+  // inside the backoff window skips the network, so timer/event interleaving
+  // cannot double-send. Guarded by expoDeliveryMutex.
+  const expoPushSendAttempts = new Map<
+    ThreadId,
+    { readonly identity: string; attempts: number; nextEligibleAtMs: number }
+  >();
+  // Serializes budget read -> network send -> budget write per thread set;
+  // without it the worker and a concurrent snapshot publish could both pass
+  // the pre-check and undercount attempts.
+  const expoDeliveryMutex = Semaphore.makeUnsafe(1);
+  let scheduleExpoPushRetry: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
 
   const publishThreadUnsafe = Effect.fn("publishThreadUnsafe")(function* (threadId: ThreadId) {
-    const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
-      Effect.orElseSucceed(() => false),
-    );
-    if (!publishAgentActivity) {
-      yield* Effect.logDebug("agent activity publish skipped; publication disabled", {
+    const deliveryConfig = yield* readDeliveryConfigCached;
+    const publishAgentActivity = deliveryConfig.publishEnabled;
+    const relayConfig = deliveryConfig.relayConfig;
+    const hasExpoPushRegistrations = yield* expoPushAlerts.hasRegistrations;
+    const canPublishToRelay = publishAgentActivity && relayConfig !== null;
+    if (!canPublishToRelay && !hasExpoPushRegistrations) {
+      yield* Effect.logDebug("agent activity publish skipped; no delivery route available", {
         threadId,
+        publishAgentActivity,
+        relayConfigured: relayConfig !== null,
       });
       return;
     }
-    const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
-    if (!relayConfig) {
-      yield* Effect.logDebug("agent activity publish skipped; relay link credentials unavailable", {
-        threadId,
-      });
-      return;
-    }
-    const relayClient = yield* makeRelayClient(relayConfig);
     const environmentId = yield* serverEnvironment.getEnvironmentId;
 
     const publishState = (input: {
@@ -368,6 +438,10 @@ export const make = Effect.gen(function* () {
       readonly reason: string;
     }) =>
       Effect.gen(function* () {
+        if (relayConfig === null) {
+          return;
+        }
+        const relayClient = yield* makeRelayClient(relayConfig);
         const proof = yield* makePublishProof({
           privateKey: cloudLinkKeyPair.privateKey,
           relayIssuer: relayConfig.issuer,
@@ -417,7 +491,15 @@ export const make = Effect.gen(function* () {
     });
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
-    if (publishedStateByThread.get(threadId) === publishIdentity) {
+    const expoStateByThread = yield* Ref.get(expoStateByThreadRef);
+    const deliveryNeeds = resolveAgentAwarenessDeliveryNeeds({
+      identity: publishIdentity,
+      relayIdentity: publishedStateByThread.get(threadId),
+      expoIdentity: expoStateByThread.get(threadId),
+      canPublishToRelay,
+      hasExpoPushRegistrations,
+    });
+    if (!deliveryNeeds.relay && !deliveryNeeds.expo) {
       // The projection is back at (or never left) the last published state, so
       // any pending deferred confirmation is moot. Leaving the deadline in
       // place would let a much later transient null find it already expired
@@ -441,10 +523,17 @@ export const make = Effect.gen(function* () {
     //   instant and sends a spurious Done notification at thread birth.
     // Defer, schedule a re-publish through the ordinary worker queue, and
     // only publish if the projection still holds when it drains.
+    const tombstoneIdentity = agentAwarenessPublishIdentity(null);
+    const publishedIdentityForThread = publishedStateByThread.get(threadId);
+    const expoIdentityForThread = expoStateByThread.get(threadId);
     const requiresConfirmation =
       (snapshot.state === null &&
-        publishedStateByThread.get(threadId) !== agentAwarenessPublishIdentity(null)) ||
-      (snapshot.state?.phase === "completed" && !publishedStateByThread.has(threadId));
+        ((publishedIdentityForThread !== undefined &&
+          publishedIdentityForThread !== tombstoneIdentity) ||
+          (expoIdentityForThread !== undefined && expoIdentityForThread !== tombstoneIdentity))) ||
+      (snapshot.state?.phase === "completed" &&
+        publishedIdentityForThread === undefined &&
+        expoIdentityForThread === undefined);
     if (requiresConfirmation) {
       const nowMs = (yield* DateTime.now).epochMilliseconds;
       const deadline = publishConfirmDeadlines.get(threadId);
@@ -488,16 +577,96 @@ export const make = Effect.gen(function* () {
       });
     }
 
-    yield* publishState({
-      projectId: snapshot.projectId,
-      state: snapshot.state,
-      reason: snapshot.reason,
-    });
-    yield* Ref.update(publishedStateByThreadRef, (publishedStates) => {
-      const nextPublishedStates = new Map(publishedStates);
-      nextPublishedStates.set(threadId, publishIdentity);
-      return nextPublishedStates;
-    });
+    if (deliveryNeeds.relay) {
+      yield* publishState({
+        projectId: snapshot.projectId,
+        state: snapshot.state,
+        reason: snapshot.reason,
+      }).pipe(
+        // A stalled hosted relay must not hold up personal Expo delivery.
+        Effect.timeout("10 seconds"),
+        Effect.tap(() =>
+          Ref.update(publishedStateByThreadRef, (publishedStates) => {
+            const nextPublishedStates = new Map(publishedStates);
+            setBounded(
+              nextPublishedStates,
+              threadId,
+              publishIdentity,
+              MAX_PUBLISHED_THREAD_IDENTITIES,
+            );
+            return nextPublishedStates;
+          }),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("hosted agent activity publish failed", {
+            threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+    }
+    if (deliveryNeeds.expo) {
+      yield* expoDeliveryMutex.withPermit(
+        Effect.gen(function* () {
+          const nowMs = (yield* DateTime.now).epochMilliseconds;
+          // Budget is checked BEFORE sending: an exhausted identity skips the
+          // network entirely, and inside the backoff window the queued retry
+          // is the send attempt — other runs must not fire their own request
+          // on top of it.
+          const recorded = expoPushSendAttempts.get(threadId);
+          const attempts = recorded?.identity === publishIdentity ? recorded.attempts : 0;
+          const eligibleAtMs =
+            recorded?.identity === publishIdentity ? recorded.nextEligibleAtMs : 0;
+          if (attempts >= MAX_EXPO_PUSH_SEND_ATTEMPTS) {
+            yield* Effect.logWarning("personal Expo push alert gave up after retries", {
+              threadId,
+              phase: snapshot.state?.phase ?? null,
+            });
+            return;
+          }
+          if (nowMs < eligibleAtMs) {
+            yield* Effect.logDebug("personal Expo push alert deferred to queued retry", {
+              threadId,
+              phase: snapshot.state?.phase ?? null,
+            });
+            return;
+          }
+          const outcome = yield* expoPushAlerts.publish({ threadId, state: snapshot.state });
+          if (outcome === "sent" || outcome === "suppressed") {
+            expoPushSendAttempts.delete(threadId);
+            yield* Ref.update(expoStateByThreadRef, (publishedStates) => {
+              const nextPublishedStates = new Map(publishedStates);
+              setBounded(
+                nextPublishedStates,
+                threadId,
+                publishIdentity,
+                MAX_PUBLISHED_THREAD_IDENTITIES,
+              );
+              return nextPublishedStates;
+            });
+            return;
+          }
+          // Nothing reached a device. Leave the identity unrecorded so the
+          // state stays eligible for delivery, back off, and re-enqueue
+          // through the ordinary worker — bounded per state change. The
+          // backoff is stamped from AFTER the failed send: the request
+          // itself can hold the mutex (and the clock reading above) for up
+          // to ten seconds.
+          const failedAtMs = (yield* DateTime.now).epochMilliseconds;
+          setBounded(
+            expoPushSendAttempts,
+            threadId,
+            {
+              identity: publishIdentity,
+              attempts: attempts + 1,
+              nextEligibleAtMs: failedAtMs + EXPO_PUSH_RETRY_DELAY_MS,
+            },
+            MAX_PUBLISHED_THREAD_IDENTITIES,
+          );
+          yield* scheduleExpoPushRetry(threadId);
+        }),
+      );
+    }
   });
 
   const publishThread: AgentAwarenessRelay["Service"]["publishThread"] = (threadId) =>
@@ -516,14 +685,18 @@ export const make = Effect.gen(function* () {
     const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
       Effect.orElseSucceed(() => false),
     );
-    if (!publishAgentActivity) {
-      yield* Effect.logDebug("agent activity snapshot skipped; publication disabled");
-      return false;
-    }
     const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
-    if (!relayConfig) {
-      yield* Effect.logDebug("agent activity snapshot skipped; relay link credentials unavailable");
-      return false;
+    // Catch-up may follow link reconciliation while the event-path cache still
+    // contains the previous credentials. Publish with the configuration we saw.
+    deliveryConfigCache = {
+      at: (yield* DateTime.now).epochMilliseconds,
+      publishEnabled: publishAgentActivity,
+      relayConfig,
+    };
+    const hasExpoPushRegistrations = yield* expoPushAlerts.hasRegistrations;
+    if ((!publishAgentActivity || !relayConfig) && !hasExpoPushRegistrations) {
+      yield* Effect.logDebug("agent activity snapshot skipped; no delivery route available");
+      return { relay: false, expo: false };
     }
     const environmentId = yield* serverEnvironment.getEnvironmentId;
     const snapshot = yield* snapshotQuery.getShellSnapshot();
@@ -534,23 +707,39 @@ export const make = Effect.gen(function* () {
     });
     if (activeThreadIds.length === 0) {
       yield* Effect.logDebug("agent activity snapshot has no publishable threads");
-      return true;
+      return {
+        relay: publishAgentActivity && relayConfig !== null,
+        expo: hasExpoPushRegistrations,
+      };
     }
     yield* Effect.logInfo("publishing active agent activity snapshot", {
       count: activeThreadIds.length,
     });
     yield* Effect.forEach(activeThreadIds, publishThread, { concurrency: 4, discard: true });
-    return true;
+    return {
+      relay: publishAgentActivity && relayConfig !== null,
+      expo: hasExpoPushRegistrations,
+    };
   });
 
   const publishActiveThreadsOnceWhenConfigured = (logEnabledWhenReady: boolean) =>
     Effect.gen(function* () {
       while (!(yield* Ref.get(activeSnapshotPublishedRef))) {
-        const published = yield* publishActiveThreadsUnsafe.pipe(Effect.orElseSucceed(() => false));
-        if (published) {
-          yield* Ref.set(activeSnapshotPublishedRef, true);
+        const [publishEnabled, relayConfig] = yield* Effect.all([
+          readPublishAgentActivityEnabled.pipe(Effect.orElseSucceed(() => false)),
+          readRelayConfig.pipe(Effect.orElseSucceed(() => null)),
+        ]);
+        const relayReady = publishEnabled && relayConfig !== null;
+        if (relayReady) {
+          const published = yield* publishActiveThreadsUnsafe.pipe(
+            Effect.orElseSucceed(() => ({ relay: false, expo: false })),
+          );
+          if (published.relay) {
+            yield* Ref.set(activeSnapshotPublishedRef, true);
+          }
+        }
+        if (yield* Ref.get(activeSnapshotPublishedRef)) {
           if (logEnabledWhenReady) {
-            const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
             yield* Effect.logInfo("agent activity publishing enabled after link reconciliation", {
               relayUrl: relayConfig?.url,
             });
@@ -561,6 +750,22 @@ export const make = Effect.gen(function* () {
       }
     });
 
+  const publishExpoActiveThreadsWhenRegistered = expoPushAlerts.registrationChanges.pipe(
+    Stream.runForEach(() =>
+      Effect.gen(function* () {
+        if (!(yield* expoPushAlerts.hasRegistrations)) {
+          return;
+        }
+        const published = yield* publishActiveThreadsUnsafe.pipe(
+          Effect.orElseSucceed(() => ({ relay: false, expo: false })),
+        );
+        if (published.relay) {
+          yield* Ref.set(activeSnapshotPublishedRef, true);
+        }
+      }),
+    ),
+  );
+
   const worker = yield* makeDrainableWorker(publishThread);
 
   schedulePublishConfirm = (threadId) =>
@@ -569,6 +774,21 @@ export const make = Effect.gen(function* () {
         Effect.andThen(worker.enqueue(threadId)),
         Effect.catchCause((cause) =>
           Effect.logWarning("deferred agent activity confirmation failed", {
+            threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      ),
+    ).pipe(Effect.asVoid);
+
+  scheduleExpoPushRetry = (threadId) =>
+    Effect.forkDetach(
+      Effect.sleep(`${EXPO_PUSH_RETRY_DELAY_MS} millis`).pipe(
+        // Eligibility is time-gated via nextEligibleAtMs, so extra enqueued
+        // runs (timer + event racing) hit the backoff branch harmlessly.
+        Effect.andThen(worker.enqueue(threadId)),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("deferred Expo push retry failed", {
             threadId,
             cause: Cause.pretty(cause),
           }),
@@ -606,6 +826,7 @@ export const make = Effect.gen(function* () {
           Effect.andThen(publishActiveThreadsOnceWhenConfigured(startupState !== "enabled")),
         ),
       );
+      yield* forkParked(publishExpoActiveThreadsWhenRegistered);
       yield* forkParked(
         Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
           const threadId = eventThreadId(event);
@@ -638,4 +859,6 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(AgentAwarenessRelay, make);
+export const layer = Layer.effect(AgentAwarenessRelay, make).pipe(
+  Layer.provide(ExpoPushAlerts.layer.pipe(Layer.provide(FetchHttpClient.layer))),
+);

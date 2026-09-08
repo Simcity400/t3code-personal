@@ -21,15 +21,23 @@ import { RelayClientTracer } from "@t3tools/shared/relayTracing";
 import { RELAY_ACTIVITY_PUBLISH_TYP, verifyRelayJwt } from "@t3tools/shared/relayJwt";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
+import * as TestClock from "effect/testing/TestClock";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ExpoPushAlerts from "../notifications/ExpoPushAlerts.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -60,6 +68,7 @@ const state: RelayAgentActivityState = {
 };
 
 const encodeSecret = (value: string): Uint8Array => new TextEncoder().encode(value);
+const decodeNotificationBody = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 function makeMemorySecretStore() {
   const values = new Map<string, Uint8Array>();
@@ -99,6 +108,176 @@ function makeMemorySecretStore() {
 }
 
 describe.sequential("signRelayAgentActivityPublishProof", () => {
+  it.effect.each(["unconfigured", "unresponsive", "late-linked"] as const)(
+    "delivers personal alerts with a %s hosted relay",
+    (relayMode) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const now = DateTime.formatIso(yield* DateTime.now);
+          const environmentId = state.environmentId;
+          const threadId = state.threadId;
+          const projectId = "personal-project" as ProjectId;
+          const secrets = makeMemorySecretStore();
+          const relayRequests = yield* Queue.unbounded<void>();
+          const configureRelay = Effect.gen(function* () {
+            yield* secrets.setString(RELAY_URL_SECRET, "https://relay.example.test");
+            yield* secrets.setString(RELAY_ENVIRONMENT_CREDENTIAL_SECRET, "relay-credential");
+            yield* secrets.setString(PUBLISH_AGENT_ACTIVITY_SECRET, "true");
+          });
+          if (relayMode === "unresponsive") yield* configureRelay;
+          const relayFetch: typeof fetch = Object.assign(
+            () => {
+              Queue.offerUnsafe(relayRequests, undefined);
+              return relayMode === "unresponsive"
+                ? new Promise<Response>(() => {})
+                : Promise.resolve(Response.json({ ok: true, deliveries: [] }));
+            },
+            { preconnect: () => {} },
+          );
+          const requests: Array<{ url: string; body: string }> = [];
+          const httpClient = HttpClient.make((request) =>
+            Effect.sync(() => {
+              requests.push({
+                url: request.url,
+                body:
+                  request.body._tag === "Uint8Array"
+                    ? new TextDecoder().decode(request.body.body)
+                    : "",
+              });
+              return HttpClientResponse.fromWeb(
+                request,
+                Response.json({ data: [{ status: "ok", id: "personal-ticket" }] }),
+              );
+            }),
+          );
+          const alerts = yield* ExpoPushAlerts.make.pipe(
+            Effect.provideService(ServerSecretStore.ServerSecretStore, secrets.store),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+          );
+          const project = {
+            id: projectId,
+            title: "Personal project",
+            workspaceRoot: "/workspace",
+            repositoryIdentity: null,
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          } satisfies OrchestrationProjectShell;
+          let thread: OrchestrationThreadShell = {
+            id: threadId,
+            projectId,
+            title: "Personal agent",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            latestTurn: {
+              turnId: "personal-turn" as TurnId,
+              state: "running",
+              requestedAt: now,
+              startedAt: now,
+              completedAt: null,
+              assistantMessageId: null,
+            },
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "Codex",
+              runtimeMode: "full-access",
+              activeTurnId: "personal-turn" as TurnId,
+              lastError: null,
+              updatedAt: now,
+            },
+            latestUserMessageAt: now,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+          };
+          const snapshotQuery = {
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 1,
+                projects: [project],
+                threads: [thread],
+                updatedAt: now,
+              } satisfies OrchestrationShellSnapshot),
+            getThreadShellById: () => Effect.sync(() => Option.some(thread)),
+            getProjectShellById: () => Effect.succeed(Option.some(project)),
+          } as unknown as ProjectionSnapshotQueryShape;
+          const engine = {
+            readEvents: () => Stream.empty,
+            readThreadEvents: () => Stream.empty,
+            getThreadReplayStats: () => Effect.die("unused thread replay stats"),
+            dispatch: () => Effect.succeed({ sequence: 1 }),
+            streamDomainEvents: Stream.empty,
+            subscribeDomainEvents: Effect.succeed(Stream.empty),
+            latestSequence: Effect.succeed(0),
+          } satisfies OrchestrationEngineShape;
+          const relay = yield* AgentAwarenessRelay.make.pipe(
+            Effect.provideService(ExpoPushAlerts.ExpoPushAlerts, alerts),
+            Effect.provideService(ServerSecretStore.ServerSecretStore, secrets.store),
+            Effect.provideService(ProjectionSnapshotQuery, snapshotQuery),
+            Effect.provideService(OrchestrationEngineService, engine),
+            Effect.provideService(ServerEnvironment.ServerEnvironment, {
+              getEnvironmentId: Effect.succeed(environmentId),
+              getDescriptor: Effect.die("unused descriptor"),
+            }),
+            Effect.provide(NodeServices.layer),
+          );
+          // Registration may arrive after the publisher has already started.
+          yield* alerts.register({
+            clientId: "personal-phone",
+            registration: { enabled: true, token: "ExponentPushToken[personal]" },
+          });
+          const publish = Effect.gen(function* () {
+            const operation = relay
+              .publishThread(threadId)
+              .pipe(Effect.provideService(FetchHttpClient.Fetch, relayFetch));
+            if (relayMode !== "unresponsive") {
+              yield* operation;
+              return;
+            }
+            const fiber = yield* operation.pipe(Effect.forkScoped);
+            yield* Queue.take(relayRequests);
+            yield* TestClock.adjust("10 seconds");
+            yield* Fiber.join(fiber);
+          });
+          yield* publish;
+          expect(requests).toHaveLength(0);
+          if (relayMode === "late-linked") {
+            // The event path cached the missing credentials above. Startup
+            // catch-up must publish without waiting for that cache to expire.
+            yield* configureRelay;
+            yield* relay.start().pipe(Effect.provideService(FetchHttpClient.Fetch, relayFetch));
+            yield* TestClock.adjust("1 second");
+            yield* Queue.take(relayRequests);
+          }
+          thread = { ...thread, hasPendingUserInput: true };
+          yield* publish;
+          yield* publish;
+          expect(requests).toHaveLength(1);
+          expect(requests[0]?.url).toBe("https://exp.host/--/api/v2/push/send");
+          expect(yield* decodeNotificationBody(requests[0]!.body)).toEqual([
+            expect.objectContaining({
+              to: "ExponentPushToken[personal]",
+              data: expect.objectContaining({
+                environmentId,
+                threadId,
+                phase: "waiting_for_input",
+              }),
+            }),
+          ]);
+        }),
+      ),
+  );
+
   it("distinguishes pending link credentials from disabled publication", () => {
     expect(
       AgentAwarenessRelay.resolveAgentActivityPublishingStartupState({
@@ -256,6 +435,19 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         headline: "Agent finished",
       }),
     );
+  });
+
+  it("still publishes to the hosted relay after Expo observed the state first", () => {
+    const identity = AgentAwarenessRelay.agentAwarenessPublishIdentity(state);
+    expect(
+      AgentAwarenessRelay.resolveAgentAwarenessDeliveryNeeds({
+        identity,
+        relayIdentity: undefined,
+        expoIdentity: identity,
+        canPublishToRelay: true,
+        hasExpoPushRegistrations: true,
+      }),
+    ).toEqual({ relay: true, expo: false });
   });
 
   it("requires an explicit opt-in before publishing agent activity", () => {

@@ -45,6 +45,7 @@ jobs:
     env:
       APP_VARIANT: preview
       MOBILE_VERSION_POLICY: fingerprint
+      T3CODE_EXPO_PUSH_ALERTS: "1"
       NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - name: Check Expo credentials
@@ -70,6 +71,18 @@ jobs:
           run-install: |
             args:
               - --filter=@t3tools/mobile...
+
+      - name: Test personal notification delivery setup
+        run: |
+          vp test run \
+            apps/mobile/src/connection/background-activity.test.ts \
+            apps/mobile/src/features/agent-awareness/capabilities.test.ts \
+            apps/mobile/src/features/agent-awareness/expoPushRegistration.test.ts \
+            apps/mobile/src/features/agent-awareness/notificationPresentation.test.ts \
+            apps/mobile/src/features/agent-awareness/remoteRegistration.test.ts \
+            apps/mobile/src/features/agent-awareness/notificationNavigation.test.ts \
+            apps/mobile/src/features/settings/SettingsRouteScreen.logic.test.ts \
+            scripts/lib/personal-expo-push-alerts.test.ts
 
       - name: Expose pnpm
         run: |

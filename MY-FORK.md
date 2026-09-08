@@ -7,6 +7,7 @@ This fork tracks published upstream nightlies with a small personal keep list:
 - Native Codex/Claude side chats with full-screen mobile navigation.
 - Codex goal controls, including `/goal`, budgets, pause, resume, and clear.
 - Personal Windows x64/ARM64 installers and iPhone preview builds.
+- iPhone push alerts for completed turns, failures, and requests for input or approval.
 - The release and sync automation needed to maintain those builds.
 
 Everything else follows upstream. The previous fork is archived at
@@ -46,8 +47,11 @@ starts a native build when inputs change. Install the new preview build after a
 native change. `EXPO_TOKEN` is required in the repository's Actions secrets.
 
 Personal signing uses a different Apple bundle and team from the official app.
-Remote notifications and Live Activities require a delivery service configured
-for that identity; the previous direct Expo push extension has been removed.
+The preview app registers with connected environments, which send agent alerts
+through Expo using the preview project's push credentials. Enable notifications
+in the app's Settings, then open the app and connect to each updated environment.
+Settings shows whether those environments accepted the registration. Live Activities
+remain unavailable in the personal preview because they require a separate APNs relay.
 
 ## Upstream sync and checks
 

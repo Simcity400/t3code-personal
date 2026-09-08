@@ -1,6 +1,7 @@
 import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
+import { resolvePersonalExpoPushAlerts } from "../../scripts/lib/personal-expo-push-alerts.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
 type AppVariant = "development" | "preview" | "production";
@@ -10,6 +11,10 @@ Object.assign(process.env, repoEnv);
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
+const personalExpoPushAlerts = resolvePersonalExpoPushAlerts(
+  APP_VARIANT,
+  repoEnv.T3CODE_EXPO_PUSH_ALERTS,
+);
 const runtimeVersionPolicy =
   process.env.MOBILE_VERSION_POLICY ??
   (APP_VARIANT === "development" ? "appVersion" : "fingerprint");
@@ -198,9 +203,7 @@ const config: ExpoConfig = {
     // showcase capture build requires full screen (see infoPlist below).
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
-    // Private preview signing does not grant access to the official APNs service.
-    // Notifications and Live Activities keep the upstream registration path;
-    // remote delivery requires a service configured for this bundle and team.
+    // Personal preview alerts use this build's Expo push credentials.
     appleTeamId: "X8R35QF7WN",
     associatedDomains: [
       `applinks:${variant.relyingParty}`,
@@ -385,6 +388,7 @@ const config: ExpoConfig = {
   extra: {
     appVariant: APP_VARIANT,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
+    personalExpoPushAlerts,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
     },
