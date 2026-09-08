@@ -14,6 +14,7 @@
 - [Organizing threads](./user/thread-sidebar.md)
 - [Side chats](./user/side-chats.md)
 - [Agent transcripts](./user/agent-transcripts.md)
+- [SnapShots](./user/snap-shot.md)
 - [Import browser sessions](./user/browser-import.md)
 - [Usage and limits](./user/usage.md)
 - [Product usage data](./user/telemetry.md)

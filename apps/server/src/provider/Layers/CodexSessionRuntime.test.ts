@@ -1282,10 +1282,7 @@ describe("openCodexThread", () => {
       const started = makeThreadOpenResponse("fresh-thread");
       const client = {
         raw: {
-          request: (
-            method: "thread/resume",
-            payload: CodexRpc.ClientRequestParamsByMethod["thread/resume"],
-          ) => {
+          request: (method: string, payload?: unknown) => {
             calls.push({ method, payload });
             return Effect.fail(
               new CodexErrors.CodexAppServerRequestError({
