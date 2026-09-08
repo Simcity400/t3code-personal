@@ -1137,9 +1137,15 @@ export const make = Effect.gen(function* () {
         } else {
           const config = decodeCodexSettings(instance.config ?? {});
           if (Option.isNone(config)) continue;
-          const layout = yield* resolveCodexHomeLayout(config.value, {
-            CODEX_HOME: environmentHome,
-          }).pipe(Effect.provideService(Path.Path, path));
+          const codexSettings =
+            config.value.homePath.trim().length === 0 &&
+            config.value.shadowHomePath.trim().length === 0 &&
+            environmentHome?.trim()
+              ? { ...config.value, homePath: environmentHome }
+              : config.value;
+          const layout = yield* resolveCodexHomeLayout(codexSettings).pipe(
+            Effect.provideService(Path.Path, path),
+          );
           homePath = layout.sharedHomePath;
         }
 

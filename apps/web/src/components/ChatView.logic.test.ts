@@ -34,7 +34,6 @@ import {
   buildLoadingThreadFromShell,
   buildRunningThreadTurnInterruptInput,
   buildThreadTurnInterruptInput,
-  getLatestRootInterruptFailureId,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   deriveLockedProvider,
@@ -191,7 +190,7 @@ describe("proactive panels", () => {
     expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, ref)).toEqual(
       oldPr,
     );
-    expect(shouldOpenProactivePullRequest(loaded.targetKey, "owner/repo:2")).toBe(false);
+    expect(shouldOpenProactivePullRequest(loaded.targetKey, "owner/repo:2")).toBe(true);
     expect(
       shouldOpenProactiveTurnDiff({
         previousRunningTurnId: loaded.runningTurnId,
@@ -199,7 +198,10 @@ describe("proactive panels", () => {
         settledTurnId: turnId,
         turnCompleted: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
+    expect(panels.openProactive(ref, { id: "diff", kind: "diff" }, loaded.userActionRevision)).toBe(
+      false,
+    );
   });
 
   it.each(["idle", "loading", "observed"] as const)(
@@ -246,8 +248,9 @@ describe("proactive panels", () => {
     },
   );
 
-  it("opens a pull request only after a newly observed link appears", () => {
-    expect(shouldOpenProactivePullRequest(undefined, "project:repo:42")).toBe(false);
+  it("opens an existing pull request on entry and follows newly observed links", () => {
+    expect(shouldOpenProactivePullRequest(undefined, "project:repo:42")).toBe(true);
+    expect(shouldOpenProactivePullRequest(undefined, null)).toBe(false);
     expect(shouldOpenProactivePullRequest(null, "project:repo:42")).toBe(true);
     expect(shouldOpenProactivePullRequest("project:repo:42", "project:repo:42")).toBe(false);
     expect(shouldOpenProactivePullRequest("project:repo:42", null)).toBe(false);
@@ -287,7 +290,7 @@ describe("proactive panels", () => {
     ).toBe(false);
   });
 
-  it("opens the diff only when the observed running turn settles", () => {
+  it("opens a completed diff on entry or when the observed running turn settles", () => {
     const turnId = TurnId.make("turn-1");
     expect(
       shouldOpenProactiveTurnDiff({
@@ -296,7 +299,7 @@ describe("proactive panels", () => {
         settledTurnId: turnId,
         turnCompleted: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldOpenProactiveTurnDiff({
         previousRunningTurnId: turnId,
@@ -900,13 +903,12 @@ describe("buildThreadTurnInterruptInput", () => {
           },
         }),
       ),
-    ).toEqual({ threadId, turnId: activeTurnId, scope: "self" });
+    ).toEqual({ threadId, turnId: activeTurnId });
   });
 
   it("omits a turn id when the session is not running", () => {
     expect(buildThreadTurnInterruptInput(makeThread({ session: readySession }))).toEqual({
       threadId,
-      scope: "self",
     });
   });
 
@@ -921,51 +923,7 @@ describe("buildThreadTurnInterruptInput", () => {
           },
         }),
       ),
-    ).toEqual({ threadId, scope: "self" });
-  });
-
-  it("stops the whole root tree without targeting a task or a stale turn", () => {
-    for (const session of [
-      readySession,
-      { ...readySession, status: "running" as const, activeTurnId: TurnId.make("turn-running") },
-      null,
-    ]) {
-      expect(buildThreadTurnInterruptInput(makeThread({ session }), "tree")).toEqual({
-        threadId,
-        scope: "tree",
-      });
-    }
-  });
-});
-
-describe("getLatestRootInterruptFailureId", () => {
-  it("identifies new root failures for retry without reacting to unrelated task failures", () => {
-    const events = [
-      {
-        id: "root-1",
-        kind: "provider.turn.interrupt.failed",
-        payload: { detail: "Tree partially stopped" },
-      },
-    ];
-    expect(getLatestRootInterruptFailureId(events)).toBe("root-1");
-    expect(
-      getLatestRootInterruptFailureId([
-        ...events,
-        { id: "resume", kind: "task.resume.failed", payload: { taskId: "task-1" } },
-        { id: "task", kind: "provider.turn.interrupt.failed", payload: { taskId: "task-1" } },
-      ]),
-    ).toBe("root-1");
-    expect(
-      getLatestRootInterruptFailureId([
-        ...events,
-        {
-          id: "root-2",
-          kind: "provider.turn.interrupt.failed",
-          payload: { detail: "Retry failed" },
-        },
-      ]),
-    ).toBe("root-2");
-    expect(getLatestRootInterruptFailureId([])).toBeNull();
+    ).toEqual({ threadId });
   });
 });
 
@@ -1341,7 +1299,6 @@ describe("buildRunningThreadTurnInterruptInput", () => {
     expect(buildRunningThreadTurnInterruptInput(runningThread, "running")).toEqual({
       threadId,
       turnId: activeTurnId,
-      scope: "self",
     });
     expect(buildRunningThreadTurnInterruptInput(runningThread, "ready")).toBeNull();
     expect(
@@ -1359,10 +1316,7 @@ describe("buildRunningThreadTurnInterruptInput", () => {
       },
     });
 
-    expect(buildRunningThreadTurnInterruptInput(runningThread, "running")).toEqual({
-      threadId,
-      scope: "self",
-    });
+    expect(buildRunningThreadTurnInterruptInput(runningThread, "running")).toEqual({ threadId });
   });
 });
 

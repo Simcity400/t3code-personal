@@ -24,9 +24,9 @@ import {
   ClientOs,
   ClientSurface,
   ClientWebDeployment,
+  CommandId,
   type CodexGoalOperation,
   CodexGoalOperationError,
-  CommandId,
   type DiscoveredLocalServerList,
   EventId,
   type EditorId,
@@ -132,7 +132,6 @@ import { importRecentAgentThreads } from "./project/AgentSessionImporter.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
-import * as ExpoPushAlerts from "./notifications/ExpoPushAlerts.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
@@ -583,7 +582,6 @@ const makeWsRpcLayer = (
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
-      const expoPushAlerts = yield* ExpoPushAlerts.ExpoPushAlerts;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
         Ref.get(rpcClientIds).pipe(
@@ -787,7 +785,7 @@ const makeWsRpcLayer = (
           case "thread.unarchived":
             return threadUpsertOrRemove(ThreadId.make(event.aggregateId), event.sequence);
           case "thread.goal-set":
-            // Shells do not carry the goal; the thread subscription does.
+            // Goals are delivered on the thread detail subscription.
             return Effect.succeed(Option.none());
           default:
             if (event.aggregateKind !== "thread") {
@@ -2094,12 +2092,6 @@ const makeWsRpcLayer = (
               ),
             ),
           ),
-        [WS_METHODS.serverRegisterExpoPushNotifications]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverRegisterExpoPushNotifications,
-            expoPushAlerts.register(input).pipe(Effect.map((registered) => ({ registered }))),
-            { "rpc.aggregate": "server" },
-          ),
         [WS_METHODS.serverReportHostPowerState]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReportHostPowerState,
@@ -2967,9 +2959,6 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         ),
     });
     const pullRequests = yield* PullRequestService.PullRequestService;
-    // One route-lifetime instance shared by every connection instead of one
-    // build (including the secrets-dir mkdir/chmod) per WebSocket upgrade.
-    const expoPushAlerts = yield* ExpoPushAlerts.ExpoPushAlerts;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3004,7 +2993,6 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               previewAutomationBroker,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
-              Layer.provide(Layer.succeed(ExpoPushAlerts.ExpoPushAlerts, expoPushAlerts)),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),

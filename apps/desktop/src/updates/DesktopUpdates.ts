@@ -5,7 +5,6 @@ import {
   type DesktopUpdateChannel,
   type DesktopUpdateCheckResult,
   type DesktopUpdateState,
-  type DesktopUpstreamMergeStatus,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -22,8 +21,6 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import * as ChildProcess from "effect/unstable/process/ChildProcess";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
@@ -35,7 +32,6 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
-import { fetchUpstreamMergeStatus, isSameUpstreamMergeStatus } from "./upstreamMerge.ts";
 import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
 import {
   createInitialDesktopUpdateState,
@@ -62,11 +58,6 @@ interface DesktopPreparedUpdateInstallResult extends DesktopUpdateActionResult {
 
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
 type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
-
-interface PrivateGitHubUpdateFeed {
-  readonly owner: string;
-  readonly repo: string;
-}
 
 const UpdateInfo = Schema.Struct({
   version: Schema.String,
@@ -198,46 +189,6 @@ export class DesktopUpdates extends Context.Service<
   }
 >()("@t3tools/desktop/updates/DesktopUpdates") {}
 
-export class DesktopUpdateCredentials extends Context.Service<
-  DesktopUpdateCredentials,
-  {
-    readonly resolvePrivateGitHubToken: Effect.Effect<Option.Option<string>>;
-    /** Fork: the blocked-sync marker, read with the private-feed token. */
-    readonly readUpstreamMergeStatus: (
-      feed: PrivateGitHubUpdateFeed,
-      token: string,
-    ) => Effect.Effect<DesktopUpstreamMergeStatus | null>;
-  }
->()("@t3tools/desktop/updates/DesktopUpdates/DesktopUpdateCredentials") {}
-
-const makeDesktopUpdateCredentials = Effect.gen(function* () {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const resolvePrivateGitHubToken = spawner
-    .string(
-      ChildProcess.make("gh", ["auth", "token"], {
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "ignore",
-        killSignal: "SIGTERM",
-        forceKillAfter: Duration.seconds(5),
-      }),
-    )
-    .pipe(
-      Effect.map((output) => output.trim()),
-      Effect.map((token) => (token.length > 0 ? Option.some(token) : Option.none<string>())),
-      Effect.orElseSucceed(() => Option.none<string>()),
-    );
-  return DesktopUpdateCredentials.of({
-    resolvePrivateGitHubToken,
-    readUpstreamMergeStatus: (feed, token) => fetchUpstreamMergeStatus(feed, token),
-  });
-});
-
-export const desktopUpdateCredentialsLayer = Layer.effect(
-  DesktopUpdateCredentials,
-  makeDesktopUpdateCredentials,
-);
-
 const {
   logInfo: logUpdaterInfo,
   logWarning: logUpdaterWarning,
@@ -257,15 +208,6 @@ function parseAppUpdateYml(raw: string): Effect.Effect<Option.Option<AppUpdateYm
     Effect.map((config) => (config.provider ? Option.some(config) : Option.none())),
     Effect.orElseSucceed(() => Option.none<AppUpdateYmlConfig>()),
   );
-}
-
-function getPrivateGitHubUpdateFeed(
-  config: AppUpdateYmlConfig,
-): Option.Option<PrivateGitHubUpdateFeed> {
-  if (config.provider !== "github" || config.private !== "true" || !config.owner || !config.repo) {
-    return Option.none();
-  }
-  return Option.some({ owner: config.owner, repo: config.repo });
 }
 
 function createBaseUpdateState(
@@ -309,16 +251,12 @@ function getAutoUpdateDisabledReason(args: {
   appImage?: string | undefined;
   disabledByEnv: boolean;
   hasUpdateFeedConfig: boolean;
-  privateFeedAuthMissing: boolean;
 }): string | null {
   if (!args.hasUpdateFeedConfig) {
     return "Automatic updates are not available because no update feed is configured.";
   }
   if (args.isDevelopment || !args.isPackaged) {
     return "Automatic updates are only available in packaged production builds.";
-  }
-  if (args.privateFeedAuthMissing) {
-    return "Automatic updates need this computer to be signed in to GitHub. Run `gh auth login`, then restart T3 Code.";
   }
   if (args.disabledByEnv) {
     return "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.";
@@ -342,14 +280,12 @@ export const make = Effect.gen(function* () {
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
-  const credentials = yield* DesktopUpdateCredentials;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
 
   const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
   const finishedUpdateActions = yield* PubSub.unbounded<UpdateAction>();
   const updaterConfiguredRef = yield* Ref.make(false);
-  const privateFeedAuthMissingRef = yield* Ref.make(false);
   const lastLoggedDownloadMilestoneRef = yield* Ref.make(-1);
   const updateStateRef = yield* Ref.make<DesktopUpdateState>(
     createInitialDesktopUpdateState(
@@ -401,7 +337,6 @@ export const make = Effect.gen(function* () {
 
   const resolveDisabledReason = Effect.gen(function* () {
     const hasFeedConfig = yield* hasUpdateFeedConfig;
-    const privateFeedAuthMissing = yield* Ref.get(privateFeedAuthMissingRef);
     return Option.fromNullishOr(
       getAutoUpdateDisabledReason({
         isDevelopment: environment.isDevelopment,
@@ -410,7 +345,6 @@ export const make = Effect.gen(function* () {
         appImage: Option.getOrUndefined(config.appImagePath),
         disabledByEnv: config.disableAutoUpdate,
         hasUpdateFeedConfig: hasFeedConfig,
-        privateFeedAuthMissing,
       }),
     );
   });
@@ -457,31 +391,6 @@ export const make = Effect.gen(function* () {
 
   const shouldEnableAutoUpdates = resolveDisabledReason.pipe(Effect.map(Option.isNone));
 
-  // Fork: where the blocked-sync marker is read from, once the private feed is configured.
-  const upstreamMergeSourceRef = yield* Ref.make(
-    Option.none<{ readonly feed: PrivateGitHubUpdateFeed; readonly token: string }>(),
-  );
-  const refreshUpstreamMergeStatus = Effect.gen(function* () {
-    const source = yield* Ref.get(upstreamMergeSourceRef);
-    if (Option.isNone(source)) return;
-    const current = yield* Ref.get(updateStateRef);
-    // A stalled request must not hold the check reservation; keep what we knew.
-    const upstreamMerge = yield* credentials
-      .readUpstreamMergeStatus(source.value.feed, source.value.token)
-      .pipe(
-        Effect.timeout("10 seconds"),
-        Effect.orElseSucceed(() => current.upstreamMerge),
-      );
-    if (isSameUpstreamMergeStatus(current.upstreamMerge, upstreamMerge)) return;
-    yield* updateState((state) => ({ ...state, upstreamMerge }));
-    yield* logUpdaterInfo(
-      upstreamMerge
-        ? "official nightly sync needs a manual merge"
-        : "official nightly sync unblocked",
-      upstreamMerge ? { tag: upstreamMerge.tag, conflicts: upstreamMerge.conflicts.length } : {},
-    );
-  }).pipe(Effect.withSpan("desktop.updates.refreshUpstreamMergeStatus"));
-
   const checkForUpdates = Effect.fn("desktop.updates.checkForUpdates")(function* (
     reason: string,
     actionReservation: "acquire" | "held" = "acquire",
@@ -523,9 +432,6 @@ export const make = Effect.gen(function* () {
             return true;
           }),
         }),
-        // Whatever the release feed said, a stopped sync is a separate fact
-        // the user must hear about; it rides along with every check.
-        Effect.tap(() => refreshUpstreamMergeStatus),
       );
     });
 
@@ -968,26 +874,6 @@ export const make = Effect.gen(function* () {
           provider: "generic",
           url: `http://localhost:${config.mockUpdateServerPort}`,
         } as ElectronUpdater.ElectronUpdaterFeedUrl);
-      } else if (environment.isPackaged && Option.isSome(appUpdateYmlConfig)) {
-        const privateGitHubFeed = getPrivateGitHubUpdateFeed(appUpdateYmlConfig.value);
-        if (Option.isSome(privateGitHubFeed)) {
-          const token = yield* credentials.resolvePrivateGitHubToken;
-          if (Option.isNone(token)) {
-            yield* Ref.set(privateFeedAuthMissingRef, true);
-          } else {
-            yield* Ref.set(
-              upstreamMergeSourceRef,
-              Option.some({ feed: privateGitHubFeed.value, token: token.value }),
-            );
-            yield* electronUpdater.setFeedURL({
-              provider: "github",
-              owner: privateGitHubFeed.value.owner,
-              repo: privateGitHubFeed.value.repo,
-              private: true,
-              token: token.value,
-            } as ElectronUpdater.ElectronUpdaterFeedUrl);
-          }
-        }
       }
 
       const settings = yield* desktopSettings.get;
@@ -1108,4 +994,3 @@ export const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(DesktopUpdates, make);
-export const liveLayer = layer.pipe(Layer.provide(desktopUpdateCredentialsLayer));

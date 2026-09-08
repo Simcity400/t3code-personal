@@ -1,28 +1,41 @@
-import type { OrchestrationThreadShell } from "@t3tools/contracts";
+import type { EnvironmentThreadShell } from "./shell.ts";
 
-export type SideChatThreadFields = Pick<
-  OrchestrationThreadShell,
-  "forkedFromThreadId" | "sideChatPromotedAt"
+/** Keep navigation local to this environment and project, including nested forks. */
+type RelatedThread = Pick<
+  EnvironmentThreadShell,
+  "id" | "projectId" | "environmentId" | "forkedFromThreadId" | "createdAt"
 >;
 
-/**
- * A side chat is a provider-native fork that stays attached to its parent
- * thread until the user promotes it. While attached it is hidden from every
- * thread list, launcher, and fallback-selection path; promotion clears that.
- */
-export function isUnpromotedSideChat(thread: SideChatThreadFields): boolean {
-  return thread.forkedFromThreadId != null && thread.sideChatPromotedAt == null;
-}
-
-/** Threads that belong in the normal thread lists: everything but attached side chats. */
-export function isListedThread(thread: SideChatThreadFields): boolean {
-  return !isUnpromotedSideChat(thread);
-}
-
-/** Attached side chats of `parentThreadId`, in shell order. */
-export function isSideChatOf<T extends SideChatThreadFields & { readonly id: unknown }>(
-  thread: T,
-  parentThreadId: T["id"],
-): boolean {
-  return thread.forkedFromThreadId === parentThreadId && thread.sideChatPromotedAt == null;
+export function relatedChats<T extends RelatedThread>(
+  current: RelatedThread,
+  threads: ReadonlyArray<T>,
+) {
+  return threads
+    .filter(
+      (thread) =>
+        thread.environmentId === current.environmentId &&
+        thread.projectId === current.projectId &&
+        thread.id !== current.id &&
+        (thread.id === current.forkedFromThreadId ||
+          thread.forkedFromThreadId === current.id ||
+          (current.forkedFromThreadId != null &&
+            thread.forkedFromThreadId === current.forkedFromThreadId)),
+    )
+    .map((thread) => ({
+      thread,
+      relation:
+        thread.id === current.forkedFromThreadId
+          ? "Original thread"
+          : thread.forkedFromThreadId === current.id
+            ? "Side chat"
+            : "Related side chat",
+    }))
+    .sort((a, b) => {
+      if (a.relation === "Original thread") return -1;
+      if (b.relation === "Original thread") return 1;
+      return (
+        b.thread.createdAt.localeCompare(a.thread.createdAt) ||
+        a.thread.id.localeCompare(b.thread.id)
+      );
+    });
 }

@@ -9,7 +9,6 @@ import {
   AuthStandardClientScopes,
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
-  CodexGoalOperationError,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   type DpopFailureReason,
@@ -88,7 +87,6 @@ import * as Socket from "effect/unstable/socket/Socket";
 import { vi } from "vite-plus/test";
 
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
-const isCodexGoalOperationError = Schema.is(CodexGoalOperationError);
 const decodeTransferThreadSnapshot = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationThreadDetailSnapshot),
 );
@@ -117,7 +115,6 @@ import {
   OrchestrationListenerCallbackError,
   OrchestrationThreadSettleBlockedError,
 } from "./orchestration/Errors.ts";
-import { ProviderUnsupportedError } from "./provider/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
@@ -783,20 +780,9 @@ const buildAppUnderTest = (options?: {
             ...options?.layers?.providerRegistry,
           }),
           Layer.mock(ProviderService.ProviderService)({
-            startSession: () => Effect.die("ProviderService not stubbed in this test"),
-            sendTurn: () => Effect.die("ProviderService not stubbed in this test"),
-            interruptTurn: () => Effect.die("ProviderService not stubbed in this test"),
-            respondToRequest: () => Effect.die("ProviderService not stubbed in this test"),
-            respondToUserInput: () => Effect.die("ProviderService not stubbed in this test"),
-            stopSession: () => Effect.die("ProviderService not stubbed in this test"),
-            listSessions: () => Effect.succeed([]),
-            getCapabilities: () => Effect.die("ProviderService not stubbed in this test"),
-            getInstanceInfo: () => Effect.die("ProviderService not stubbed in this test"),
-            rollbackConversation: () => Effect.die("ProviderService not stubbed in this test"),
+            setCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
+            clearCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
             uploadFeedback: () => Effect.die("Provider feedback is not stubbed in this test"),
-            setCodexGoal: () => Effect.die("ProviderService not stubbed in this test"),
-            clearCodexGoal: () => Effect.die("ProviderService not stubbed in this test"),
-            streamEvents: Stream.empty,
             ...options?.layers?.providerService,
           }),
           Layer.mock(ProviderAuthService)({
@@ -977,7 +963,6 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
           getUserInputActivity: () => Effect.die("unused"),
-          getTaskState: () => Effect.die("unused"),
           getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
           getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
           getShellSnapshot: () =>
@@ -5652,6 +5637,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           providerService: {
+            setCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
+            clearCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
             uploadFeedback: () =>
               Effect.fail(
                 new ProviderAdapterRequestError({
@@ -6277,104 +6264,6 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(snapshot.value.groups.backend.processCount, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
-
-  it.effect("routes native Codex Goal controls over websocket", () =>
-    Effect.gen(function* () {
-      const threadId = ThreadId.make("goal-rpc-thread");
-      const setInputs: unknown[] = [];
-      const steeredGoal = {
-        objective: "Steered Goal",
-        status: "active" as const,
-        tokenBudget: 100_000,
-        tokensUsed: 1_000,
-        timeUsedSeconds: 10,
-        createdAt: 1_777_000_000,
-        updatedAt: 1_777_000_020,
-      };
-
-      yield* buildAppUnderTest({
-        layers: {
-          providerService: {
-            setCodexGoal: (input) =>
-              Effect.sync(() => {
-                setInputs.push(input);
-                return steeredGoal;
-              }),
-            clearCodexGoal: () => Effect.succeed({ cleared: true }),
-            streamEvents: Stream.empty,
-          },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const result = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          Effect.gen(function* () {
-            const steered = yield* client[WS_METHODS.codexGoalSet]({
-              threadId,
-              objective: "Steered Goal",
-            });
-            const cleared = yield* client[WS_METHODS.codexGoalClear]({ threadId });
-            return { steered, cleared };
-          }),
-        ),
-      );
-
-      assert.equal(result.steered.objective, "Steered Goal");
-      assert.deepEqual(result.cleared, { cleared: true });
-      assert.deepEqual(setInputs, [{ threadId, objective: "Steered Goal" }]);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("codexGoalSet failures carry the operation, thread, and provider detail", () =>
-    Effect.gen(function* () {
-      const threadId = ThreadId.make("goal-error-thread");
-
-      yield* buildAppUnderTest({
-        layers: {
-          providerService: {
-            setCodexGoal: () => Effect.fail(new ProviderUnsupportedError({ provider: "claude" })),
-            streamEvents: Stream.empty,
-          },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const failure = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.codexGoalSet]({ threadId, objective: "Ship it" }).pipe(Effect.flip),
-        ),
-      );
-
-      assertTrue(isCodexGoalOperationError(failure));
-      assert.equal(failure.operation, "set");
-      assert.equal(failure.threadId, threadId);
-      assert.equal(failure.message, `Codex Goal set failed for thread ${threadId}`);
-      const cause = failure.cause;
-      assertTrue(cause instanceof Error);
-      assert.equal(cause.message, "Provider 'claude' is not implemented");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  // The thread subscription forwards an allowlist of event types; a goal
-  // projection that is not on it would only show up after a reload.
-  it("streams goal projections to thread detail subscribers", () => {
-    const threadId = ThreadId.make("goal-stream-thread");
-    const event: Parameters<typeof isThreadDetailEvent>[0] = {
-      sequence: 1,
-      eventId: EventId.make("goal-set-event"),
-      type: "thread.goal-set",
-      aggregateKind: "thread",
-      aggregateId: threadId,
-      occurredAt: "2026-01-01T00:00:00.000Z",
-      commandId: CommandId.make("goal-set-command"),
-      causationEventId: null,
-      correlationId: null,
-      metadata: {},
-      payload: { threadId, goal: null },
-    };
-    assertTrue(isThreadDetailEvent(event));
-  });
 
   // An already-shipped client decodes this stream against an event union
   // without environmentThemesUpdated, so an ungated emit would kill its whole

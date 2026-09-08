@@ -606,11 +606,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
-            forkedFromThreadId: event.payload.forkedFromThreadId ?? null,
-            sideChatPromotedAt: event.payload.sideChatPromotedAt ?? null,
             linkedPullRequest: null,
             goal: null,
             branchPullRequest: null,
+            forkedFromThreadId: event.payload.forkedFromThreadId ?? null,
+            sideChatPromotedAt: event.payload.sideChatPromotedAt ?? null,
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -813,14 +813,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.worktreePath !== undefined
               ? { worktreePath: event.payload.worktreePath }
               : {}),
-            ...(event.payload.sideChatPromotedAt !== undefined
-              ? { sideChatPromotedAt: event.payload.sideChatPromotedAt }
-              : {}),
             ...(event.payload.linkedPullRequest !== undefined
               ? { linkedPullRequest: event.payload.linkedPullRequest }
               : {}),
             ...(event.payload.branchPullRequest !== undefined
               ? { branchPullRequest: event.payload.branchPullRequest }
+              : {}),
+            ...(event.payload.sideChatPromotedAt !== undefined
+              ? { sideChatPromotedAt: event.payload.sideChatPromotedAt }
               : {}),
             updatedAt: event.payload.updatedAt,
           });
@@ -1532,7 +1532,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.turn-interrupt-requested": {
-          if (event.payload.taskId !== undefined || event.payload.turnId === undefined) {
+          if (event.payload.turnId === undefined) {
             return;
           }
           const existingTurn = yield* projectionTurnRepository.getByTurnId({

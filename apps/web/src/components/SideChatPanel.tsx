@@ -15,7 +15,6 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import type {
-  MessageId,
   OrchestrationMessage,
   OrchestrationProposedPlan,
   OrchestrationThreadActivity,
@@ -25,7 +24,7 @@ import type {
 } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { truncate } from "@t3tools/shared/String";
-import { ArrowUpRight, ChevronDown, Maximize2, MessagesSquare, Square, Trash2 } from "lucide-react";
+import { ChevronDown, Maximize2, MessagesSquare, Square, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
@@ -45,11 +44,10 @@ import type { ChatFileAttachment, TurnDiffSummary } from "../types";
 import { newMessageId } from "~/lib/utils";
 import { buildThreadTurnInterruptInput } from "./ChatView.logic";
 import type { ExpandedImagePreview } from "./chat/ExpandedImagePreview";
-import { ComposerSendButton, ComposerStopButton } from "./chat/ComposerPrimaryActions";
+import { ComposerPrimaryActions } from "./chat/ComposerPrimaryActions";
 import { ComposerSurface } from "./chat/ComposerSurface";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { Button } from "./ui/button";
-import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const EMPTY_TURN_DIFFS: ReadonlyArray<TurnDiffSummary> = [];
@@ -105,7 +103,7 @@ export function SideChatPanel(props: {
   onFileDownload?: ((attachment: ChatFileAttachment) => void) | undefined;
   /** Navigates to the side chat's full thread view. */
   onOpenFullView: () => void;
-  /** Removes this surface once the side chat was closed or promoted here. */
+  /** Removes this surface without deleting the saved conversation. */
   onRemoveSurface: () => void;
 }) {
   const { threadRef, onOpenFullView, onRemoveSurface } = props;
@@ -122,16 +120,32 @@ export function SideChatPanel(props: {
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
 
   const draft = useComposerDraftStore((store) => store.getComposerDraft(threadRef)?.prompt ?? "");
+  const requiresProviderSelection = useComposerDraftStore((store) => {
+    const provider = store.getComposerDraft(threadRef)?.activeProvider;
+    return provider != null && provider !== shell?.modelSelection.instanceId;
+  });
   const setDraft = useComposerDraftStore((store) => store.setPrompt);
-  const clearDraft = useComposerDraftStore((store) => store.clearComposerContent);
+  const hasRichDraft = useComposerDraftStore((store) => {
+    const value = store.getComposerDraft(threadRef);
+    return Boolean(
+      value &&
+      (value.images.length ||
+        value.files.length ||
+        value.terminalContexts.length ||
+        value.elementContexts.length ||
+        value.previewAnnotations.length ||
+        value.reviewComments.length),
+    );
+  });
 
   const [sending, setSending] = useState(false);
   const [sendStartedAt, setSendStartedAt] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
-  const [action, setAction] = useState<"promoting" | "closing" | null>(null);
+  const [action, setAction] = useState<"closing" | null>(null);
   const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
   const listRef = useRef<LegendListRef | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const sendInFlight = useRef(false);
 
   const messages = thread?.messages ?? EMPTY_MESSAGES;
   const activities = thread?.activities ?? EMPTY_ACTIVITIES;
@@ -162,7 +176,6 @@ export function SideChatPanel(props: {
     [activities, messages, proposedPlans],
   );
   const sessionError = session?.lastError ?? null;
-  const isPromoted = shell?.sideChatPromotedAt != null;
   const isGone = status === "deleted";
 
   // Keyed by thread id upstream, so mount means "this tab just opened": land
@@ -173,26 +186,41 @@ export function SideChatPanel(props: {
 
   const send = useCallback(async () => {
     const text = draft.trim();
-    if (text.length === 0 || shell === null || sending || isGone) return;
+    if (
+      text.length === 0 ||
+      shell === null ||
+      sendInFlight.current ||
+      isGone ||
+      action !== null ||
+      hasRichDraft ||
+      requiresProviderSelection ||
+      pendingApprovalCount > 0
+    )
+      return;
     const createdAt = new Date().toISOString();
     const isFirstMessage = messages.length === 0 && latestTurn === null;
     setSending(true);
+    sendInFlight.current = true;
     setSendStartedAt(createdAt);
     setLocalError(null);
     setLiveFollowEnabled(true);
+    const savedDraft = useComposerDraftStore.getState().getComposerDraft(threadRef);
     const result = await startTurn({
       environmentId,
       input: {
         threadId,
         message: { messageId: newMessageId(), role: "user", text, attachments: [] },
-        modelSelection: shell.modelSelection,
+        modelSelection:
+          savedDraft?.modelSelectionByProvider[shell.modelSelection.instanceId] ??
+          shell.modelSelection,
         titleSeed: sideChatTitleFromPrompt(text),
-        runtimeMode: shell.runtimeMode,
-        interactionMode: shell.interactionMode,
+        runtimeMode: savedDraft?.runtimeMode ?? shell.runtimeMode,
+        interactionMode: savedDraft?.interactionMode ?? shell.interactionMode,
         createdAt,
       },
     });
     setSending(false);
+    sendInFlight.current = false;
     if (result._tag === "Failure") {
       setSendStartedAt(null);
       if (!isAtomCommandInterrupted(result)) {
@@ -201,7 +229,9 @@ export function SideChatPanel(props: {
       }
       return;
     }
-    clearDraft(threadRef);
+    if (useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt === draft) {
+      setDraft(threadRef, "");
+    }
     if (isFirstMessage && shell.title === SIDE_CHAT_PLACEHOLDER_TITLE) {
       void updateMetadata({
         environmentId,
@@ -209,13 +239,16 @@ export function SideChatPanel(props: {
       });
     }
   }, [
-    clearDraft,
+    setDraft,
     draft,
     environmentId,
     isGone,
     latestTurn,
     messages.length,
-    sending,
+    action,
+    hasRichDraft,
+    requiresProviderSelection,
+    pendingApprovalCount,
     shell,
     startTurn,
     threadId,
@@ -235,43 +268,9 @@ export function SideChatPanel(props: {
     }
   }, [environmentId, interruptTurn, thread]);
 
-  const promote = useCallback(async () => {
-    if (action !== null || isPromoted) return;
-    setAction("promoting");
-    const result = await updateMetadata({
-      environmentId,
-      input: { threadId, sideChatPromotedAt: new Date().toISOString() },
-    });
-    setAction(null);
-    if (result._tag === "Failure") {
-      if (!isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        setLocalError(error instanceof Error ? error.message : "Failed to promote side chat.");
-      }
-      return;
-    }
-    toastManager.add(
-      stackedThreadToast({
-        type: "success",
-        title: "Added to main threads",
-        description: "The side chat now appears in the thread list.",
-        actionProps: { children: "Open", onClick: onOpenFullView },
-      }),
-    );
-    onRemoveSurface();
-  }, [
-    action,
-    environmentId,
-    isPromoted,
-    onOpenFullView,
-    onRemoveSurface,
-    threadId,
-    updateMetadata,
-  ]);
-
   const close = useCallback(async () => {
     if (action !== null) return;
-    const message = "Close this side chat? Its messages will be permanently deleted.";
+    const message = "Delete this side chat? Its messages will be permanently deleted.";
     const localApi = readLocalApi();
     const confirmed = localApi
       ? await localApi.dialogs.confirm(message, { variant: "destructive" })
@@ -300,7 +299,13 @@ export function SideChatPanel(props: {
         : sessionError
           ? "Error"
           : null;
-  const composerDisabled = shell === null || isGone || action !== null;
+  const composerDisabled =
+    shell === null ||
+    isGone ||
+    action !== null ||
+    hasRichDraft ||
+    requiresProviderSelection ||
+    pendingApprovalCount > 0;
   const errorText = localError ?? sessionError;
 
   return (
@@ -320,14 +325,7 @@ export function SideChatPanel(props: {
           <Maximize2 className="size-3.5" />
         </HeaderAction>
         <HeaderAction
-          label={action === "promoting" ? "Adding…" : "Add to main threads"}
-          disabled={action !== null || isGone || isPromoted}
-          onClick={() => void promote()}
-        >
-          <ArrowUpRight className="size-3.5" />
-        </HeaderAction>
-        <HeaderAction
-          label={action === "closing" ? "Closing…" : "Close side chat"}
+          label={action === "closing" ? "Deleting…" : "Delete side chat"}
           disabled={action !== null || isGone}
           onClick={() => void close()}
         >
@@ -335,9 +333,13 @@ export function SideChatPanel(props: {
         </HeaderAction>
       </header>
 
-      {pendingApprovalCount > 0 ? (
+      {pendingApprovalCount > 0 || hasRichDraft || requiresProviderSelection ? (
         <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-muted/35 px-3 py-1.5 text-xs">
-          <span>The agent is waiting for your answer.</span>
+          <span>
+            {hasRichDraft || requiresProviderSelection
+              ? "Continue this draft in full view."
+              : "The agent is waiting for your answer."}
+          </span>
           <Button type="button" size="xs" variant="outline" onClick={onOpenFullView}>
             Respond in full view
           </Button>
@@ -459,19 +461,22 @@ export function SideChatPanel(props: {
                   }}
                 />
                 <div className="flex h-8 shrink-0 items-center">
-                  {turnRunning ? (
-                    <ComposerStopButton
-                      className="size-8"
-                      aria-label="Stop generation"
-                      onClick={() => void stop()}
-                    />
-                  ) : (
-                    <ComposerSendButton
-                      busy={sending}
-                      disabled={composerDisabled || sending || draft.trim().length === 0}
-                      aria-label={sending ? "Sending" : "Send message"}
-                    />
-                  )}
+                  <ComposerPrimaryActions
+                    compact
+                    pendingAction={null}
+                    isRunning={turnRunning}
+                    showPlanFollowUpPrompt={false}
+                    promptHasText={draft.trim().length > 0}
+                    isSendBusy={sending}
+                    sendDisabledReason={composerDisabled ? "Open full view to continue." : null}
+                    isConnecting={phase === "connecting"}
+                    isEnvironmentUnavailable={false}
+                    isPreparingWorktree={false}
+                    hasSendableContent={draft.trim().length > 0}
+                    onPreviousPendingQuestion={NOOP}
+                    onInterrupt={() => void stop()}
+                    onImplementPlanInNewThread={NOOP}
+                  />
                 </div>
               </div>
             </ComposerSurface.Host>

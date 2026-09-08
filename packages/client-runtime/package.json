@@ -91,6 +91,10 @@
       "types": "./src/relay/index.ts",
       "default": "./src/relay/index.ts"
     },
+    "./state/agent-transcripts": {
+      "types": "./src/state/agentTranscripts.ts",
+      "default": "./src/state/agentTranscripts.ts"
+    },
     "./state/auth": {
       "types": "./src/state/auth.ts",
       "default": "./src/state/auth.ts"
@@ -191,17 +195,13 @@
       "types": "./src/state/terminal.ts",
       "default": "./src/state/terminal.ts"
     },
+    "./state/sideChat": {
+      "types": "./src/state/sideChat.ts",
+      "default": "./src/state/sideChat.ts"
+    },
     "./state/threads": {
       "types": "./src/state/threads.ts",
       "default": "./src/state/threads.ts"
-    },
-    "./state/backgroundTasks": {
-      "types": "./src/state/backgroundTasks.ts",
-      "default": "./src/state/backgroundTasks.ts"
-    },
-    "./state/contextWindow": {
-      "types": "./src/state/contextWindow.ts",
-      "default": "./src/state/contextWindow.ts"
     },
     "./state/subagentRuntime": {
       "types": "./src/state/subagentRuntime.ts",

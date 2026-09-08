@@ -325,47 +325,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         releaseType: "prerelease",
         channel: "nightly",
       });
-
-      const privateConfig = yield* resolveGitHubPublishConfig("nightly").pipe(
-        Effect.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromEnv({
-              env: {
-                T3CODE_DESKTOP_UPDATE_REPOSITORY: "pingdotgg/t3code",
-                T3CODE_DESKTOP_UPDATE_PRIVATE: "true",
-              },
-            }),
-          ),
-        ),
-      );
-      assert.deepStrictEqual(privateConfig, {
-        provider: "github",
-        owner: "pingdotgg",
-        repo: "t3code",
-        private: true,
-        releaseType: "prerelease",
-        channel: "nightly",
-      });
-
-      const publicForkConfig = yield* resolveGitHubPublishConfig("nightly").pipe(
-        Effect.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromEnv({
-              env: {
-                GITHUB_REPOSITORY: "Simcity400/t3code-personal",
-                T3CODE_DESKTOP_UPDATE_PRIVATE: "false",
-              },
-            }),
-          ),
-        ),
-      );
-      assert.deepStrictEqual(publicForkConfig, {
-        provider: "github",
-        owner: "Simcity400",
-        repo: "t3code-personal",
-        releaseType: "prerelease",
-        channel: "nightly",
-      });
     }),
   );
 
@@ -1346,6 +1305,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
         assert.equal(primaryProbe.options.cwd, fixture.packagedAppDir);
         assert.equal(primaryProbe.options.env?.NODE_PATH, "");
+        assert.isTrue(
+          commands.some(
+            (command) =>
+              command.command === process.execPath && command.options.env?.NODE_PATH === "",
+          ),
+        );
       }),
     ).pipe(
       Effect.provide(
@@ -1437,7 +1402,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     );
   });
 
-  it.effect("skips the primary native probe for cross-architecture Windows payloads", () => {
+  it.effect("skips executable probes for cross-architecture Windows payloads", () => {
     const commands: Array<{
       readonly command: string;
       readonly options: {
@@ -1464,8 +1429,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.isFalse(
           commands.some((command) => command.options.env?.ELECTRON_RUN_AS_NODE === "1"),
         );
-        // The bundle self-containment check also stays off: the host's Node
-        // cannot load the arm64 payload's native addons either.
         assert.isFalse(
           commands.some(
             (command) =>

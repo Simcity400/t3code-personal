@@ -57,15 +57,6 @@ const RuntimeSessionState = Schema.Literals([
   "ready",
   "running",
   "waiting",
-  /**
-   * The provider is compacting its own context. A machine wait: no user action
-   * clears it, and the session is emphatically not idle — flattening it to
-   * `ready` (or to a bare `running`) is what stopped the Agents panel from
-   * naming the one pause a long thread reliably hits. Only Claude reports it
-   * (`system/status` with `status: "compacting"`); every other adapter keeps
-   * the states it already emitted.
-   */
-  "compacting",
   "stopped",
   "error",
 ]);
@@ -273,8 +264,6 @@ const ProviderRuntimeEventBase = Schema.Struct({
   // populates it (post-slice-4), routing flips to instance-id-only.
   providerInstanceId: Schema.optional(ProviderInstanceId),
   threadId: ThreadId,
-  /** Hidden execution owner when this event is projected onto its visible root. */
-  bridgeAgentId: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
   turnId: Schema.optional(TurnId),
   itemId: Schema.optional(RuntimeItemId),
@@ -299,17 +288,6 @@ const SessionStateChangedPayload = Schema.Struct({
   state: RuntimeSessionState,
   reason: Schema.optional(TrimmedNonEmptyStringSchema),
   detail: Schema.optional(Schema.Unknown),
-  /**
-   * Compaction boundary marker, present ONLY on the transition edges (true when
-   * compaction begins, false when it ends) and absent on every other state
-   * event.
-   *
-   * `state` alone cannot carry this: heartbeats republish `running` constantly
-   * (Claude's api_retry does), so ingestion would have to write a durable row
-   * per heartbeat to know when a compaction ended. Edge-marking keeps the
-   * persisted compaction row to exactly two writes per compaction.
-   */
-  compacting: Schema.optional(Schema.Boolean),
 });
 export type SessionStateChangedPayload = typeof SessionStateChangedPayload.Type;
 
@@ -361,13 +339,6 @@ export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
 
 const ThreadTokenUsageUpdatedPayload = Schema.Struct({
   usage: ThreadTokenUsageSnapshot,
-  /**
-   * Owning subagent when this snapshot measures a child conversation's own
-   * context window rather than the parent thread's. Clients key their context
-   * meters on it, so an agent's usage never moves the parent's meter and two
-   * agents never overwrite each other.
-   */
-  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type ThreadTokenUsageUpdatedPayload = typeof ThreadTokenUsageUpdatedPayload.Type;
 
@@ -463,25 +434,16 @@ export type RuntimePlanStep = typeof RuntimePlanStep.Type;
 const TurnPlanUpdatedPayload = Schema.Struct({
   explanation: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   plan: Schema.Array(RuntimePlanStep),
-  /**
-   * Owning subagent when a child conversation wrote this plan (its own
-   * TodoWrite). Without the stamp a subagent's todo list overwrites the
-   * parent turn's plan chip; with it the plan renders in that agent's
-   * transcript and stays out of the parent timeline.
-   */
-  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TurnPlanUpdatedPayload = typeof TurnPlanUpdatedPayload.Type;
 
 const TurnProposedDeltaPayload = Schema.Struct({
   delta: Schema.String,
-  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TurnProposedDeltaPayload = typeof TurnProposedDeltaPayload.Type;
 
 const TurnProposedCompletedPayload = Schema.Struct({
   planMarkdown: TrimmedNonEmptyStringSchema,
-  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TurnProposedCompletedPayload = typeof TurnProposedCompletedPayload.Type;
 
@@ -550,12 +512,11 @@ export const ItemLifecyclePayload = Schema.Struct({
 export type ItemLifecyclePayload = typeof ItemLifecyclePayload.Type;
 
 const ContentDeltaPayload = Schema.Struct({
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
   streamKind: RuntimeContentStreamKind,
   delta: Schema.String,
   contentIndex: Schema.optional(Schema.Int),
   summaryIndex: Schema.optional(Schema.Int),
-  /** Owning subagent when this text belongs to a child conversation. */
-  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type ContentDeltaPayload = typeof ContentDeltaPayload.Type;
 
@@ -565,14 +526,6 @@ const RequestOpenedPayload = Schema.Struct({
   appName: Schema.optional(TrimmedNonEmptyStringSchema),
   options: Schema.optional(Schema.Array(ProviderApprovalOption)),
   args: Schema.optional(Schema.Unknown),
-  /**
-   * Owning subagent when a child raised this request. Only the user can answer
-   * it, so the prompt still surfaces on the thread; the stamp is what lets the
-   * request also appear in that agent's transcript instead of only the
-   * parent's work log, and what attributes the wait to the child — without it
-   * every approval reads as the main agent being blocked.
-   */
-  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
 
@@ -580,8 +533,6 @@ const RequestResolvedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
   decision: Schema.optional(TrimmedNonEmptyStringSchema),
   resolution: Schema.optional(Schema.Unknown),
-  /** Owning subagent, mirroring the request that opened. */
-  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type RequestResolvedPayload = typeof RequestResolvedPayload.Type;
 
@@ -606,19 +557,12 @@ export type UserInputQuestion = typeof UserInputQuestion.Type;
 
 export const UserInputRequestedPayload = Schema.Struct({
   questions: Schema.Array(UserInputQuestion),
-  /** Owning subagent when a child asked the question; routed and attributed as above. */
-  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
   responseMode: Schema.optional(Schema.Literal("message")),
-  delivery: Schema.optional(Schema.Literal("agent")),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
 const UserInputResolvedPayload = Schema.Struct({
   answers: UnknownRecordSchema,
-  cancelled: Schema.optional(Schema.Boolean),
-  reason: Schema.optional(TrimmedNonEmptyStringSchema),
-  /** Owning subagent, mirroring the question that was asked. */
-  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
@@ -665,17 +609,6 @@ export const MONITOR_TASK_TYPES: ReadonlySet<string> = new Set([
   "monitor_mcp",
   "local_bash",
   "shell",
-  // The installed Claude CLI's own background-work set is
-  // {local_bash, monitor_mcp, monitor_ws, mcp_task} (its `isBackgroundish`
-  // predicate, verified in the shipped binary). `monitor_ws` (websocket watch
-  // loop), `mcp_task` (a backgrounded MCP tool call, whose description is
-  // `server/tool`) and `auto_mode_scan` were missing here, so all three fell
-  // through classifyTaskAgentKind's agent default and landed a watch loop in
-  // the subagent roster. `monitor`/`shell` are kept for other providers and
-  // for rows already persisted under those names.
-  "monitor_ws",
-  "mcp_task",
-  "auto_mode_scan",
 ]);
 /** Task types that are neither agents nor watch loops (plan-mode bookkeeping). */
 export const INERT_TASK_TYPES: ReadonlySet<string> = new Set(["plan", "dream"]);
@@ -709,11 +642,6 @@ export function classifyTaskAgentKind(input: {
  * All fields optional: old emitters and old rows decode unchanged.
  */
 const taskAgentLinkageFields = {
-  executionOwner: Schema.optional(Schema.Literal("cross-provider")),
-  /** Verified selected-execution stop capability, supplied by the bridge. */
-  canStop: Schema.optional(Schema.Boolean),
-  /** Whether this still-live execution can accept an explicit user resume. */
-  canResume: Schema.optional(Schema.Boolean),
   /** SDK task_type (subagent/shell/monitor/local_workflow/…), repeated on
    * every row so folds can classify without the start row. */
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -730,32 +658,11 @@ const taskAgentLinkageFields = {
    */
   agentId: Schema.optional(TrimmedNonEmptyStringSchema),
   title: Schema.optional(TrimmedNonEmptyStringSchema),
-  /**
-   * Shell command line for a background shell, read from the launching tool
-   * call's own input. The provider's `description` for such a task is a
-   * humanized summary; the command is what the reader actually needs to
-   * identify which of five `pnpm test` shells this row is.
-   */
-  command: Schema.optional(TrimmedNonEmptyStringSchema),
-  /** MCP server behind a monitor / backgrounded MCP task. */
-  server: Schema.optional(TrimmedNonEmptyStringSchema),
-  /** MCP tool behind a monitor / backgrounded MCP task. */
-  tool: Schema.optional(TrimmedNonEmptyStringSchema),
   role: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Reasoning effort when known (e.g. "high"). Open string: provider vocabularies differ. */
   effort: Schema.optional(TrimmedNonEmptyStringSchema),
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
-  /**
-   * SDK `skip_transcript`: ambient housekeeping the provider asks clients to
-   * hide from the inline transcript while noting it "may still appear in a
-   * tasks panel". Rides the linkage bundle so every row is self-describing.
-   */
-  skipTranscript: Schema.optional(Schema.Boolean),
-  /** Exact parent instruction when the provider exposes it for this agent. */
-  prompt: Schema.optional(TrimmedNonEmptyStringSchema),
-  /** Stable provider item id for deduplicating mirrored prompt events. */
-  promptId: Schema.optional(TrimmedNonEmptyStringSchema),
   parentAgentId: Schema.optional(TrimmedNonEmptyStringSchema),
   workflowName: Schema.optional(TrimmedNonEmptyStringSchema),
   agentIndex: Schema.optional(NonNegativeInt),
@@ -767,12 +674,6 @@ const taskAgentLinkageFields = {
   outputFile: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Codex agent hierarchy path, e.g. "/root/marlow". */
   agentPath: Schema.optional(TrimmedNonEmptyStringSchema),
-  /**
-   * Provider-assigned nickname (Codex children). An address, not a name: the
-   * parent can send follow-ups `to` it, so clients keep it as an alias, but
-   * it says nothing about the work and never labels the roster.
-   */
-  nickname: Schema.optional(TrimmedNonEmptyStringSchema),
   /**
    * Set on provider-synthesized child-agent events (Codex) whose activity
    * belongs in the Agents surface, never the parent timeline.
@@ -786,14 +687,6 @@ export type TaskAgentLinkage = typeof TaskAgentLinkage.Type;
 const TaskStartedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
-  /**
-   * Whether the task was registered in the background rather than with the
-   * spawning tool call blocking on it. Set at START for local_agent and
-   * local_bash tasks, and a resumed subagent is ALWAYS registered
-   * backgrounded — those never receive a later task_updated patch, so
-   * reading detachment only from the patch missed the common case entirely.
-   */
-  isBackgrounded: Schema.optional(Schema.Boolean),
   ...taskAgentLinkageFields,
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
@@ -836,12 +729,6 @@ const TaskUpdatedPayload = Schema.Struct({
   error: Schema.optional(TrimmedNonEmptyStringSchema),
   endedAt: Schema.optional(IsoDateTime),
   isBackgrounded: Schema.optional(Schema.Boolean),
-  /**
-   * Why a `waiting` task is waiting, when the provider distinguishes it
-   * (Codex's activeFlags). Absent means "waiting, reason unknown" — which is
-   * all Claude's task_updated patch can say.
-   */
-  waitReason: Schema.optional(Schema.Literals(["approval", "user-input"])),
   ...taskAgentLinkageFields,
 });
 export type TaskUpdatedPayload = typeof TaskUpdatedPayload.Type;
@@ -980,14 +867,12 @@ export type ToolDeniedPayload = typeof ToolDeniedPayload.Type;
 
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
-  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
   detail: Schema.optional(Schema.Unknown),
 });
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
 
 const RuntimeErrorPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
-  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
   class: Schema.optional(RuntimeErrorClass),
   detail: Schema.optional(Schema.Unknown),
 });

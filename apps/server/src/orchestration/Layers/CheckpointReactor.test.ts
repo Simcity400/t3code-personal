@@ -137,9 +137,9 @@ function createProviderServiceHarness(
         },
       }),
     rollbackConversation,
+    setCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
+    clearCodexGoal: () => Effect.die("Goal mutation is not stubbed in this test"),
     uploadFeedback: () => unsupported(),
-    setCodexGoal: () => unsupported(),
-    clearCodexGoal: () => unsupported(),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
     },
@@ -263,6 +263,71 @@ async function waitForGitRefExists(cwd: string, ref: string, timeoutMs = 15_000)
 }
 
 describe("CheckpointReactor", () => {
+  for (const hasParent of [false, true]) {
+    effectIt.effect(`excludes child output from checkpoint selection (parent: ${hasParent})`, () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({ seedFilesystemCheckpoints: false }),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const turnId = asTurnId("turn-child-checkpoint");
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("session-child-checkpoint"),
+          threadId,
+          createdAt,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+        });
+        harness.provider.emit({
+          type: "turn.started",
+          eventId: EventId.make("start-child-checkpoint"),
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          turnId,
+          createdAt,
+        });
+        expect(yield* harness.nextReceipt).toMatchObject({ type: "checkpoint.baseline.captured" });
+        for (const owner of hasParent ? ["parent", "child"] : ["child"]) {
+          yield* harness.engine.dispatch({
+            type: "thread.message.assistant.delta",
+            commandId: CommandId.make(`delta-${owner}`),
+            threadId,
+            turnId,
+            messageId: MessageId.make(`message-${owner}`),
+            delta: `${owner} output`,
+            createdAt,
+            ...(owner === "child" ? { agentId: "child-agent" } : {}),
+          });
+        }
+        harness.provider.emit({
+          type: "turn.completed",
+          eventId: EventId.make("complete-child-checkpoint"),
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          turnId,
+          createdAt,
+          payload: { state: "interrupted" },
+        });
+        expect(yield* harness.nextReceipt).toMatchObject({ type: "checkpoint.diff.finalized" });
+        yield* Effect.promise(harness.drain);
+        const thread = (yield* Effect.promise(harness.readModel)).threads.find(
+          (entry) => entry.id === threadId,
+        );
+        expect(thread?.checkpoints[0]?.assistantMessageId).toBe(
+          hasParent ? "message-parent" : `assistant:${turnId}`,
+        );
+      }),
+    );
+  }
   let runtime: ManagedRuntime.ManagedRuntime<
     | OrchestrationEngineService
     | CheckpointReactor

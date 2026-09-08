@@ -1,5 +1,4 @@
 import * as React from "react";
-import { isListedThread } from "@t3tools/client-runtime/state/threads";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import {
   isAtomCommandInterrupted,
@@ -1073,11 +1072,7 @@ export function resolveProjectStatusIndicator(
 }
 
 export function getFallbackThreadIdAfterDelete<
-  T extends Pick<
-    Thread,
-    "id" | "projectId" | "createdAt" | "updatedAt" | "forkedFromThreadId" | "sideChatPromotedAt"
-  > &
-    ThreadSortInput,
+  T extends Pick<Thread, "id" | "projectId" | "createdAt" | "updatedAt"> & ThreadSortInput,
 >(input: {
   threads: readonly T[];
   deletedThreadId: T["id"];
@@ -1096,8 +1091,7 @@ export function getFallbackThreadIdAfterDelete<
         (thread) =>
           thread.projectId === deletedThread.projectId &&
           thread.id !== deletedThreadId &&
-          !deletedThreadIds?.has(thread.id) &&
-          isListedThread(thread),
+          !deletedThreadIds?.has(thread.id),
       ),
       sortOrder,
     )[0]?.id ?? null

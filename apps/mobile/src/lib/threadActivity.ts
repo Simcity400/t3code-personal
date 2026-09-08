@@ -2,17 +2,8 @@ import {
   requestKindFromRequestType,
   type PendingApproval,
 } from "@t3tools/client-runtime/pending-requests";
-import {
-  deriveSubagentReplies,
-  formatSubagentTitle,
-  selectSubagentRepliesFor,
-  selectSubagentTranscriptActivities,
-  selectSubagentTranscriptMessages,
-  deriveSubagentTranscriptContent,
-  isSubagentTranscriptContentActivity,
-  type SubagentTranscriptContent,
-} from "@t3tools/client-runtime/state/subagentRuntime";
-import { isToolLifecycleItemType, MessageId } from "@t3tools/contracts";
+import { isToolLifecycleItemType } from "@t3tools/contracts";
+import { isAgentMessage } from "@t3tools/client-runtime/state/agent-transcripts";
 import type {
   OrchestrationLatestTurn,
   OrchestrationThread,
@@ -138,23 +129,10 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
 
 type RawThreadFeedEntry =
   | {
-      readonly type: "transcript-content";
-      readonly id: string;
-      readonly createdAt: string;
-      readonly turnId: TurnId | null;
-      readonly content: SubagentTranscriptContent;
-    }
-  | {
       readonly type: "message";
       readonly id: string;
       readonly createdAt: string;
       readonly message: OrchestrationThread["messages"][number];
-      /**
-       * Set when this message is a report a subagent sent BACK to the
-       * conversation being read. The row renders a "From <agent>" header so
-       * the reader can tell the agent's words from the main agent's.
-       */
-      readonly fromAgentLabel?: string;
     }
   | {
       readonly type: "activity";
@@ -165,7 +143,6 @@ type RawThreadFeedEntry =
     };
 
 export type ThreadFeedEntry =
-  | Extract<RawThreadFeedEntry, { type: "transcript-content" }>
   | Extract<RawThreadFeedEntry, { type: "message" }>
   | {
       readonly type: "activity-group";
@@ -364,12 +341,12 @@ function isTerminalTaskUpdate(activity: OrchestrationThreadActivity): boolean {
 
 /**
  * Quiet-timeline guarantee (mirrors web's session-logic): agent-internal
- * activity lives in the Agents screen, not the work log. Agent lifecycle rows
+ * activity lives in the Agents sheet, not the work log. Agent lifecycle rows
  * pass even when bypassed or owned by another agent, because they fold into
- * their spawn batch rather than rendering on their own (mirroring web's
- * session-logic); that is how Codex children (all bypassed) and Claude
- * workflow members reach the batch row. The Agents screen keeps the full
- * transcript, so nothing an agent did is lost by folding.
+ * their spawn batch rather than rendering on their own; that is how Codex
+ * children (all bypassed) and Claude workflow members reach the batch row.
+ * Terminal rows are kept regardless — with no Agents surface on mobile they
+ * are the terminal signal.
  */
 function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
   const payload =
@@ -378,15 +355,6 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
       : null;
   if (!payload) {
     return false;
-  }
-  // SDK `skip_transcript`: the provider explicitly asks clients to keep this
-  // ambient task out of the inline transcript, noting it "may still appear in
-  // a tasks panel". It now has one — the Agents surface's Tasks section — so
-  // honoring the flag hides nothing the user cannot still find. Scoped to
-  // task rows: only those have a home in that panel, and an unrelated row
-  // that happened to carry the field would otherwise vanish entirely.
-  if (payload.skipTranscript === true && activity.kind.startsWith("task.")) {
-    return true;
   }
   const isTaskRow =
     activity.kind === "task.started" ||
@@ -433,18 +401,9 @@ function deriveWorkLogEntries(
     // rewritten with a new createdAt on every update (and would otherwise
     // make the batch row a "fresh" row again on each tick).
     if (activity.kind === "task.started" && !isAgentTaskStartedActivity(activity)) continue;
-    // Terminal bypassed updates reach classification, which re-homes them to
-    // the Agents screen.
     if (activity.kind === "task.updated" && !isTerminalTaskUpdate(activity)) continue;
-    if (
-      activity.kind === "tool.progress" ||
-      activity.kind === "task.state" ||
-      activity.kind.startsWith("task.stop.")
-    )
-      continue;
+    if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
-    // Panel state, not a log entry — see the web work log for the reasoning.
-    if (activity.kind === "session.compacting") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isNoContentRuntimeWarning(activity)) continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
@@ -1652,7 +1611,7 @@ function deriveThreadFeedTurnFolds(
     const turnId =
       entry.type === "message" && entry.message.role === "assistant"
         ? entry.message.turnId
-        : entry.type === "activity-group" || entry.type === "transcript-content"
+        : entry.type === "activity-group"
           ? entry.turnId
           : null;
     if (!turnId) {
@@ -2197,94 +2156,34 @@ export function buildThreadFeed(
   options?: {
     readonly loadedMessages?: ReadonlyArray<OrchestrationThread["messages"][number]>;
     readonly localMessages?: ReadonlyArray<OrchestrationThread["messages"][number]>;
-    readonly agentId?: string;
   },
 ): ThreadFeedEntry[] {
-  // Agent-attributed assistant messages render in the Agents surface. Keeping
-  // them out of the parent feed mirrors web and prevents child narration from
-  // being interleaved with the main conversation on older mobile clients.
-  const transcriptAgentId = options?.agentId;
-  const sourceMessages = options?.loadedMessages ?? thread.messages;
-  const loadedMessages =
-    transcriptAgentId === undefined
-      ? sourceMessages.filter((message) => message.agentId === undefined)
-      : selectSubagentTranscriptMessages(sourceMessages, thread.activities, transcriptAgentId);
+  const loadedMessages = options?.loadedMessages ?? thread.messages;
   const messages = options?.localMessages
     ? [...loadedMessages, ...options.localMessages]
     : loadedMessages;
-  // Reports this conversation RECEIVED from its subagents. Same persisted rows
-  // as web, so both clients show the same exchange.
-  const subagentReplies = selectSubagentRepliesFor(
-    getSubagentReplies(thread.activities),
-    transcriptAgentId ?? null,
-  );
   const oldestLoadedMessageCreatedAt =
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
-  const scopedActivities =
-    transcriptAgentId === undefined
-      ? thread.activities
-      : selectSubagentTranscriptActivities(thread.activities, transcriptAgentId);
-  const content =
-    transcriptAgentId === undefined ? [] : deriveSubagentTranscriptContent(scopedActivities);
-  // The parent thread hands its activities array through untouched so the
-  // per-array entry cache keeps hitting; a subagent transcript is a filtered
-  // copy and rebuilds its rows per call.
-  const activityEntries = getThreadFeedActivityEntries(
-    transcriptAgentId === undefined
-      ? scopedActivities
-      : scopedActivities.filter((activity) => !isSubagentTranscriptContentActivity(activity)),
-  );
+  const activityEntries = getThreadFeedActivityEntries(thread.activities);
   const entries = Arr.sortWith(
     [
-      ...content.map<RawThreadFeedEntry>((block) => ({
-        type: "transcript-content",
-        id: block.id,
-        createdAt: block.createdAt,
-        turnId: block.turnId,
-        content: block,
-      })),
-      ...messages.map((message) => {
-        let entry = messageEntriesCache.get(message);
-        if (!entry) {
-          entry = { type: "message", id: message.id, createdAt: message.createdAt, message };
-          messageEntriesCache.set(message, entry);
-        }
-        return entry;
-      }),
-      ...subagentReplies.map<RawThreadFeedEntry>((reply) => ({
-        type: "message",
-        id: reply.id,
-        createdAt: reply.createdAt,
-        fromAgentLabel: formatSubagentTitle(reply.agentTitle ?? reply.agentId),
-        message: {
-          id: MessageId.make(reply.id),
-          role: "assistant" as const,
-          text: reply.text,
-          agentId: reply.agentId,
-          turnId: reply.turnId,
-          streaming: false,
-          createdAt: reply.createdAt,
-          updatedAt: reply.createdAt,
-        },
-      })),
+      ...messages
+        .filter((message) => !isAgentMessage(message))
+        .map((message) => {
+          let entry = messageEntriesCache.get(message);
+          if (!entry) {
+            entry = { type: "message", id: message.id, createdAt: message.createdAt, message };
+            messageEntriesCache.set(message, entry);
+          }
+          return entry;
+        }),
       ...activityEntries.filter(
         (entry) =>
           oldestLoadedMessageCreatedAt === null || entry.createdAt >= oldestLoadedMessageCreatedAt,
       ),
     ],
-    (entry) => entry,
-    Order.combine(
-      Order.mapInput(Order.Date, (entry: RawThreadFeedEntry) => new Date(entry.createdAt)),
-      Order.mapInput(Order.Number, (entry: RawThreadFeedEntry) =>
-        transcriptAgentId === undefined
-          ? 0
-          : entry.type === "message"
-            ? entry.message.role === "user"
-              ? 0
-              : 2
-            : 1,
-      ),
-    ),
+    (s) => new Date(s.createdAt),
+    Order.Date,
   );
 
   return groupAdjacentActivities(entries);
@@ -2296,23 +2195,6 @@ function getThreadFeedActivityEntries(activities: ReadonlyArray<OrchestrationThr
   const entries = deriveWorkLogEntries(activities).map(toThreadFeedActivityEntry);
   activityEntriesCache.set(activities, entries);
   return entries;
-}
-
-// Keyed by the activities array like the work-log entries above: the
-// derivation walks the whole array three times, and the feed rebuilds on
-// every streamed event, so without this a long agent-heavy thread pays that
-// scan per delta on the phone.
-const subagentRepliesCache = new WeakMap<
-  ReadonlyArray<OrchestrationThreadActivity>,
-  ReturnType<typeof deriveSubagentReplies>
->();
-
-function getSubagentReplies(activities: ReadonlyArray<OrchestrationThreadActivity>) {
-  const cached = subagentRepliesCache.get(activities);
-  if (cached) return cached;
-  const replies = deriveSubagentReplies(activities);
-  subagentRepliesCache.set(activities, replies);
-  return replies;
 }
 
 function toThreadFeedActivityEntry(

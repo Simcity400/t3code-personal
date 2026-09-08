@@ -47,11 +47,7 @@ import {
   probeCodexSkillsForCwd,
   withCodexAppServerClient,
 } from "../Layers/CodexProvider.ts";
-import {
-  resolveCodexLaunchArgs,
-  withCodexAccountLaunchArgs,
-  T3CODE_CODEX_LAUNCH_ARGS_ENV,
-} from "../Layers/codexLaunchArgs.ts";
+import { resolveCodexLaunchArgs } from "../Layers/codexLaunchArgs.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import * as ModelManifest from "../ModelManifest.ts";
@@ -72,7 +68,6 @@ import {
 } from "../providerUpdateSettings.ts";
 import {
   codexContinuationIdentity,
-  codexModelCatalogHomePath,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
@@ -139,19 +134,8 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
       const modelManifest = yield* ModelManifest.ModelManifest;
-      const configuredEnvironment = mergeProviderInstanceEnvironment(environment);
-      const homeLayout = yield* resolveCodexHomeLayout(config, configuredEnvironment);
-      const launchArgs =
-        homeLayout.mode === "authOverlay"
-          ? withCodexAccountLaunchArgs(
-              resolveCodexLaunchArgs(config.launchArgs, configuredEnvironment),
-              homeLayout.sharedHomePath,
-            )
-          : config.launchArgs;
-      const processEnv =
-        homeLayout.mode === "authOverlay"
-          ? { ...configuredEnvironment, [T3CODE_CODEX_LAUNCH_ARGS_ENV]: launchArgs }
-          : configuredEnvironment;
+      const processEnv = mergeProviderInstanceEnvironment(environment);
+      const homeLayout = yield* resolveCodexHomeLayout(config);
       const continuationIdentity = codexContinuationIdentity(homeLayout);
       const stampIdentity = withInstanceIdentity({
         instanceId,
@@ -159,7 +143,6 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         displayName,
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
-        conversationHomePath: homeLayout.sharedHomePath,
       });
       yield* materializeCodexShadowHome(homeLayout).pipe(
         Effect.mapError(
@@ -177,7 +160,6 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         enabled,
         binaryPath: expandHomePath(config.binaryPath),
         homePath: homeLayout.effectiveHomePath ?? "",
-        launchArgs,
       } satisfies CodexSettings;
       const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
         resolveProviderMaintenanceCapabilitiesEffect(
@@ -202,10 +184,6 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const adapter = yield* makeCodexAdapter(effectiveConfig, {
         instanceId,
         environment: processEnv,
-        plaintextCollabCatalog: {
-          modelCatalogHomePath: codexModelCatalogHomePath(homeLayout),
-          instanceId,
-        },
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
       const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnv);

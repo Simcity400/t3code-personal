@@ -7,10 +7,7 @@ useDefault = true
 [[allowlists]]
 description = "Shipped Clerk publishable keys and public OAuth client ID"
 targetRules = ["generic-api-key"]
-regexes = [
-  '''^pk_(live|test)_[A-Za-z0-9=]+$''',
-  '''^hzxSgY2cH10sDU2r$''',
-]
+regexes = ['''^pk_(live|test)_[A-Za-z0-9=]+$''', '''^hzxSgY2cH10sDU2r$''']
 
 [[allowlists]]
 description = "Pairing token alphabet, not a generated pairing token"

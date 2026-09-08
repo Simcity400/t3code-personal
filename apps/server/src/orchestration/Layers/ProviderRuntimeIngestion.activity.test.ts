@@ -16,60 +16,6 @@ const base = {
 };
 
 describe("runtimeEventToActivities task progress", () => {
-  it("keeps bridge question delivery and cancellation semantics", () => {
-    const requested = runtimeEventToActivities({
-      ...base,
-      bridgeAgentId: "bridge",
-      eventId: EventId.make("question"),
-      type: "user-input.requested",
-      payload: {
-        questions: [],
-        responseMode: "message",
-        delivery: "agent",
-        agentId: "bridge:native",
-      },
-    });
-    expect(requested[0]?.payload).toMatchObject({
-      delivery: "agent",
-      agentId: "bridge:native",
-      bridgeAgentId: "bridge",
-    });
-    const cancelled = runtimeEventToActivities({
-      ...base,
-      bridgeAgentId: "bridge",
-      eventId: EventId.make("cancel"),
-      type: "user-input.resolved",
-      payload: { answers: {}, cancelled: true, reason: "Session closed", agentId: "bridge:native" },
-    });
-    expect(cancelled[0]?.summary).toBe("User input cancelled");
-    expect(cancelled[0]?.payload).toMatchObject({
-      cancelled: true,
-      reason: "Session closed",
-      agentId: "bridge:native",
-    });
-  });
-
-  it("marks remapped native task ownership without replacing native identity", () => {
-    const activities = runtimeEventToActivities({
-      ...base,
-      bridgeAgentId: "bridge",
-      eventId: EventId.make("native"),
-      type: "task.updated",
-      payload: {
-        taskId: RuntimeTaskId.make("bridge:native"),
-        taskType: "subagent",
-        parentAgentId: "bridge",
-        status: "running",
-        canStop: true,
-      },
-    });
-    expect(activities[0]?.payload).toMatchObject({
-      taskId: "bridge:native",
-      executionOwner: "cross-provider",
-      parentAgentId: "bridge",
-      canStop: true,
-    });
-  });
   it("persists usage independently from replaceable activity", () => {
     const taskId = RuntimeTaskId.make("agent-1");
     const usageOnly = {
@@ -194,63 +140,5 @@ describe("runtimeEventToActivities tool streaming persistence", () => {
     expect(activities).toHaveLength(1);
     const payload = activities[0]?.payload as Record<string, unknown>;
     expect(payload.data).toEqual(streamingData);
-  });
-});
-
-describe("runtimeEventToActivities task.updated", () => {
-  const updated = (payload: Record<string, unknown>) =>
-    runtimeEventToActivities({
-      ...base,
-      type: "task.updated",
-      eventId: EventId.make("evt-updated"),
-      payload: { taskId: RuntimeTaskId.make("task-1"), ...payload },
-    } as ProviderRuntimeEvent)[0]?.payload as Record<string, unknown>;
-
-  it("persists the status patch so transitions survive a reload", () => {
-    // Guards the linkage bundle: the client folds read payload.status on
-    // task.updated, so dropping it would discard every killed/paused
-    // transition. Covered by taskLinkageActivityFields, not a local copy.
-    expect(updated({ status: "cancelled" }).status).toBe("cancelled");
-    expect(updated({ status: "idle" }).status).toBe("idle");
-  });
-
-  it("persists the provider wait reason alongside the status", () => {
-    const payload = updated({ status: "waiting", waitReason: "approval", error: "boom" });
-    expect(payload.waitReason).toBe("approval");
-    expect(payload.error).toBe("boom");
-  });
-
-  it("omits absent optional fields", () => {
-    const payload = updated({ description: "still going" });
-    expect("status" in payload).toBe(false);
-    expect("waitReason" in payload).toBe(false);
-    expect("error" in payload).toBe(false);
-    expect(payload.detail).toBe("still going");
-  });
-
-  it("carries skipTranscript through the linkage bundle", () => {
-    expect(updated({ status: "running", skipTranscript: true }).skipTranscript).toBe(true);
-    expect(updated({ taskType: "local_bash" }).agentKind).toBe("background");
-  });
-});
-
-describe("runtimeEventToActivities task.started", () => {
-  const started = (payload: Record<string, unknown>) =>
-    runtimeEventToActivities({
-      ...base,
-      type: "task.started",
-      eventId: EventId.make("evt-started"),
-      payload: { taskId: RuntimeTaskId.make("task-1"), ...payload },
-    } as ProviderRuntimeEvent)[0]?.payload as Record<string, unknown>;
-
-  it("persists detachment reported at start", () => {
-    // Backgrounded shells/agents and resumed subagents never send a later
-    // task_updated patch, so the start row is the only place it is reported.
-    expect(started({ taskType: "local_bash", isBackgrounded: true }).isBackgrounded).toBe(true);
-    expect(started({ taskType: "local_bash", isBackgrounded: false }).isBackgrounded).toBe(false);
-  });
-
-  it("omits it when the provider did not say", () => {
-    expect("isBackgrounded" in started({ taskType: "local_bash" })).toBe(false);
   });
 });

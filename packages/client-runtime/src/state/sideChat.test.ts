@@ -1,33 +1,52 @@
-import { ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { relatedChats } from "./sideChat.ts";
 
-import { isListedThread, isSideChatOf, isUnpromotedSideChat } from "./sideChat.ts";
-
-const parent = ThreadId.make("thread-parent");
-const other = ThreadId.make("thread-other");
-
-describe("side chat predicates", () => {
-  it("treats a fork without a promotion stamp as an attached side chat", () => {
-    const sideChat = { id: ThreadId.make("side"), forkedFromThreadId: parent };
-    expect(isUnpromotedSideChat(sideChat)).toBe(true);
-    expect(isListedThread(sideChat)).toBe(false);
-    expect(isSideChatOf(sideChat, parent)).toBe(true);
-    expect(isSideChatOf(sideChat, other)).toBe(false);
+const chat = (id: string, parent?: string, environment = "local") => ({
+  id: ThreadId.make(id),
+  environmentId: EnvironmentId.make(environment),
+  projectId: ProjectId.make("project"),
+  createdAt: "2026-09-08T00:00:00.000Z",
+  ...(parent ? { forkedFromThreadId: ThreadId.make(parent) } : {}),
+});
+describe("related chat navigation", () => {
+  it("keeps the parent, children and siblings reachable from a nested chat", () => {
+    const current = chat("child", "parent");
+    expect(
+      relatedChats(current, [
+        chat("sibling", "parent"),
+        chat("grandchild", "child"),
+        current,
+        chat("parent"),
+        chat("unrelated"),
+      ]).map(({ thread, relation }) => [thread.id, relation]),
+    ).toEqual([
+      ["parent", "Original thread"],
+      ["grandchild", "Side chat"],
+      ["sibling", "Related side chat"],
+    ]);
   });
-
-  it("lists a promoted side chat like any other thread", () => {
-    const promoted = {
-      id: ThreadId.make("side"),
-      forkedFromThreadId: parent,
-      sideChatPromotedAt: "2026-01-01T00:00:00.000Z",
+  it("never crosses environments or projects with matching identifiers", () => {
+    expect(
+      relatedChats(chat("parent"), [
+        chat("child", "parent", "remote"),
+        { ...chat("other", "parent"), projectId: ProjectId.make("other-project") },
+      ]),
+    ).toEqual([]);
+  });
+  it("keeps children reachable after the original parent disappears", () => {
+    expect(
+      relatedChats(chat("child", "deleted"), [chat("grandchild", "child")]).map(
+        ({ thread }) => thread.id,
+      ),
+    ).toEqual(["grandchild"]);
+  });
+  it("keeps long titles intact and sorts recent chats first", () => {
+    const newer = {
+      ...chat("new", "parent"),
+      title: "Long title ".repeat(100),
+      createdAt: "2026-09-09T00:00:00.000Z",
     };
-    expect(isUnpromotedSideChat(promoted)).toBe(false);
-    expect(isListedThread(promoted)).toBe(true);
-    expect(isSideChatOf(promoted, parent)).toBe(false);
-  });
-
-  it("lists threads that were never forked", () => {
-    expect(isListedThread({})).toBe(true);
-    expect(isListedThread({ forkedFromThreadId: null })).toBe(true);
+    expect(relatedChats(chat("parent"), [chat("old", "parent"), newer])[0]?.thread).toBe(newer);
   });
 });

@@ -208,8 +208,6 @@ describe("ProviderSessionReaper", () => {
       Layer.provideMerge(
         Layer.succeed(ProjectionSnapshotQuery, {
           getUserInputActivity: () => Effect.die("unused"),
-          getTaskState: () => Effect.die("unused"),
-          getCrossProviderRecovery: () => Effect.succeed({ tasks: [], requests: [] }),
           getCommandReadModel: () => Effect.die("unused"),
           getSnapshot: () => Effect.die("unused"),
           getShellSnapshot: () => Effect.die("unused"),
@@ -244,68 +242,52 @@ describe("ProviderSessionReaper", () => {
     return { stopSession, stoppedThreadIds };
   }
 
-  it.each(["running", "waiting"] as const)(
-    "skips stale %s recovery rows and reaps ordinary idle sessions",
-    async (childStatus) => {
-      const threadId = ThreadId.make("thread-reaper-stale");
-      const now = "2026-01-01T00:00:00.000Z";
-      const harness = await createHarness({
-        readModel: makeReadModel([
-          {
-            id: threadId,
-            session: {
-              threadId,
-              status: "ready",
-              providerName: "claudeAgent",
-              runtimeMode: "full-access",
-              activeTurnId: null,
-              lastError: null,
-              updatedAt: now,
-            },
-          },
-        ]),
-      });
-      const repository = await runtime!.runPromise(
-        Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
-      );
-
-      await runtime!.runPromise(
-        Effect.forEach(
-          [
-            ThreadId.make("cross-provider-session:stable"),
-            ThreadId.make("cross-provider-session:stable:rotated"),
+  it("reaps stale persisted sessions without active turns", async () => {
+    const threadId = ThreadId.make("thread-reaper-stale");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
             threadId,
-          ],
-          (persistedId) =>
-            repository.upsert({
-              threadId: persistedId,
-              providerName: "claudeAgent",
-              providerInstanceId: null,
-              adapterKey: "claudeAgent",
-              runtimeMode: "full-access",
-              status: "running",
-              lastSeenAt: "2026-04-14T00:00:00.000Z",
-              resumeCursor: {
-                opaque: "resume-stale",
-              },
-              runtimePayload:
-                persistedId === threadId
-                  ? null
-                  : {
-                      crossProviderRecovery: { id: "stable", status: childStatus },
-                    },
-            }),
-        ),
-      );
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
 
-      await startReaper();
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: {
+          opaque: "resume-stale",
+        },
+        runtimePayload: null,
+      }),
+    );
 
-      await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    await startReaper();
 
-      expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
-      expect(harness.stoppedThreadIds.has(threadId)).toBe(true);
-    },
-  );
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+
+    expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
+    expect(harness.stoppedThreadIds.has(threadId)).toBe(true);
+  });
 
   it("skips stale sessions when the thread still has an active turn", async () => {
     const threadId = ThreadId.make("thread-reaper-active-turn");

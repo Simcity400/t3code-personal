@@ -1,4 +1,4 @@
-﻿import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import type { DownloadExecutorTask } from "electron-updater/out/AppUpdater.js";

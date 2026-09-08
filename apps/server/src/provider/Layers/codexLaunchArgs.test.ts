@@ -6,29 +6,7 @@ import {
   codexAppServerArgs,
   codexExecLaunchArgs,
   resolveCodexLaunchArgs,
-  withCodexModelCatalogLaunchArgs,
-  withCodexAccountLaunchArgs,
 } from "./codexLaunchArgs.ts";
-
-describe("withCodexAccountLaunchArgs", () => {
-  it("keeps a shadow account's credentials private and shares the same database for sessions and helpers", () => {
-    const sharedHome = "C:\\Users\\Jane Doe\\.codex";
-    const configured = "--enable feature --config cli_auth_credentials_store=keyring";
-    const launchArgs = withCodexAccountLaunchArgs(configured, sharedHome);
-    const expected = [
-      "--enable",
-      "feature",
-      "--config",
-      "cli_auth_credentials_store=keyring",
-      "--config",
-      "cli_auth_credentials_store=file",
-      "--config",
-      `sqlite_home=${sharedHome}`,
-    ];
-    NodeAssert.deepEqual(codexAppServerArgs(launchArgs), ["app-server", ...expected]);
-    NodeAssert.deepEqual(codexExecLaunchArgs(launchArgs), expected);
-  });
-});
 
 describe("resolveCodexLaunchArgs", () => {
   it("uses T3CODE_CODEX_LAUNCH_ARGS before configured settings", () => {
@@ -62,40 +40,6 @@ describe("codexAppServerArgs", () => {
       "--enable",
       "foo",
     ]);
-  });
-});
-
-describe("withCodexModelCatalogLaunchArgs", () => {
-  it("adds a quoted model catalog override that survives tokenization", () => {
-    const launchArgs = withCodexModelCatalogLaunchArgs(
-      "--strict-config",
-      "C:\\T3 Code\\codex-models.json",
-    );
-
-    NodeAssert.deepStrictEqual(codexAppServerArgs(launchArgs), [
-      "app-server",
-      "--strict-config",
-      "--config",
-      "model_catalog_json=C:\\T3 Code\\codex-models.json",
-    ]);
-  });
-
-  it("preserves an explicit user model catalog override", () => {
-    NodeAssert.equal(
-      withCodexModelCatalogLaunchArgs(
-        '--config model_catalog_json="C:\\custom\\models.json"',
-        "C:\\t3\\models.json",
-      ),
-      '--config model_catalog_json="C:\\custom\\models.json"',
-    );
-  });
-
-  it("preserves a TOML-valid override with whitespace around the equals sign", () => {
-    const configured = `-c "model_catalog_json = 'C:\\custom models\\models.json'"`;
-    NodeAssert.equal(
-      withCodexModelCatalogLaunchArgs(configured, "C:\\t3\\models.json"),
-      configured,
-    );
   });
 });
 

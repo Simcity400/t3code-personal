@@ -61,13 +61,6 @@ const make = Effect.gen(function* () {
     event: ThreadDeletedEvent,
   ) {
     const { threadId } = event.payload;
-    if (providerService.crossProviderAgents) {
-      yield* logCleanupCauseUnlessInterrupted({
-        effect: providerService.crossProviderAgents.disposeTree(threadId),
-        message: "thread deletion cleanup could not dispose cross-provider agents",
-        threadId,
-      });
-    }
     yield* stopProviderSession(threadId);
     yield* closeThreadTerminals(threadId);
   });

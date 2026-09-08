@@ -26,12 +26,11 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   ModelSelection,
-  ProjectId,
   OrchestrationThreadGoal,
+  ProjectId,
   ThreadLinkedPullRequest,
   ThreadId,
   TrimmedNonEmptyString,
-  TaskState,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -65,7 +64,6 @@ import {
 } from "../threadDetailCursor.ts";
 import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
-import { taskStateActivityId } from "../taskState.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
   ProjectionSnapshotQuery,
@@ -506,11 +504,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
-          forked_from_thread_id AS "forkedFromThreadId",
-          side_chat_promoted_at AS "sideChatPromotedAt",
           linked_pull_request_json AS "linkedPullRequest",
           goal_json AS "goal",
           branch_pull_request_json AS "branchPullRequest",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -549,11 +547,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
-          forked_from_thread_id AS "forkedFromThreadId",
-          side_chat_promoted_at AS "sideChatPromotedAt",
           linked_pull_request_json AS "linkedPullRequest",
           goal_json AS "goal",
           branch_pull_request_json AS "branchPullRequest",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -594,11 +592,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
-          forked_from_thread_id AS "forkedFromThreadId",
-          side_chat_promoted_at AS "sideChatPromotedAt",
           linked_pull_request_json AS "linkedPullRequest",
           goal_json AS "goal",
           branch_pull_request_json AS "branchPullRequest",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1090,11 +1088,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
-          forked_from_thread_id AS "forkedFromThreadId",
-          side_chat_promoted_at AS "sideChatPromotedAt",
           linked_pull_request_json AS "linkedPullRequest",
           goal_json AS "goal",
           branch_pull_request_json AS "branchPullRequest",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1271,30 +1269,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
-  const getTaskStateRow = SqlSchema.findOneOption({
-    Request: Schema.Struct({ threadId: ThreadId, taskId: Schema.String }),
-    Result: Schema.Struct({ state: Schema.fromJsonString(TaskState) }),
-    execute: ({ threadId, taskId }) => sql`
-      SELECT activity.payload_json AS state
-      FROM projection_thread_activities AS activity
-      JOIN projection_threads AS thread ON thread.thread_id = activity.thread_id
-      WHERE activity.activity_id = ${taskStateActivityId(ThreadId.make(threadId), taskId)}
-        AND activity.thread_id = ${threadId}
-        AND activity.kind = 'task.state'
-        AND thread.deleted_at IS NULL
-    `,
-  });
-  const getTaskState: ProjectionSnapshotQueryShape["getTaskState"] = (input) =>
-    getTaskStateRow(input).pipe(
-      Effect.map(Option.map((row) => row.state)),
-      Effect.mapError(
-        toPersistenceSqlOrDecodeError(
-          "ProjectionSnapshotQuery.getTaskState:query",
-          "ProjectionSnapshotQuery.getTaskState:decodeRow",
-        ),
-      ),
-    );
-
   const getUserInputActivityRow = SqlSchema.findOneOption({
     Request: Schema.Struct({ threadId: ThreadId, requestId: ApprovalRequestId }),
     Result: ProjectionThreadActivityDbRowSchema,
@@ -1317,62 +1291,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       LIMIT 1
     `,
   });
-
-  const listCrossProviderTaskRows = SqlSchema.findAll({
-    Request: Schema.Void,
-    Result: Schema.Struct({ threadId: ThreadId, state: Schema.fromJsonString(TaskState) }),
-    execute: () => sql`
-      SELECT activity.thread_id AS "threadId", activity.payload_json AS state
-      FROM projection_thread_activities AS activity
-      JOIN projection_threads AS thread ON thread.thread_id = activity.thread_id
-      WHERE activity.kind = 'task.state'
-        AND json_extract(activity.payload_json, '$.executionOwner') = 'cross-provider'
-        AND thread.deleted_at IS NULL
-    `,
-  });
-  const listCrossProviderRequestRows = SqlSchema.findAll({
-    Request: Schema.Struct({ threadId: ThreadId }),
-    Result: ProjectionThreadActivityDbRowSchema,
-    execute: ({ threadId }) => sql`
-      WITH requests AS (
-        SELECT *, ROW_NUMBER() OVER (
-          PARTITION BY json_extract(payload_json, '$.requestId'),
-            CASE WHEN kind LIKE 'approval.%' THEN 'approval' ELSE 'user-input' END
-          ORDER BY sequence DESC, created_at DESC, activity_id DESC
-        ) AS position
-        FROM projection_thread_activities INDEXED BY idx_projection_bridge_requests
-        WHERE thread_id = ${threadId}
-          AND kind IN ('approval.requested', 'approval.resolved', 'user-input.requested', 'user-input.resolved')
-          AND json_extract(payload_json, '$.bridgeAgentId') IS NOT NULL
-          AND json_extract(payload_json, '$.requestId') IS NOT NULL
-      )
-      SELECT activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
-        tone, kind, summary, payload_json AS payload, sequence, created_at AS "createdAt"
-      FROM requests WHERE position = 1 AND kind IN ('approval.requested', 'user-input.requested')
-    `,
-  });
-  const getCrossProviderRecovery = Effect.fn("ProjectionSnapshotQuery.getCrossProviderRecovery")(
-    function* () {
-      const tasks = yield* listCrossProviderTaskRows(undefined);
-      const requests = yield* Effect.forEach(
-        [...new Set(tasks.map((task) => task.threadId))],
-        (threadId) =>
-          listCrossProviderRequestRows({ threadId }).pipe(
-            Effect.map((rows) =>
-              rows.map((row) => ({ threadId, activity: mapThreadActivityRow(row) })),
-            ),
-          ),
-        { concurrency: 1 },
-      );
-      return { tasks, requests: requests.flat() };
-    },
-    Effect.mapError(
-      toPersistenceSqlOrDecodeError(
-        "ProjectionSnapshotQuery.getCrossProviderRecovery:query",
-        "ProjectionSnapshotQuery.getCrossProviderRecovery:decodeRow",
-      ),
-    ),
-  );
 
   const getUserInputActivity: ProjectionSnapshotQueryShape["getUserInputActivity"] = (input) =>
     getUserInputActivityRow(input).pipe(
@@ -1739,22 +1657,12 @@ pending_approval_requests AS (
           FROM user_input_lifecycle
           WHERE request_order = 1
             AND kind = 'user-input.requested'
-          UNION
-          SELECT activity_id FROM projection_thread_activities
-          WHERE thread_id = ${threadId} AND kind = 'task.state'
         )
   `;
 
-  // Current task records are independent of the paginated work log: one
-  // compact row per task keeps the roster (identity, status, usage) complete
-  // no matter which turns are loaded. No other task-related row is pinned
-  // (blocking approval and user-input requests above have their own pins).
-  // The transcript rows behind a task (its launch prompt, collaboration tool
-  // calls, the child's own user message) stay in the paginated work log and
-  // arrive through "load earlier" like every other row; pinning them shipped the
-  // entire agent history — tens of thousands of rows on agent-heavy threads —
-  // with every windowed snapshot, which blew the first-paint budget mobile
-  // clients depend on and made resumes time out.
+  // Blocking request payloads must remain available even if they predate the
+  // recent activity window. Each CTE returns at most one unresolved row per
+  // request, so the merge below stays bounded by actionable work.
   const listPinnedThreadActivityRowsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadActivityDbRowSchema,
@@ -2186,17 +2094,17 @@ pending_approval_requests AS (
                 interactionMode: row.interactionMode,
                 branch: row.branch,
                 worktreePath: row.worktreePath,
+                branchPullRequest: row.branchPullRequest,
+                ...(row.linkedPullRequest === null
+                  ? {}
+                  : { linkedPullRequest: row.linkedPullRequest }),
+                ...(row.goal === null ? {} : { goal: row.goal }),
                 ...(row.forkedFromThreadId != null
                   ? { forkedFromThreadId: row.forkedFromThreadId }
                   : {}),
                 ...(row.sideChatPromotedAt != null
                   ? { sideChatPromotedAt: row.sideChatPromotedAt }
                   : {}),
-                branchPullRequest: row.branchPullRequest,
-                ...(row.linkedPullRequest === null
-                  ? {}
-                  : { linkedPullRequest: row.linkedPullRequest }),
-                ...(row.goal === null ? {} : { goal: row.goal }),
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -2408,17 +2316,17 @@ pending_approval_requests AS (
                   interactionMode: row.interactionMode,
                   branch: row.branch,
                   worktreePath: row.worktreePath,
+                  branchPullRequest: row.branchPullRequest,
+                  ...(row.linkedPullRequest === null
+                    ? {}
+                    : { linkedPullRequest: row.linkedPullRequest }),
+                  ...(row.goal === null ? {} : { goal: row.goal }),
                   ...(row.forkedFromThreadId != null
                     ? { forkedFromThreadId: row.forkedFromThreadId }
                     : {}),
                   ...(row.sideChatPromotedAt != null
                     ? { sideChatPromotedAt: row.sideChatPromotedAt }
                     : {}),
-                  branchPullRequest: row.branchPullRequest,
-                  ...(row.linkedPullRequest === null
-                    ? {}
-                    : { linkedPullRequest: row.linkedPullRequest }),
-                  ...(row.goal === null ? {} : { goal: row.goal }),
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -2557,16 +2465,16 @@ pending_approval_requests AS (
                       interactionMode: row.interactionMode,
                       branch: row.branch,
                       worktreePath: row.worktreePath,
+                      branchPullRequest: row.branchPullRequest,
+                      ...(row.linkedPullRequest === null
+                        ? {}
+                        : { linkedPullRequest: row.linkedPullRequest }),
                       ...(row.forkedFromThreadId != null
                         ? { forkedFromThreadId: row.forkedFromThreadId }
                         : {}),
                       ...(row.sideChatPromotedAt != null
                         ? { sideChatPromotedAt: row.sideChatPromotedAt }
                         : {}),
-                      branchPullRequest: row.branchPullRequest,
-                      ...(row.linkedPullRequest === null
-                        ? {}
-                        : { linkedPullRequest: row.linkedPullRequest }),
                       latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                       createdAt: row.createdAt,
                       updatedAt: row.updatedAt,
@@ -2588,10 +2496,6 @@ pending_approval_requests AS (
                       backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
                         row.threadId,
                       ),
-                      backgroundWait: threadBackgroundLiveness.getThreadBackgroundWait(
-                        row.threadId,
-                      ),
-                      compactingSince: threadBackgroundLiveness.getCompactingSince(row.threadId),
                       planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
                     } satisfies OrchestrationThreadShell)
                   : Result.failVoid,
@@ -2717,12 +2621,8 @@ pending_approval_requests AS (
                 interactionMode: row.interactionMode,
                 branch: row.branch,
                 worktreePath: row.worktreePath,
-                ...(row.forkedFromThreadId != null
-                  ? { forkedFromThreadId: row.forkedFromThreadId }
-                  : {}),
-                ...(row.sideChatPromotedAt != null
-                  ? { sideChatPromotedAt: row.sideChatPromotedAt }
-                  : {}),
+                forkedFromThreadId: row.forkedFromThreadId,
+                sideChatPromotedAt: row.sideChatPromotedAt,
                 branchPullRequest: row.branchPullRequest,
                 ...(row.linkedPullRequest === null
                   ? {}
@@ -2748,8 +2648,6 @@ pending_approval_requests AS (
                 backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
                   row.threadId,
                 ),
-                backgroundWait: threadBackgroundLiveness.getThreadBackgroundWait(row.threadId),
-                compactingSince: threadBackgroundLiveness.getCompactingSince(row.threadId),
                 planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
               })),
               updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -3048,16 +2946,16 @@ pending_approval_requests AS (
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
+        branchPullRequest: threadRow.value.branchPullRequest,
+        ...(threadRow.value.linkedPullRequest === null
+          ? {}
+          : { linkedPullRequest: threadRow.value.linkedPullRequest }),
         ...(threadRow.value.forkedFromThreadId != null
           ? { forkedFromThreadId: threadRow.value.forkedFromThreadId }
           : {}),
         ...(threadRow.value.sideChatPromotedAt != null
           ? { sideChatPromotedAt: threadRow.value.sideChatPromotedAt }
           : {}),
-        branchPullRequest: threadRow.value.branchPullRequest,
-        ...(threadRow.value.linkedPullRequest === null
-          ? {}
-          : { linkedPullRequest: threadRow.value.linkedPullRequest }),
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
@@ -3079,8 +2977,6 @@ pending_approval_requests AS (
         backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
           threadRow.value.threadId,
         ),
-        backgroundWait: threadBackgroundLiveness.getThreadBackgroundWait(threadRow.value.threadId),
-        compactingSince: threadBackgroundLiveness.getCompactingSince(threadRow.value.threadId),
         planProgress: threadPlanProgress.getThreadPlanProgress(threadRow.value.threadId),
       } satisfies OrchestrationThreadShell);
     });
@@ -3340,17 +3236,17 @@ pending_approval_requests AS (
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
+        branchPullRequest: threadRow.value.branchPullRequest,
+        ...(threadRow.value.linkedPullRequest === null
+          ? {}
+          : { linkedPullRequest: threadRow.value.linkedPullRequest }),
+        ...(threadRow.value.goal === null ? {} : { goal: threadRow.value.goal }),
         ...(threadRow.value.forkedFromThreadId != null
           ? { forkedFromThreadId: threadRow.value.forkedFromThreadId }
           : {}),
         ...(threadRow.value.sideChatPromotedAt != null
           ? { sideChatPromotedAt: threadRow.value.sideChatPromotedAt }
           : {}),
-        branchPullRequest: threadRow.value.branchPullRequest,
-        ...(threadRow.value.linkedPullRequest === null
-          ? {}
-          : { linkedPullRequest: threadRow.value.linkedPullRequest }),
-        ...(threadRow.value.goal === null ? {} : { goal: threadRow.value.goal }),
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
@@ -3561,8 +3457,6 @@ pending_approval_requests AS (
       );
 
   return {
-    getCrossProviderRecovery,
-    getTaskState,
     getCommandReadModel,
     getUserInputActivity,
     getSnapshot,

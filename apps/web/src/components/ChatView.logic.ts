@@ -104,7 +104,7 @@ export function shouldOpenProactivePullRequest(
   previousTargetKey: string | null | undefined,
   targetKey: string | null,
 ): boolean {
-  return previousTargetKey !== undefined && targetKey !== null && targetKey !== previousTargetKey;
+  return targetKey !== null && targetKey !== previousTargetKey;
 }
 
 interface ProactivePanelObservation {
@@ -158,11 +158,11 @@ export function shouldOpenProactiveTurnDiff(input: {
   turnCompleted: boolean;
 }): boolean {
   return (
-    input.previousRunningTurnId !== undefined &&
-    input.previousRunningTurnId !== null &&
     input.runningTurnId === null &&
     input.turnCompleted &&
-    input.settledTurnId === input.previousRunningTurnId
+    input.settledTurnId !== null &&
+    (input.previousRunningTurnId === undefined ||
+      input.settledTurnId === input.previousRunningTurnId)
   );
 }
 
@@ -388,36 +388,14 @@ export function shouldWriteThreadErrorToCurrentServerThread(input: {
   );
 }
 
-export function getLatestRootInterruptFailureId(
-  activities: ReadonlyArray<{ id: string; kind: string; payload: unknown }>,
-): string | null {
-  return (
-    activities.findLast(
-      (activity) =>
-        activity.kind === "provider.turn.interrupt.failed" &&
-        !(
-          typeof activity.payload === "object" &&
-          activity.payload !== null &&
-          "taskId" in activity.payload &&
-          activity.payload.taskId !== undefined
-        ),
-    )?.id ?? null
-  );
-}
-
-export function buildThreadTurnInterruptInput(
-  thread: Pick<Thread, "id" | "session">,
-  scope: "self" | "tree" = "self",
-): {
+export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "session">): {
   threadId: ThreadId;
   turnId?: TurnId;
-  scope: "self" | "tree";
 } {
   const runningTurnId = thread.session?.status === "running" ? thread.session.activeTurnId : null;
   return {
     threadId: thread.id,
-    scope,
-    ...(scope === "self" && runningTurnId !== null ? { turnId: runningTurnId } : {}),
+    ...(runningTurnId !== null ? { turnId: runningTurnId } : {}),
   };
 }
 

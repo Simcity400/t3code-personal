@@ -1,4 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off - The userData profile must be pinned synchronously before the Effect runtime (and Chromium's safeStorage key init) starts.
 for (const stream of [process.stdout, process.stderr]) {
   stream.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code !== "EPIPE") throw err;
@@ -8,9 +7,7 @@ for (const stream of [process.stdout, process.stderr]) {
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -70,38 +67,6 @@ import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "./wsl/DesktopWslServerTree.ts";
-
-// Fork customization: pin the Electron userData profile synchronously, before
-// Chromium initializes the safeStorage encryption key. The regular startup
-// path also sets it (DesktopApp startup → DesktopAppIdentity), but that runs
-// inside the async Effect program and can lose the race against Chromium's
-// key init, leaving from-source runs keyed to the default "Electron" profile.
-// Secrets encrypted under one profile key (e.g. the packaged app's
-// connection catalog) can then never be decrypted by the other. Mirrors the
-// resolution in DesktopEnvironment.ts / DesktopAppIdentity.ts.
-if (!Electron.app.isPackaged) {
-  const trimmedEnv = (name: string): string | undefined => {
-    const value = (process.env[name] ?? "").trim();
-    return value.length > 0 ? value : undefined;
-  };
-  const isDevelopment = trimmedEnv("VITE_DEV_SERVER_URL") !== undefined;
-  // oxlint-disable-next-line t3code/no-global-process-runtime -- This block runs before the Effect runtime exists, by design (see the comment above), so HostProcessPlatform is not available yet.
-  const hostPlatform = process.platform;
-  const appDataDirectory =
-    hostPlatform === "win32"
-      ? (trimmedEnv("APPDATA") ?? NodePath.join(NodeOS.homedir(), "AppData", "Roaming"))
-      : hostPlatform === "darwin"
-        ? NodePath.join(NodeOS.homedir(), "Library", "Application Support")
-        : (trimmedEnv("XDG_CONFIG_HOME") ?? NodePath.join(NodeOS.homedir(), ".config"));
-  const legacyPath = NodePath.join(
-    appDataDirectory,
-    isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)",
-  );
-  const userDataPath = NodeFS.existsSync(legacyPath)
-    ? legacyPath
-    : NodePath.join(appDataDirectory, isDevelopment ? "t3code-dev" : "t3code");
-  Electron.app.setPath("userData", userDataPath);
-}
 
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {
@@ -241,7 +206,7 @@ const desktopApplicationLayer = Layer.mergeAll(
   desktopSshLayer,
 ).pipe(
   Layer.provideMerge(desktopSnapShotLayer),
-  Layer.provideMerge(DesktopUpdates.liveLayer),
+  Layer.provideMerge(DesktopUpdates.layer),
   Layer.provideMerge(desktopWslBackendLayer),
   Layer.provideMerge(desktopLocalEnvironmentAuthLayer),
 );

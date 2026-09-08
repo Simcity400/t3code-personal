@@ -123,9 +123,6 @@ jobs:
       T3CODE_CLERK_JWT_TEMPLATE: t3-relay
       T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: hzxSgY2cH10sDU2r
       T3CODE_RELAY_URL: https://relay.t3.codes
-      # Public builds update anonymously. Preserve authenticated updates while
-      # this repository is private; the next public build switches feeds.
-      T3CODE_DESKTOP_UPDATE_PRIVATE: ${{ github.event.repository.private && 'true' || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -158,6 +155,7 @@ jobs:
             apps/desktop/src/electron/ElectronUpdater.windows.test.ts \
             apps/server/src/provider/Layers/CodexSessionRuntime.test.ts \
             packages/client-runtime/src/state/subagentRuntime.test.ts
+          vp test run scripts/build-desktop-artifact.test.ts -t "Windows|sidecar|ASAR"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -288,10 +286,7 @@ jobs:
           node ../scripts/merge-update-manifests.ts --platform win nightly-x64.yml nightly-arm64.yml nightly.yml
           rm -f nightly-x64.yml nightly-arm64.yml
 
-          # electron-updater's private GitHub provider always requests
-          # latest.yml, even when the app's selected channel is nightly.
-          # Publish the same metadata under both names so installed
-          # personal builds can discover the newest prerelease.
+          # Keep the latest channel alias for existing personal installations.
           cp nightly.yml latest.yml
 
           cat nightly.yml
@@ -305,9 +300,7 @@ jobs:
           target_commitish: ${{ inputs.ref != '' && inputs.ref || github.sha }}
           name: ${{ needs.build.outputs.name }}
           draft: true
-          # Authenticated private feeds can see drafts; the updater selects the
-          # first prerelease without excluding them. Mark it prerelease only in
-          # the final publish PATCH after all assets have been verified.
+          # Publish only after both architectures and manifests are verified.
           prerelease: false
           make_latest: false
           files: release-publish/*

@@ -13,7 +13,6 @@ import * as McpProviderSession from "./McpProviderSession.ts";
 
 export interface McpCredentialRequest {
   readonly threadId: ThreadId;
-  readonly visibleThreadId?: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
 }
 
@@ -127,9 +126,6 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       const scope: McpInvocationContext.McpInvocationScope = {
         environmentId,
         threadId: ThreadId.make(request.threadId),
-        ...(request.visibleThreadId === undefined
-          ? {}
-          : { visibleThreadId: request.visibleThreadId }),
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
         capabilities: new Set(["preview"]),
@@ -144,9 +140,6 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         config: {
           environmentId,
           threadId: scope.threadId,
-          ...(scope.visibleThreadId === undefined
-            ? {}
-            : { visibleThreadId: scope.visibleThreadId }),
           providerSessionId,
           providerInstanceId: scope.providerInstanceId,
           endpoint,

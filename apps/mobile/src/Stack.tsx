@@ -1,3 +1,4 @@
+import { ThreadSideChatsRouteScreen } from "./features/threads/ThreadSideChatsRouteScreen";
 import {
   createPathConfigForStaticNavigation,
   getPathFromState,
@@ -17,11 +18,14 @@ import { useResolveClassNames } from "uniwind";
 import { AppText as Text } from "./components/AppText";
 import { getCompactBrandHeaderOptions } from "./components/CompactBrandTitle";
 import { ArchivedThreadsRouteScreen } from "./features/archive/ArchivedThreadsRouteScreen";
+import {
+  ThreadAgentsRouteScreen,
+  ThreadAgentTranscriptRouteScreen,
+} from "./features/agents/ThreadAgentsRouteScreen";
 import { useAgentNotificationNavigation } from "./features/agent-awareness/notificationNavigation";
 import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboardingRouteScreen";
 import { useConnectOnboardingNavigation } from "./features/cloud/connectOnboardingNavigation";
 import { ThreadFilesTreeScreen, ThreadFileScreen } from "./features/files/ThreadFilesRouteScreen";
-import { ThreadAgentsRouteScreen } from "./features/agents/ThreadAgentsRouteScreen";
 import { AdaptiveWorkspaceLayout } from "./features/layout/AdaptiveWorkspaceLayout";
 import { HardwareKeyboardCommandProvider } from "./features/keyboard/HardwareKeyboardCommandProvider";
 import { ReviewCommentComposerSheet } from "./features/review/ReviewCommentComposerSheet";
@@ -478,13 +482,20 @@ export const RootStack = createNativeStackNavigator({
       linking: `${THREAD_LINKING_PREFIX}/terminal`,
       options: SOLID_HEADER_OPTIONS,
     }),
+    ThreadSideChats: createNativeStackScreen({
+      screen: ThreadSideChatsRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/side-chats`,
+      options: { ...SOLID_HEADER_OPTIONS, title: "Related chats" },
+    }),
     ThreadAgents: createNativeStackScreen({
       screen: ThreadAgentsRouteScreen,
       linking: `${THREAD_LINKING_PREFIX}/agents`,
-      options: {
-        ...SOLID_HEADER_OPTIONS,
-        title: "Agents",
-      },
+      options: { ...SOLID_HEADER_OPTIONS, title: "Agents" },
+    }),
+    ThreadAgentTranscript: createNativeStackScreen({
+      screen: ThreadAgentTranscriptRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/agents/:agentId`,
+      options: { ...SOLID_HEADER_OPTIONS, title: "Agent transcript" },
     }),
     ThreadReview: createNativeStackScreen({
       screen: ReviewSheet,

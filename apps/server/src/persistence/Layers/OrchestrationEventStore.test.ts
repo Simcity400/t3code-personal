@@ -18,6 +18,7 @@ import { OrchestrationEventStore } from "../Services/OrchestrationEventStore.ts"
 import { OrchestrationEventStoreLive } from "./OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 const isPersistenceDecodeError = Schema.is(PersistenceDecodeError);
+const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 function messageEvent(threadId: ThreadId, id: string): Omit<OrchestrationEvent, "sequence"> {
   const now = "2026-01-01T00:00:00.000Z";
@@ -49,6 +50,93 @@ const layer = it.layer(
 );
 
 layer("OrchestrationEventStore", (it) => {
+  it.effect("replays bridge questions as history while native questions remain actionable", () =>
+    Effect.gen(function* () {
+      const store = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      for (const bridge of [true, false]) {
+        const base = messageEvent(ThreadId.make("legacy-question-thread"), `question-${bridge}`);
+        const event = yield* store.append({
+          ...base,
+          type: "thread.activity-appended",
+          payload: {
+            threadId: ThreadId.make("legacy-question-thread"),
+            activity: {
+              id: base.eventId,
+              tone: "info",
+              kind: "user-input.requested",
+              summary: "Question",
+              payload: {
+                requestId: `request-${bridge}`,
+                ...(bridge ? { bridgeAgentId: "child" } : {}),
+              },
+              turnId: null,
+              createdAt: base.occurredAt,
+            },
+          },
+        });
+        const events = yield* Stream.runCollect(store.readFromSequence(event.sequence - 1, 1));
+        const restored = events[0];
+        assert.equal(restored?.type, "thread.activity-appended");
+        if (restored?.type === "thread.activity-appended") {
+          assert.equal(
+            restored.payload.activity.kind,
+            bridge ? "legacy.user-input.requested" : "user-input.requested",
+          );
+        }
+        yield* sql`DELETE FROM orchestration_events WHERE event_id = ${event.eventId}`;
+      }
+    }),
+  );
+  it.effect("does not replay a retired child interrupt as an interrupt of its parent", () =>
+    Effect.gen(function* () {
+      const store = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const event = yield* store.append(
+        messageEvent(ThreadId.make("legacy-control-thread"), "legacy-control-event"),
+      );
+      yield* sql`UPDATE orchestration_events SET event_type = 'thread.turn-interrupt-requested', payload_json = '{"threadId":"legacy-control-thread","taskId":"child-1","createdAt":"2026-01-01T00:00:00.000Z"}' WHERE event_id = ${event.eventId}`;
+      const events = yield* Stream.runCollect(store.readFromSequence(event.sequence - 1, 1));
+      assert.equal(events[0]?.type, "thread.activity-appended");
+      const restored = events[0];
+      if (restored?.type === "thread.activity-appended")
+        assert.equal(restored.payload.activity.kind, "legacy.task-interrupt");
+      yield* sql`DELETE FROM orchestration_events WHERE event_id = ${event.eventId}`;
+    }),
+  );
+  it.effect("replays saved goals as active goal state without changing the stored event", () =>
+    Effect.gen(function* () {
+      const store = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("legacy-goal-thread");
+      const event = yield* store.append(messageEvent(threadId, "legacy-goal-event"));
+      const payload = {
+        threadId,
+        goal: {
+          objective: "Saved objective",
+          status: "paused" as const,
+          tokensUsed: 12,
+          timeUsedSeconds: 3,
+          createdAt: 1,
+          updatedAt: 2,
+          turnId: null,
+        },
+      };
+      const payloadJson = yield* encodeUnknownJson(payload);
+      yield* sql`UPDATE orchestration_events SET event_type = 'thread.goal-set', payload_json = ${payloadJson} WHERE event_id = ${event.eventId}`;
+      const events = yield* Stream.runCollect(store.readFromSequence(event.sequence - 1, 1));
+      assert.equal(events[0]?.type, "thread.goal-set");
+      const restored = events[0];
+      if (restored?.type === "thread.goal-set") {
+        assert.deepEqual(restored.payload, payload);
+      }
+      assert.deepEqual(
+        yield* sql`SELECT event_type FROM orchestration_events WHERE event_id = ${event.eventId}`,
+        [{ event_type: "thread.goal-set" }],
+      );
+      yield* sql`DELETE FROM orchestration_events WHERE event_id = ${event.eventId}`;
+    }),
+  );
   it.effect("stores json columns as strings and replays CLI-origin events", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;

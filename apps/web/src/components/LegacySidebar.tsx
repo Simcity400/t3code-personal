@@ -20,7 +20,6 @@ import {
   useLinkedThreadPullRequest,
 } from "./ThreadStatusIndicators";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
-import { isListedThread } from "@t3tools/client-runtime/state/threads";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { useAtomValue } from "@effect/atom-react";
 import { autoAnimate } from "@formkit/auto-animate";
@@ -191,7 +190,6 @@ import {
   ThreadStatusPill,
 } from "./Sidebar.logic";
 import { sortThreads } from "../lib/threadSort";
-import { SidebarUpstreamMergeNotice } from "./sidebar/SidebarUpstreamMergeNotice";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useIsMobile } from "~/hooks/useMediaQuery";
@@ -1278,7 +1276,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       });
     };
     const visibleProjectThreads = sortThreads(
-      projectThreads.filter((thread) => thread.archivedAt === null && isListedThread(thread)),
+      projectThreads.filter((thread) => thread.archivedAt === null),
       threadSortOrder,
     );
     const projectStatus = resolveProjectStatusIndicator(
@@ -2925,9 +2923,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
         </SidebarGroup>
       }
     >
-      <SidebarGroup className="px-2 pt-2 pb-0 empty:hidden">
-        <SidebarUpstreamMergeNotice />
-      </SidebarGroup>
       {showArm64IntelBuildWarning && arm64IntelBuildWarningDescription ? (
         <SidebarGroup className="px-2 pt-2 pb-0">
           <Alert variant="warning" className="rounded-2xl border-warning/40 bg-warning/8">
@@ -3352,14 +3347,7 @@ export default function LegacySidebar() {
   }, []);
 
   const visibleThreads = useMemo(
-    () =>
-      sidebarThreads.filter(
-        (thread) =>
-          thread.archivedAt === null &&
-          // Unpromoted side chats stay out of the sidebar everywhere else
-          // (sorting recency, jump slots); mirror that here.
-          isListedThread(thread),
-      ),
+    () => sidebarThreads.filter((thread) => thread.archivedAt === null),
     [sidebarThreads],
   );
   const sortedProjects = useMemo(() => {
@@ -3399,7 +3387,7 @@ export default function LegacySidebar() {
       sortedProjects.flatMap((project) => {
         const projectThreads = sortThreads(
           (threadsByProjectKey.get(project.projectKey) ?? []).filter(
-            (thread) => thread.archivedAt === null && isListedThread(thread),
+            (thread) => thread.archivedAt === null,
           ),
           sidebarThreadSortOrder,
         );

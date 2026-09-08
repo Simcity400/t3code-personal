@@ -6,24 +6,6 @@ shared provider settings.
 
 ## Separate accounts or configurations
 
-In the web or desktop app, open **Settings > Providers**, select the computer
-where you want to run agents, and choose **Add account > Claude**. Name the account
-and choose **Add account and sign in**. T3 prepares a separate login and shares
-conversations with your default Claude account. You can choose a different account
-to share conversations with when multiple accounts are configured.
-
-Complete the Claude sign-in. T3 verifies the account when the sign-in finishes.
-If Claude Code is missing, the setup panel runs its standalone installer first.
-When signing in remotely, follow the link on your device and
-enter the returned code in the setup panel if prompted.
-
-Choose the new account in an existing thread's model picker to continue with it.
-To authenticate again later, select the account in provider settings and choose
-**Sign in**. Setting up another computer requires its own sign-in, not copying
-credentials from the first computer.
-
-### Custom directory setup
-
 Use a separate Claude config directory for each account. This also works for named
 presets that need different Claude settings or a router connection.
 
@@ -47,31 +29,10 @@ custom setting changes `CLAUDE_CONFIG_DIR`, leaving `HOME` and the system keycha
 location intact. Use the same variable for the login command. Setting `HOME`
 instead can put credentials where this provider will not find them.
 
-Check the account reported in provider settings after signing in.
-
-## Continue one thread with another account
-
-Two accounts can continue the same thread when they share a conversation home.
-Claude keeps each conversation under the config directory that started it, so
-T3 Code links the second account's `projects` folder to the first account's
-directory while the login stays in its own directory:
-
-| Instance        | CLAUDE_CONFIG_DIR path | Shared conversation home |
-| --------------- | ---------------------- | ------------------------ |
-| Claude Work     | Leave empty            | Leave empty              |
-| Claude Personal | `~/.claude_personal`   | `~/.claude`              |
-
-Point the shared conversation home at the directory that already holds your
-threads. Conversations the second account started on its own are moved into the
-shared folder the first time the instance starts, so nothing is lost. Instances
-with the same shared home appear together in a thread's model picker, and
-switching resumes the same conversation on the other account.
-
-Leave the shared conversation home empty to keep an account's conversations
-isolated. Such an instance cannot continue threads from another directory.
-
-On Windows the link needs Developer Mode or an elevated T3 Code server, the same
-requirement as a Codex shadow home. Both directories must be on the same drive.
+Check the account reported in provider settings after signing in. Existing
+threads can switch only between Claude instances with the same config directory.
+Separate account directories stay isolated, including their local conversation
+state. Claude does not have Codex's shared-home and shadow-home arrangement.
 
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.

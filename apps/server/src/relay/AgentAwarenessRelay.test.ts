@@ -153,6 +153,13 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
     expect(
       AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
         ...base,
+        type: "thread.goal-set",
+        payload: { threadId: "thread-1", goal: null },
+      } as unknown as OrchestrationEvent),
+    ).toBe(false);
+    expect(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+        ...base,
         type: "thread.message-sent",
         payload: {
           threadId: "thread-1" as ThreadId,
@@ -249,19 +256,6 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         headline: "Agent finished",
       }),
     );
-  });
-
-  it("still publishes to the hosted relay after Expo observed the state first", () => {
-    const identity = AgentAwarenessRelay.agentAwarenessPublishIdentity(state);
-    expect(
-      AgentAwarenessRelay.resolveAgentAwarenessDeliveryNeeds({
-        identity,
-        relayIdentity: undefined,
-        expoIdentity: identity,
-        canPublishToRelay: true,
-        hasExpoPushRegistrations: true,
-      }),
-    ).toEqual({ relay: true, expo: false });
   });
 
   it("requires an explicit opt-in before publishing agent activity", () => {

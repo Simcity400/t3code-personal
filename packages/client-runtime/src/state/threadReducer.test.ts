@@ -46,6 +46,142 @@ const baseThread: OrchestrationThread = {
 };
 
 describe("applyThreadDetailEvent", () => {
+  it("updates and clears a goal without replacing the transcript or root turn state", () => {
+    const goal = {
+      objective: "Finish the focused checks",
+      status: "active" as const,
+      tokenBudget: 10_000,
+      tokensUsed: 100,
+      timeUsedSeconds: 3,
+      createdAt: 1,
+      updatedAt: 2,
+      turnId: null,
+    };
+    let thread = baseThread;
+    for (const nextGoal of [goal, { ...goal, status: "paused" as const }, null]) {
+      const result = applyThreadDetailEvent(thread, {
+        ...baseEventFields,
+        sequence: 1,
+        occurredAt: baseThread.createdAt,
+        aggregateKind: "thread",
+        aggregateId: thread.id,
+        type: "thread.goal-set",
+        payload: { threadId: thread.id, goal: nextGoal },
+      });
+      if (result.kind !== "updated") throw new Error("Expected a goal update");
+      expect(result.thread.goal).toEqual(nextGoal);
+      expect(result.thread.messages).toBe(thread.messages);
+      expect(result.thread.activities).toBe(thread.activities);
+      expect(result.thread.latestTurn).toBe(thread.latestTurn);
+      expect(result.thread.checkpoints).toBe(thread.checkpoints);
+      thread = result.thread;
+    }
+  });
+
+  it("keeps live child messages attributed without rebinding the parent turn or checkpoint", () => {
+    const at = baseThread.createdAt;
+    const turnId = TurnId.make("parent-turn");
+    const parentId = MessageId.make("parent-message");
+    let thread: OrchestrationThread = {
+      ...baseThread,
+      latestTurn: {
+        turnId,
+        state: "running",
+        requestedAt: at,
+        startedAt: at,
+        completedAt: null,
+        assistantMessageId: parentId,
+      },
+      checkpoints: [
+        {
+          turnId,
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("ref-parent"),
+          status: "ready",
+          files: [],
+          assistantMessageId: parentId,
+          completedAt: at,
+        },
+      ],
+    };
+    const latestTurn = thread.latestTurn;
+    const checkpoints = thread.checkpoints;
+    for (const streaming of [true, false]) {
+      const result = applyThreadDetailEvent(thread, {
+        ...baseEventFields,
+        sequence: 1,
+        occurredAt: at,
+        aggregateKind: "thread",
+        aggregateId: thread.id,
+        type: "thread.message-sent",
+        payload: {
+          threadId: thread.id,
+          messageId: MessageId.make("child-message"),
+          role: "assistant",
+          text: streaming ? "Child output" : "",
+          ...(streaming ? { agentId: "child" } : {}),
+          turnId,
+          streaming,
+          createdAt: at,
+          updatedAt: at,
+        },
+      });
+      expect(result.kind).toBe("updated");
+      if (result.kind !== "updated") throw new Error("Expected a child message update");
+      thread = result.thread;
+      expect(thread.messages[0]).toMatchObject({
+        agentId: "child",
+        text: "Child output",
+        streaming,
+      });
+      expect(thread.latestTurn).toBe(latestTurn);
+      expect(thread.checkpoints).toBe(checkpoints);
+    }
+  });
+
+  it("does not count child messages against parent rollback history", () => {
+    const at = baseThread.createdAt;
+    const turnId = TurnId.make("retained-turn");
+    const message = {
+      role: "assistant" as const,
+      text: "saved",
+      turnId: null,
+      streaming: false,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const thread: OrchestrationThread = {
+      ...baseThread,
+      messages: [
+        { ...message, id: MessageId.make("bound-child"), agentId: "child", turnId },
+        { ...message, id: MessageId.make("unbound-child"), agentId: "child" },
+        { ...message, id: MessageId.make("parent") },
+      ],
+      checkpoints: [
+        {
+          turnId,
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("ref-retained"),
+          status: "ready",
+          files: [],
+          assistantMessageId: MessageId.make("parent"),
+          completedAt: at,
+        },
+      ],
+    };
+    const result = applyThreadDetailEvent(thread, {
+      ...baseEventFields,
+      sequence: 1,
+      occurredAt: at,
+      aggregateKind: "thread",
+      aggregateId: thread.id,
+      type: "thread.reverted",
+      payload: { threadId: thread.id, turnCount: 1 },
+    });
+    expect(result.kind).toBe("updated");
+    if (result.kind === "updated")
+      expect(result.thread.messages.map((entry) => entry.id)).toEqual(["bound-child", "parent"]);
+  });
   describe("project events", () => {
     it("returns unchanged for project.created", () => {
       const result = applyThreadDetailEvent(baseThread, {
@@ -285,48 +421,6 @@ describe("applyThreadDetailEvent", () => {
       if (result.kind === "updated") {
         expect(result.thread.pinnedAt).toBeNull();
       }
-    });
-  });
-
-  describe("thread.goal-set", () => {
-    it("replaces the projected goal and clears it with null", () => {
-      const goal = {
-        objective: "Ship it",
-        status: "blocked" as const,
-        tokenBudget: null,
-        tokensUsed: 12,
-        timeUsedSeconds: 3,
-        createdAt: 1_777_000_000,
-        updatedAt: 1_777_000_003,
-        turnId: TurnId.make("turn-1"),
-      };
-      const set = applyThreadDetailEvent(baseThread, {
-        ...baseEventFields,
-        sequence: 5,
-        occurredAt: "2026-04-01T05:00:00.000Z",
-        aggregateKind: "thread",
-        aggregateId: ThreadId.make("thread-1"),
-        type: "thread.goal-set",
-        payload: { threadId: ThreadId.make("thread-1"), goal },
-      });
-      expect(set.kind).toBe("updated");
-      if (set.kind !== "updated") return;
-      expect(set.thread.goal).toEqual(goal);
-      // Goal bookkeeping never reorders the thread list.
-      expect(set.thread.updatedAt).toBe(baseThread.updatedAt);
-
-      const cleared = applyThreadDetailEvent(set.thread, {
-        ...baseEventFields,
-        sequence: 6,
-        occurredAt: "2026-04-01T06:00:00.000Z",
-        aggregateKind: "thread",
-        aggregateId: ThreadId.make("thread-1"),
-        type: "thread.goal-set",
-        payload: { threadId: ThreadId.make("thread-1"), goal: null },
-      });
-      expect(cleared.kind).toBe("updated");
-      if (cleared.kind !== "updated") return;
-      expect(cleared.thread.goal).toBeNull();
     });
   });
 
@@ -1212,59 +1306,6 @@ describe("applyThreadDetailEvent", () => {
         // Same-turn resolvable rows collapse to the newest; the other turn's
         // row and the malformed row are untouched.
         expect(ids).toEqual(["activity-other-turn", "activity-cw-malformed", "activity-cw-3"]);
-      }
-    });
-
-    it("keeps each conversation's own context-window row for the same turn", () => {
-      // The parent and its subagents report usage under the SAME turn id, so
-      // an owner-blind supersession rule let whichever conversation spoke last
-      // evict every other meter's only value.
-      const contextWindowActivity = (
-        id: string,
-        sequence: number,
-        usedTokens: number,
-        agentId?: string,
-      ) => ({
-        id: EventId.make(id),
-        tone: "info" as const,
-        kind: "context-window.updated",
-        summary: "Context window updated",
-        payload: { usedTokens, ...(agentId ? { agentId } : {}) },
-        turnId: TurnId.make("turn-1"),
-        sequence,
-        createdAt: "2026-04-01T11:00:00.000Z",
-      });
-
-      const result = applyThreadDetailEvent(
-        {
-          ...baseThread,
-          activities: [
-            contextWindowActivity("activity-parent-1", 1, 1_000),
-            contextWindowActivity("activity-agent-a-1", 2, 2_000, "agent-a"),
-            contextWindowActivity("activity-agent-b-1", 3, 3_000, "agent-b"),
-          ],
-        },
-        {
-          ...baseEventFields,
-          sequence: 22,
-          occurredAt: "2026-04-01T11:04:00.000Z",
-          aggregateKind: "thread",
-          aggregateId: ThreadId.make("thread-1"),
-          type: "thread.activity-appended",
-          payload: {
-            threadId: ThreadId.make("thread-1"),
-            activity: contextWindowActivity("activity-agent-a-2", 4, 2_500, "agent-a"),
-          },
-        },
-      );
-
-      expect(result.kind).toBe("updated");
-      if (result.kind === "updated") {
-        expect(result.thread.activities.map((activity) => activity.id)).toEqual([
-          "activity-parent-1",
-          "activity-agent-b-1",
-          "activity-agent-a-2",
-        ]);
       }
     });
 

@@ -8,7 +8,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
-  describeLockedOutInstance,
   resolveModelPickerSelectedModel,
   shouldIncludeModelPickerOption,
   shouldOfferModelPickerSetup,
@@ -54,7 +53,9 @@ describe("shouldIncludeModelPickerOption", () => {
 
   it.each([
     ["opencode", "error"],
+    ["opencode", "warning"],
     ["antigravity", "error"],
+    ["antigravity", "warning"],
   ] as const)(
     "keeps only the active synthetic %s row when the provider status is %s",
     (driver, status) => {
@@ -102,23 +103,6 @@ describe("shouldIncludeModelPickerOption", () => {
           activeModel,
         }),
       ).toBe(false);
-    },
-  );
-});
-
-describe("authenticated provider warnings", () => {
-  it.each(["opencode", "antigravity"])(
-    "keeps catalog models selectable for an authenticated %s account with a warning",
-    (driver) => {
-      const providerEntry = entry("warning", driver);
-      expect(
-        shouldIncludeModelPickerOption({
-          entry: providerEntry,
-          option: { slug: "catalog/model", name: "Catalog model" },
-          activeInstanceId: providerEntry.instanceId,
-          activeModel: "missing-model",
-        }),
-      ).toBe(true);
     },
   );
 });
@@ -227,54 +211,5 @@ describe("shouldOfferModelPickerSetup", () => {
         [],
       ),
     ).toBe(true);
-  });
-});
-
-describe("describeLockedOutInstance", () => {
-  it("sends another provider to a new thread", () => {
-    expect(
-      describeLockedOutInstance({
-        entry: { displayName: "Codex account", driverKind: ProviderDriverKind.make("codex") },
-        lockedProvider: ProviderDriverKind.make("claudeAgent"),
-        lockedDisplayName: "First account",
-      }),
-    ).toBe("Codex account is unavailable in this thread. Start a new thread to switch providers.");
-  });
-
-  it("names the shared conversation home setting for a second Claude account", () => {
-    expect(
-      describeLockedOutInstance({
-        entry: {
-          displayName: "Second account",
-          driverKind: ProviderDriverKind.make("claudeAgent"),
-        },
-        lockedProvider: ProviderDriverKind.make("claudeAgent"),
-        lockedDisplayName: "First account",
-      }),
-    ).toBe(
-      "Second account keeps its conversations in a different home. Set its Shared conversation home to the directory that holds the conversations of First account in Settings > Providers to continue this thread.",
-    );
-  });
-
-  it("names the CODEX_HOME setting for a second Codex account without a known owner", () => {
-    expect(
-      describeLockedOutInstance({
-        entry: { displayName: "Second account", driverKind: ProviderDriverKind.make("codex") },
-        lockedProvider: ProviderDriverKind.make("codex"),
-        lockedDisplayName: undefined,
-      }),
-    ).toBe(
-      "Second account uses a different CODEX_HOME path. Give it the same CODEX_HOME path as the account that started it, with its own shadow home, in Settings > Providers to continue this thread.",
-    );
-  });
-
-  it("offers no setting for providers keyed to the instance itself", () => {
-    expect(
-      describeLockedOutInstance({
-        entry: { displayName: "Cursor Work", driverKind: ProviderDriverKind.make("cursor") },
-        lockedProvider: ProviderDriverKind.make("cursor"),
-        lockedDisplayName: "Cursor Personal",
-      }),
-    ).toBe("Cursor Work cannot continue this thread. Start a new thread to switch accounts.");
   });
 });

@@ -2069,12 +2069,8 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
     readonly targetArch: typeof BuildArch.Type;
     readonly verbose: boolean;
   }) {
-    // The check executes the bundle with the host's Node, which loads the
-    // host's native addons (ffi-rs, node-pty). A cross-built payload stages
-    // only the target CPU's addons, so on the x64 runner the arm64 bundle can
-    // never resolve them and the probe would fail for the wrong reason. Skip
-    // it there, the same way the primary native probe does; the same-arch
-    // build of the same commit still proves the bundle resolves.
+    // Host Node cannot load the target CPU's native addons in a cross-build.
+    // The same-architecture build still exercises the bundle's module graph.
     const hostPlatform = yield* HostProcessPlatform;
     const hostArchitecture = yield* HostProcessArchitecture;
     if (hostPlatform === "win32" && hostArchitecture !== input.targetArch) {
@@ -2593,7 +2589,6 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
   const env = yield* Config.all({
     updateRepository: Config.string("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
     githubRepository: Config.string("GITHUB_REPOSITORY").pipe(Config.option),
-    updatePrivate: Config.string("T3CODE_DESKTOP_UPDATE_PRIVATE").pipe(Config.option),
   });
   const rawRepo = (
     Option.getOrUndefined(env.updateRepository)?.trim() ||
@@ -2605,17 +2600,10 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
   const [owner, repo, ...rest] = rawRepo.split("/");
   if (!owner || !repo || rest.length > 0) return undefined;
 
-  // A private update repository makes electron-updater use its authenticated
-  // GitHub provider, which reads GH_TOKEN from the environment at runtime.
-  const isPrivate = ["true", "1"].includes(
-    Option.getOrUndefined(env.updatePrivate)?.trim().toLowerCase() ?? "",
-  );
-
   return {
     provider: "github",
     owner,
     repo,
-    ...(isPrivate ? { private: true } : {}),
     releaseType: updateChannel === "nightly" ? "prerelease" : "release",
     ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
   };

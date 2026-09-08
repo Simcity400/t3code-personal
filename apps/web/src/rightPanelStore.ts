@@ -74,15 +74,7 @@ export type RightPanelSurface =
       url?: string;
     }
   | { id: "agents"; kind: "agents" }
-  | {
-      /**
-       * A side chat forked from this thread. Keyed by the side chat's thread id so
-       * several can stay open as peer tabs; the thread itself stays server-owned.
-       */
-      id: `side-chat:${string}`;
-      kind: "side-chat";
-      threadId: string;
-    };
+  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: string };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v9 removed the "plan" surface kind (plans render inline in the transcript).
@@ -128,7 +120,6 @@ interface RightPanelStoreState {
   ) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
   openSideChat: (ref: ScopedThreadRef, sideChatThreadId: string) => void;
-  /** Drops side-chat tabs whose thread was closed or promoted elsewhere. */
   reconcileSideChatSurfaces: (ref: ScopedThreadRef, sideChatThreadIds: readonly string[]) => void;
   openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
   openAttachment: (ref: ScopedThreadRef, attachment: ChatFileAttachment) => void;
@@ -173,12 +164,6 @@ const EMPTY_THREAD_STATE: ThreadRightPanelState = {
   activeSurfaceId: null,
   surfaces: [],
 };
-
-const sideChatSurface = (sideChatThreadId: string): RightPanelSurface => ({
-  id: `side-chat:${sideChatThreadId}`,
-  kind: "side-chat",
-  threadId: sideChatThreadId,
-});
 
 const singletonSurface = (
   kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "side-chat">,
@@ -501,28 +486,25 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               : next;
           }),
         ),
-      openSideChat: (ref, sideChatThreadId) =>
+      openSideChat: (ref, threadId) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) =>
-            upsertSurface(current, sideChatSurface(sideChatThreadId)),
+            upsertSurface(current, { id: `side-chat:${threadId}`, kind: "side-chat", threadId }),
           ),
         ),
-      reconcileSideChatSurfaces: (ref, sideChatThreadIds) =>
+      reconcileSideChatSurfaces: (ref, threadIds) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
-            const validIds = new Set(sideChatThreadIds.map((threadId) => `side-chat:${threadId}`));
+            const validIds = new Set(threadIds);
             const surfaces = current.surfaces.filter(
-              (surface) => surface.kind !== "side-chat" || validIds.has(surface.id),
+              (surface) => surface.kind !== "side-chat" || validIds.has(surface.threadId),
             );
             if (surfaces.length === current.surfaces.length) return current;
-            const activeStillExists = surfaces.some(
-              (surface) => surface.id === current.activeSurfaceId,
-            );
             return {
               ...current,
-              isOpen: surfaces.length > 0 ? current.isOpen : false,
+              isOpen: surfaces.length > 0 && current.isOpen,
               surfaces,
-              activeSurfaceId: activeStillExists
+              activeSurfaceId: surfaces.some((surface) => surface.id === current.activeSurfaceId)
                 ? current.activeSurfaceId
                 : (surfaces.at(-1)?.id ?? null),
             };

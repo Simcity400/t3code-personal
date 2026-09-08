@@ -613,10 +613,10 @@ export const OrchestrationThread = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
-  forkedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
-  sideChatPromotedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
+  forkedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  sideChatPromotedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -690,32 +690,6 @@ export const OrchestrationProjectShell = Schema.Struct({
 });
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
-/**
- * The background work a thread is waiting on while no turn of its own is in
- * flight, described generically enough for any provider to fill in.
- *
- * `label` is composed server-side from whatever the provider called the work
- * (an agent's title, a shell's command line, a monitor's or workflow's name)
- * and falls back to a plain count. Clients render it verbatim — no client
- * ever re-parses provider vocabulary, and no product-specific wording is
- * baked into either side.
- */
-export const ThreadBackgroundWait = Schema.Struct({
-  /** How many live background items the thread is waiting on. */
-  count: PositiveInt,
-  /** Ready-to-render description, e.g. "3 tasks" or "Reviewer + 2 more agents". */
-  label: TrimmedNonEmptyString,
-  /** Earliest start among them, for the elapsed timer. Null when unknown. */
-  since: Schema.NullOr(IsoDateTime),
-  /**
-   * Every live item is a watch loop. A monitor can outlive every turn, so
-   * surfaces that must eventually declare the thread finished (the completion
-   * alert) treat this as idle rather than waiting forever.
-   */
-  monitorOnly: Schema.Boolean,
-});
-export type ThreadBackgroundWait = typeof ThreadBackgroundWait.Type;
-
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -727,10 +701,10 @@ export const OrchestrationThreadShell = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
-  forkedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
-  sideChatPromotedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
+  forkedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  sideChatPromotedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -758,26 +732,6 @@ export const OrchestrationThreadShell = Schema.Struct({
    * live work. Optional so old servers/clients interop; absent = none.
    */
   backgroundLiveness: Schema.optional(Schema.NullOr(Schema.Literals(["working", "monitoring"]))),
-  /**
-   * What that background work IS, so a thread can say what it is waiting on
-   * instead of only that something is alive. Derived from the same registry
-   * as `backgroundLiveness` (non-null exactly when that is non-null,
-   * `monitorOnly` exactly when that is "monitoring"). A separate field
-   * because `backgroundLiveness` has readers whose two-value contract must
-   * not move — auto-settlement and the provider session reaper.
-   * Optional so old servers/clients interop; absent = none.
-   */
-  backgroundWait: Schema.optional(Schema.NullOr(ThreadBackgroundWait)),
-  /**
-   * When the provider began compacting its own context, or null when it is
-   * not. A machine wait — no user action shortens it — and the one long pause
-   * nothing else on the shell explains: the session reports `running` through
-   * it (a compacting thread cannot take a fresh turn) while the agent is not
-   * generating anything at all. Sidebar rows read the shell rather than thread
-   * activities, so without this field they would be the one surface still
-   * claiming the agent is working. Optional so old servers/clients interop.
-   */
-  compactingSince: Schema.optional(Schema.NullOr(IsoDateTime)),
   /**
    * Current plan step while a turn runs, for the Working indicators
    * (sidebar row, in-chat working line). Cleared when the turn settles —
@@ -1091,8 +1045,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   expectedBranch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-  sideChatPromotedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
+  sideChatPromotedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
 }).check(
   Schema.makeFilter(
     (input) =>
@@ -1184,27 +1138,13 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-export const ProviderInterruptScope = Schema.Literals(["self", "tree"]);
-export type ProviderInterruptScope = typeof ProviderInterruptScope.Type;
-
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
-  taskId: Schema.optional(TrimmedNonEmptyString),
-  scope: Schema.optional(ProviderInterruptScope),
-  resume: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
-}).check(
-  Schema.makeFilter(
-    (input) => input.scope !== "tree" || (input.taskId === undefined && input.resume !== true),
-    { message: "Stop all requires the root thread and cannot resume agents." },
-  ),
-  Schema.makeFilter((input) => input.resume !== true || input.taskId !== undefined, {
-    message: "Resume requires a selected task.",
-  }),
-);
+});
 
 const ThreadApprovalRespondCommand = Schema.Struct({
   type: Schema.Literal("thread.approval.respond"),
@@ -1620,9 +1560,9 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-  sideChatPromotedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
+  sideChatPromotedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   updatedAt: IsoDateTime,
 });
 
@@ -1669,9 +1609,6 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
-  taskId: Schema.optional(TrimmedNonEmptyString),
-  scope: Schema.optional(ProviderInterruptScope),
-  resume: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 

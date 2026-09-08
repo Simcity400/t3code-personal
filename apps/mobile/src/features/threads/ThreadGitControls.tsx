@@ -67,6 +67,8 @@ function compactMenuStatus(gitStatus: VcsStatusResult | null): string {
 type HeaderItem = Record<string, unknown>;
 type HeaderItems = HeaderItem[];
 type ThreadGitHeaderActionItems = {
+  readonly agents: HeaderItem;
+  readonly sideChats: HeaderItem;
   readonly terminal: HeaderItem;
   readonly files: HeaderItem;
   readonly git: HeaderItem;
@@ -96,6 +98,8 @@ type ThreadGitControlsProps = ThreadGitMenuProps & {
     readonly onPress: () => void;
   };
   readonly canOpenTerminal: boolean;
+  readonly onOpenAgents: () => void;
+  readonly onOpenSideChats?: () => void;
   readonly canOpenFiles: boolean;
   readonly projectScripts: ReadonlyArray<ProjectScript>;
   readonly terminalSessions: ReadonlyArray<TerminalMenuSession>;
@@ -251,6 +255,21 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
 
   return useMemo(
     () => ({
+      sideChats: {
+        accessibilityLabel: "Open related chats",
+        icon: { name: "bubble.left.and.bubble.right", type: "sfSymbol" },
+        identifier: "thread-related-chats",
+        onPress: props.onOpenSideChats,
+        type: "button",
+      },
+      agents: {
+        accessibilityLabel: "Open agents",
+        icon: { name: "point.3.connected.trianglepath.dotted", type: "sfSymbol" },
+        identifier: "thread-right-agents",
+        label: "Agents",
+        onPress: props.onOpenAgents,
+        type: "button",
+      },
       terminal: {
         accessibilityLabel: "Open terminal",
         disabled: !props.canOpenTerminal,
@@ -379,6 +398,8 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       model.quickActionIcon,
       model.runQuickAction,
       props.canOpenFiles,
+      props.onOpenAgents,
+      props.onOpenSideChats,
       props.canOpenTerminal,
       props.gitStatus,
       props.onOpenNewTerminal,
@@ -393,16 +414,30 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
 export function useThreadGitRightHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
   return useMemo(
-    () => [actionItems.git, actionItems.files, actionItems.terminal] as HeaderItems,
-    [actionItems],
+    () =>
+      [
+        ...(props.onOpenSideChats ? [actionItems.sideChats] : []),
+        actionItems.agents,
+        actionItems.git,
+        actionItems.files,
+        actionItems.terminal,
+      ] as HeaderItems,
+    [actionItems, props.onOpenSideChats],
   );
 }
 
 export function useThreadGitCenterHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
   return useMemo(
-    () => [actionItems.files, actionItems.git, actionItems.terminal] as HeaderItems,
-    [actionItems],
+    () =>
+      [
+        ...(props.onOpenSideChats ? [actionItems.sideChats] : []),
+        actionItems.agents,
+        actionItems.files,
+        actionItems.git,
+        actionItems.terminal,
+      ] as HeaderItems,
+    [actionItems, props.onOpenSideChats],
   );
 }
 
@@ -416,6 +451,18 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
 
   return (
     <NativeHeaderToolbar placement="right">
+      {props.onOpenSideChats ? (
+        <NativeHeaderToolbar.Button
+          accessibilityLabel="Open related chats"
+          icon="bubble.left.and.bubble.right"
+          onPress={props.onOpenSideChats}
+        />
+      ) : null}
+      <NativeHeaderToolbar.Button
+        accessibilityLabel="Open agents"
+        icon="point.3.connected.trianglepath.dotted"
+        onPress={props.onOpenAgents}
+      />
       {showActionControls && props.auxiliaryPaneControl ? (
         <NativeHeaderToolbar.Button
           accessibilityLabel={props.auxiliaryPaneControl.accessibilityLabel}

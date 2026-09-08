@@ -61,6 +61,7 @@ import IconLayoutSidebarRight from "@tabler/icons-react-native/IconLayoutSidebar
 import IconLetterSpacing from "@tabler/icons-react-native/IconLetterSpacing";
 import IconLink from "@tabler/icons-react-native/IconLink";
 import IconMessage from "@tabler/icons-react-native/IconMessage";
+import IconMessages from "@tabler/icons-react-native/IconMessages";
 import IconMinus from "@tabler/icons-react-native/IconMinus";
 import IconMoon from "@tabler/icons-react-native/IconMoon";
 import IconNetwork from "@tabler/icons-react-native/IconNetwork";
@@ -86,7 +87,6 @@ import IconTrash from "@tabler/icons-react-native/IconTrash";
 import IconTypography from "@tabler/icons-react-native/IconTypography";
 import IconUpload from "@tabler/icons-react-native/IconUpload";
 import IconUserCircle from "@tabler/icons-react-native/IconUserCircle";
-import IconUsers from "@tabler/icons-react-native/IconUsers";
 import IconWifiOff from "@tabler/icons-react-native/IconWifiOff";
 import IconWorld from "@tabler/icons-react-native/IconWorld";
 import IconX from "@tabler/icons-react-native/IconX";
@@ -101,6 +101,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "arrow.triangle.branch": IconGitBranch,
   "arrow.triangle.pull": IconGitPullRequest,
   "arrow.turn.left.up": IconArrowBackUp,
+  "arrow.turn.up.left": IconArrowBackUp,
   "arrow.up": IconArrowUp,
   "arrow.up.circle": IconArrowUpCircle,
   "arrow.up.left.and.arrow.down.right": IconArrowsMaximize,
@@ -114,6 +115,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "bolt.circle": IconBolt,
   "bolt.horizontal.circle": IconBolt,
   brain: IconBrain,
+  "bubble.left.and.bubble.right": IconMessages,
   camera: IconCamera,
   "chart.bar.xaxis": IconChartBar,
   checkmark: IconCheck,
@@ -151,7 +153,6 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   magnifyingglass: IconSearch,
   paintbrush: IconPalette,
   "person.crop.circle": IconUserCircle,
-  "person.2": IconUsers,
   photo: IconPhoto,
   pin: IconPin,
   "pin.slash": IconPinnedOff,

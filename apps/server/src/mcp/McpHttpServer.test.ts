@@ -289,7 +289,6 @@ it.effect("registers annotated tools and preserves authenticated request context
       const routedRequests: Array<{
         readonly operation: string;
         readonly tabId?: string | undefined;
-        readonly threadId: ThreadId;
       }> = [];
       const events = yield* broker.connect({
         clientId: "mcp-test-client",
@@ -414,33 +413,6 @@ it.effect("registers annotated tools and preserves authenticated request context
         expect(result.structuredContent).toEqual({});
         expect(result.content).toEqual([{ type: "text", text: "{}" }]);
       }
-
-      const childInvocation = {
-        ...invocation,
-        threadId: ThreadId.make("cross-provider-session:hidden-child"),
-        visibleThreadId: threadId,
-        providerSessionId: "child-provider-session",
-        providerInstanceId: ProviderInstanceId.make("claude"),
-      };
-      for (const name of ["preview_status", "preview_snapshot", "preview_press"]) {
-        const result = yield* server
-          .callTool({
-            name,
-            arguments: name === "preview_press" ? { key: "Enter" } : {},
-          })
-          .pipe(
-            Effect.provideService(McpInvocationContext.McpInvocationContext, childInvocation),
-            Effect.provideService(McpSchema.McpServerClient, client),
-          );
-        expect(result.isError).toBe(false);
-        expect(routedRequests.at(-1)).toMatchObject({
-          threadId,
-        });
-        if (name === "preview_status") {
-          expect(routedRequests.at(-1)?.tabId).toBeUndefined();
-        }
-      }
-      expect(childInvocation.threadId).toBe("cross-provider-session:hidden-child");
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

@@ -17,7 +17,6 @@ export const withInstanceIdentity =
     readonly displayName: string | undefined;
     readonly accentColor: string | undefined;
     readonly continuationGroupKey: string;
-    readonly conversationHomePath?: string;
   }) =>
   (snapshot: ServerProviderDraft): ServerProvider => ({
     ...snapshot,
@@ -25,8 +24,5 @@ export const withInstanceIdentity =
     driver: input.driverKind,
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.accentColor ? { accentColor: input.accentColor } : {}),
-    continuation: {
-      groupKey: input.continuationGroupKey,
-      ...(input.conversationHomePath ? { conversationHomePath: input.conversationHomePath } : {}),
-    },
+    continuation: { groupKey: input.continuationGroupKey },
   });

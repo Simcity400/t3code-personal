@@ -141,9 +141,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         autoBootstrapProjectFromCwd: true,
       } as never),
       Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-        getCrossProviderRecovery: () => Effect.succeed({ tasks: [], requests: [] }),
         getUserInputActivity: () => Effect.die("unused"),
-        getTaskState: () => Effect.die("unused"),
         getCommandReadModel: () => Effect.die("unused"),
         getSnapshot: () => Effect.die("unused"),
         getShellSnapshot: () => Effect.die("unused"),
@@ -231,9 +229,7 @@ it.effect.each([
         autoBootstrapProjectFromCwd: true,
       } as never),
       Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-        getCrossProviderRecovery: () => Effect.succeed({ tasks: [], requests: [] }),
         getUserInputActivity: () => Effect.die("unused"),
-        getTaskState: () => Effect.die("unused"),
         getCommandReadModel: () => Effect.die("unused"),
         getSnapshot: () => Effect.die("unused"),
         getShellSnapshot: () => Effect.die("unused"),
@@ -327,8 +323,6 @@ it.effect(
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getProjectShellById: () => Effect.die("unused"),
           getFirstActiveThreadIdByProjectId: () => Effect.die("thread lookup failed"),
-          getCrossProviderRecovery: () => Effect.succeed({ tasks: [], requests: [] }),
-          getTaskState: () => Effect.die("unused"),
           getImportedAgentSessionSources: () => Effect.die("unused"),
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
@@ -380,9 +374,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets preserves typed UUID generation fa
         autoBootstrapProjectFromCwd: true,
       } as never),
       Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-        getCrossProviderRecovery: () => Effect.succeed({ tasks: [], requests: [] }),
         getUserInputActivity: () => Effect.die("unused"),
-        getTaskState: () => Effect.die("unused"),
         getCommandReadModel: () => Effect.die("unused"),
         getSnapshot: () => Effect.die("unused"),
         getShellSnapshot: () => Effect.die("unused"),

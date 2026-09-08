@@ -16,7 +16,6 @@ import {
   ProviderApprovalDecision,
   ProviderApprovalPolicy,
   ProviderInteractionMode,
-  ProviderInterruptScope,
   ProviderRequestKind,
   ProviderSandboxMode,
   ProviderUserInputAnswers,
@@ -94,18 +93,7 @@ export type ProviderTurnStartResult = typeof ProviderTurnStartResult.Type;
 export const ProviderInterruptTurnInput = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
-  taskId: Schema.optional(TrimmedNonEmptyString),
-  scope: Schema.optional(ProviderInterruptScope),
-  resume: Schema.optional(Schema.Boolean),
-}).check(
-  Schema.makeFilter(
-    (input) => input.scope !== "tree" || (input.taskId === undefined && input.resume !== true),
-    { message: "Stop all requires the root thread and cannot resume agents." },
-  ),
-  Schema.makeFilter((input) => input.resume !== true || input.taskId !== undefined, {
-    message: "Resume requires a selected task.",
-  }),
-);
+});
 export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
 
 export const ProviderStopSessionInput = Schema.Struct({

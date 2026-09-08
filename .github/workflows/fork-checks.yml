@@ -68,6 +68,14 @@ jobs:
             scripts/fork-sync.test.ts \
             scripts/merge-update-manifests.test.ts \
             apps/desktop/src/updates/DesktopUpdates.test.ts \
-            apps/desktop/src/updates/DesktopUpdateCredentials.test.ts \
             apps/desktop/src/updates/windowsUpdateSelection.test.ts \
-            apps/desktop/src/electron/ElectronUpdater.windows.test.ts
+            apps/desktop/src/electron/ElectronUpdater.windows.test.ts \
+            apps/server/src/provider/Layers/CodexSessionRuntime.test.ts \
+            packages/contracts/src/codexGoal.test.ts \
+            apps/server/src/orchestration/projector.goal.test.ts \
+            apps/server/src/persistence/ForkCompatibility.test.ts \
+            apps/server/src/persistence/Layers/OrchestrationEventStore.test.ts \
+            apps/server/src/persistence/Layers/ProjectionThreadMessages.test.ts \
+            packages/client-runtime/src/state/subagentRuntime.test.ts \
+            packages/client-runtime/src/state/agentTranscripts.test.ts
+          vp test run scripts/build-desktop-artifact.test.ts -t "Windows|sidecar|ASAR"

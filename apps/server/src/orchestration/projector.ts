@@ -45,7 +45,7 @@ const MAX_THREAD_CHECKPOINTS = 500;
 
 // Async questions can stay open while the agent produces more activity.
 // Match the database snapshot's pending-question retention.
-export function retainThreadActivities(activities: OrchestrationThread["activities"]) {
+function retainThreadActivities(activities: OrchestrationThread["activities"]) {
   const recentStart = activities.length - 500;
   if (recentStart <= 0) return activities;
   const pending = new Map<string, OrchestrationThread["activities"][number]>();
@@ -60,20 +60,6 @@ export function retainThreadActivities(activities: OrchestrationThread["activiti
     }
   }
   const pendingActivities = new Set(pending.values());
-  for (const activity of activities) {
-    if (activity.kind === "task.state") pendingActivities.add(activity);
-    // Instructions are conversation history, not disposable work-log progress.
-    if (!Predicate.isObject(activity.payload)) continue;
-    const payload = activity.payload;
-    if (
-      (activity.kind.startsWith("task.") && typeof payload.prompt === "string") ||
-      (activity.kind.startsWith("tool.") &&
-        (payload.itemType === "collab_agent_tool_call" ||
-          (payload.itemType === "user_message" && typeof payload.agentId === "string")))
-    ) {
-      pendingActivities.add(activity);
-    }
-  }
   return activities.filter(
     (activity, index) => index >= recentStart || pendingActivities.has(activity),
   );
@@ -353,13 +339,13 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            branchPullRequest: null,
             ...(payload.forkedFromThreadId != null
               ? { forkedFromThreadId: payload.forkedFromThreadId }
               : {}),
             ...(payload.sideChatPromotedAt != null
               ? { sideChatPromotedAt: payload.sideChatPromotedAt }
               : {}),
-            branchPullRequest: null,
             latestTurn: null,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -536,14 +522,14 @@ export function projectEvent(
               : {}),
             ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
             ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
-            ...(payload.sideChatPromotedAt !== undefined
-              ? { sideChatPromotedAt: payload.sideChatPromotedAt }
-              : {}),
             ...(payload.linkedPullRequest !== undefined
               ? { linkedPullRequest: payload.linkedPullRequest }
               : {}),
             ...(payload.branchPullRequest !== undefined
               ? { branchPullRequest: payload.branchPullRequest }
+              : {}),
+            ...(payload.sideChatPromotedAt !== undefined
+              ? { sideChatPromotedAt: payload.sideChatPromotedAt }
               : {}),
             updatedAt: payload.updatedAt,
           }),

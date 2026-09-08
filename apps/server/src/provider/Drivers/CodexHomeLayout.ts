@@ -31,12 +31,7 @@ const KNOWN_SHARED_DIRECTORIES = [
 
 const PRIVATE_ENTRY_NAMES = new Set(["auth.json", "models_cache.json"]);
 const SHADOW_LOCAL_ENTRY_NAMES = new Set(["log", "memories", "tmp"]);
-const SQLITE_ENTRY_SUFFIXES = [".sqlite", ".sqlite-journal", ".sqlite-shm", ".sqlite-wal"];
 const REPLACEABLE_SHARED_RUNTIME_DIRECTORIES = new Set(["mcp-oauth-locks"]);
-
-function isSQLiteEntry(entryName: string): boolean {
-  return SQLITE_ENTRY_SUFFIXES.some((suffix) => entryName.endsWith(suffix));
-}
 
 function resolveHomePath(path: Path.Path, value: string | undefined): string {
   const expanded =
@@ -48,17 +43,15 @@ function resolveHomePath(path: Path.Path, value: string | undefined): string {
 
 export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(function* (
   config: CodexSettings,
-  environment: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<CodexHomeLayout, never, Path.Path> {
   const path = yield* Path.Path;
-  const configuredHome = config.homePath.trim() || environment.CODEX_HOME?.trim();
-  const sharedHomePath = resolveHomePath(path, configuredHome);
+  const sharedHomePath = resolveHomePath(path, config.homePath);
   const shadowHomePath = config.shadowHomePath.trim();
   if (shadowHomePath.length === 0) {
     return {
       mode: "direct",
       sharedHomePath,
-      effectiveHomePath: configuredHome ? sharedHomePath : undefined,
+      effectiveHomePath: config.homePath.trim().length > 0 ? sharedHomePath : undefined,
       continuationKey: `codex:home:${sharedHomePath}`,
     };
   }
@@ -379,15 +372,7 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
   );
   const entries = new Set<string>(KNOWN_SHARED_DIRECTORIES);
   for (const entryName of sharedEntryNames) {
-    // SQLite databases and their journals must use the same directory. Linking
-    // individual files can split WAL state between accounts, especially on Windows.
-    // Accounts that share runtime state use an absolute sqlite_home in config.toml.
-    // Leave existing files and links alone: another Codex process may own them.
-    if (
-      !PRIVATE_ENTRY_NAMES.has(entryName) &&
-      !SHADOW_LOCAL_ENTRY_NAMES.has(entryName) &&
-      !isSQLiteEntry(entryName)
-    ) {
+    if (!PRIVATE_ENTRY_NAMES.has(entryName) && !SHADOW_LOCAL_ENTRY_NAMES.has(entryName)) {
       entries.add(entryName);
     }
   }
@@ -434,8 +419,4 @@ export function codexContinuationIdentity(layout: CodexHomeLayout) {
     driverKind: ProviderDriverKind.make("codex"),
     continuationKey: layout.continuationKey,
   };
-}
-
-export function codexModelCatalogHomePath(layout: CodexHomeLayout): string {
-  return layout.effectiveHomePath ?? layout.sharedHomePath;
 }

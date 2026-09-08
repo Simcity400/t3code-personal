@@ -1926,13 +1926,13 @@ function PullRequestsRouteView() {
             onAddAgents={() => undefined}
             onAddSideChat={() => undefined}
             onOpenSideChat={() => undefined}
+            sideChatAvailable={false}
             browserAvailable={false}
             terminalAvailable={false}
             diffAvailable={false}
             filesAvailable={false}
             pullRequestAvailable={false}
             agentsAvailable={false}
-            sideChatAvailable={false}
             liveAgentCount={0}
             pullRequestStatusSeeds={listedPullRequestTabStatuses}
           >

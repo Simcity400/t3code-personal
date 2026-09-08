@@ -21,9 +21,6 @@ const EMPTY_PROJECT_ATOM = Atom.make<EnvironmentProject | null>(null).pipe(
 const EMPTY_THREAD_SHELL_ATOM = Atom.make<EnvironmentThreadShell | null>(null).pipe(
   Atom.withLabel("mobile-thread-shell:empty"),
 );
-const EMPTY_ATTACHED_SIDE_CHATS_ATOM = Atom.make<ReadonlyArray<EnvironmentThreadShell>>([]).pipe(
-  Atom.withLabel("mobile-attached-side-chats:empty"),
-);
 const EMPTY_SERVER_CONFIG_ATOM = Atom.make<ServerConfig | null>(null).pipe(
   Atom.withLabel("mobile-server-config:empty"),
 );
@@ -34,16 +31,6 @@ export function useProjects(): ReadonlyArray<EnvironmentProject> {
 
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
   return useAtomValue(environmentThreadShells.threadShellsAtom);
-}
-
-export function useAttachedSideChats(
-  ref: ScopedThreadRef | null,
-): ReadonlyArray<EnvironmentThreadShell> {
-  return useAtomValue(
-    ref === null
-      ? EMPTY_ATTACHED_SIDE_CHATS_ATOM
-      : environmentThreadShells.attachedSideChatsAtom(ref),
-  );
 }
 
 export function useProject(ref: ScopedProjectRef | null): EnvironmentProject | null {

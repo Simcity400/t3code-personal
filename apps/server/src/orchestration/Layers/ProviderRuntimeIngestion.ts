@@ -9,18 +9,18 @@ import {
   classifyTaskAgentKind,
   EventId,
   isToolLifecycleItemType,
-  type ItemLifecyclePayload,
   ThreadId,
   type ThreadTokenUsageSnapshot,
   TurnId,
   type OrchestrationCheckpointSummary,
+  type OrchestrationThreadActivity,
   type CodexGoal,
   type OrchestrationThreadGoal,
-  type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
   RuntimeRequestId,
-  isUnnamedTask,
 } from "@t3tools/contracts";
+import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -40,8 +40,6 @@ import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/Projectio
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
-import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
-import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
 import { ProjectionThreadMessageRepository } from "../../persistence/Services/ProjectionThreadMessages.ts";
 import { ProjectionThreadMessageRepositoryLive } from "../../persistence/Layers/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlanRepository } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
@@ -189,20 +187,7 @@ function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
   return `plan:${threadId}:turn:${turnId}`;
 }
 
-/** Agent stamp on a runtime payload, tolerating events that carry none. */
-function payloadAgentId(event: ProviderRuntimeEvent): string | undefined {
-  const payload: unknown = event.payload;
-  if (typeof payload !== "object" || payload === null || !("agentId" in payload)) {
-    return undefined;
-  }
-  const agentId = (payload as { readonly agentId?: unknown }).agentId;
-  return typeof agentId === "string" ? agentId : undefined;
-}
-
 function proposedPlanIdFromEvent(event: ProviderRuntimeEvent, threadId: ThreadId): string {
-  const agentId = payloadAgentId(event) ?? event.bridgeAgentId;
-  if (agentId !== undefined)
-    return `plan:${threadId}:agent:${agentId}:${event.itemId ?? event.turnId ?? "current"}`;
   const turnId = toTurnId(event.turnId);
   if (turnId) {
     return proposedPlanIdForTurn(threadId, turnId);
@@ -214,16 +199,7 @@ function proposedPlanIdFromEvent(event: ProviderRuntimeEvent, threadId: ThreadId
 }
 
 function assistantSegmentBaseKeyFromEvent(event: ProviderRuntimeEvent): string {
-  const agentId =
-    (event.type === "content.delta" ||
-      event.type === "item.started" ||
-      event.type === "item.updated" ||
-      event.type === "item.completed") &&
-    event.payload.agentId !== undefined
-      ? event.payload.agentId
-      : undefined;
-  const base = String(event.itemId ?? event.turnId ?? (agentId ? "current" : event.eventId));
-  return agentId ? `agent:${agentId}:${base}` : base;
+  return String(event.itemId ?? event.turnId ?? event.eventId);
 }
 
 function assistantSegmentMessageId(baseKey: string, segmentIndex: number): MessageId {
@@ -233,16 +209,11 @@ function assistantSegmentMessageId(baseKey: string, segmentIndex: number): Messa
 }
 function buildContextWindowActivityPayload(
   event: ProviderRuntimeEvent,
-): (ThreadTokenUsageSnapshot & { readonly agentId?: string }) | undefined {
+): ThreadTokenUsageSnapshot | undefined {
   if (event.type !== "thread.token-usage.updated" || event.payload.usage.usedTokens < 0) {
     return undefined;
   }
-  // The owning agent rides the persisted row so a reload can rebuild each
-  // subagent's meter, and so the parent's meter can skip child rows instead
-  // of reading whichever snapshot happened to arrive last.
-  return event.payload.agentId !== undefined
-    ? { ...event.payload.usage, agentId: event.payload.agentId }
-    : event.payload.usage;
+  return event.payload.usage;
 }
 
 function compactedTokenCountsFromActivities(
@@ -292,27 +263,13 @@ function normalizeRuntimeTurnState(
 }
 
 function orchestrationSessionStatusFromRuntimeState(
-  state:
-    | "starting"
-    | "running"
-    | "waiting"
-    | "compacting"
-    | "ready"
-    | "interrupted"
-    | "stopped"
-    | "error",
+  state: "starting" | "running" | "waiting" | "ready" | "interrupted" | "stopped" | "error",
 ): "starting" | "running" | "ready" | "interrupted" | "stopped" | "error" {
   switch (state) {
     case "starting":
       return "starting";
     case "running":
     case "waiting":
-    // A compacting session is busy, not resting: the composer, the sidebar
-    // and every "can I send now" check read this status, and reporting
-    // `ready` would invite a prompt into a thread that cannot take one. The
-    // compaction itself is named on the durable activity below, not here —
-    // this enum is upstream's and shared by every provider.
-    case "compacting":
       return "running";
     case "ready":
       return "ready";
@@ -352,12 +309,15 @@ function requestKindFromCanonicalRequestType(
 
 /**
  * Copies the optional TaskAgentLinkage bundle from a task.* runtime payload
- * into the persisted activity payload for the current task-state reducer.
- * Thin lifecycle frames leave absent fields untouched.
+ * into the persisted activity payload. Identity fields ride on every row so
+ * client folds survive activity retention; absent fields stay absent.
  */
 function taskLinkageActivityFields(payload: Record<string, unknown>): Record<string, unknown> {
   const fields: Record<string, unknown> = {
-    // Classification is normalized at the provider boundary.
+    // Server-stamped classification: persisted rows are self-describing, so
+    // clients trust the stamp instead of re-deriving agent-vs-background
+    // from taskType denylists and marker heuristics (legacy rows without a
+    // stamp keep the client fallback).
     agentKind: classifyTaskAgentKind({
       taskType: typeof payload.taskType === "string" ? payload.taskType : undefined,
       agentId: typeof payload.agentId === "string" ? payload.agentId : undefined,
@@ -365,26 +325,12 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
   };
   for (const key of [
     "taskType",
-    "executionOwner",
-    "canStop",
-    "canResume",
     "agentId",
     "title",
-    // Reader-facing task detail: a shell's command line and a monitor's
-    // MCP server/tool. Ride the bundle like every other identity field so a
-    // row that outlives its start still names what it is running.
-    "command",
-    "server",
-    "tool",
     "role",
     "model",
     "effort",
     "toolUseId",
-    "skipTranscript",
-    "prompt",
-    // Without the provider's prompt id, two identical follow-up instructions
-    // are indistinguishable on the client and collapse into one row.
-    "promptId",
     "parentAgentId",
     "workflowName",
     "agentIndex",
@@ -395,7 +341,6 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     "runHandles",
     "outputFile",
     "agentPath",
-    "nickname",
     "timelineBypass",
     "typedUsage",
     "status",
@@ -408,120 +353,10 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
   return fields;
 }
 
-/**
- * Stable id for the row that carries one exact parent instruction.
- *
- * Activities upsert by id, so a per-task id made every follow-up overwrite the
- * launch prompt. Keying on the provider's prompt id instead gives each
- * instruction its own row while still collapsing the same instruction when a
- * live session reports it more than once.
- */
-function taskPromptActivityId(input: {
-  readonly threadId: string;
-  readonly taskId: string;
-  readonly promptId: unknown;
-  readonly eventId: string;
-}): EventId {
-  const suffix = typeof input.promptId === "string" ? input.promptId : input.eventId;
-  return EventId.make(`task-prompt:${input.threadId}:${input.taskId}:${suffix}`);
-}
-
-/**
- * Whether a provider goal snapshot carries anything the projection lacks.
- * Compares Codex's own record only: the turn id is T3's annotation and a
- * resume snapshot may omit it.
- */
-function sameCodexGoalRecord(current: CodexGoal, next: CodexGoal): boolean {
-  return (
-    current.objective === next.objective &&
-    current.status === next.status &&
-    (current.tokenBudget ?? null) === (next.tokenBudget ?? null) &&
-    current.tokensUsed === next.tokensUsed &&
-    current.timeUsedSeconds === next.timeUsedSeconds &&
-    current.createdAt === next.createdAt &&
-    current.updatedAt === next.updatedAt
-  );
-}
-
-/**
- * Item lifecycle rows worth persisting as activities.
- *
- * Tool items always are. A child agent's own `user_message` item is too: it
- * is the only plaintext record of an instruction the parent sent to that
- * agent (Codex encrypts the parent-side collaboration tool arguments), and
- * the shared transcript selector already keeps such rows out of tool-card
- * lists and out of the parent work log (they carry `agentId`). Unattributed
- * user messages stay out — the parent's own prompt is already a message.
- */
-function isPersistedItemLifecycle(payload: ItemLifecyclePayload): boolean {
-  return (
-    isToolLifecycleItemType(payload.itemType) ||
-    (payload.itemType === "user_message" && payload.agentId !== undefined)
-  );
-}
-
 export function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
   taskTitle?: string,
 ): ReadonlyArray<OrchestrationThreadActivity> {
-  const agentId = payloadAgentId(event) ?? event.bridgeAgentId;
-  return runtimeEventToUnattributedActivities(event, taskTitle).map((activity) => ({
-    ...activity,
-    payload: {
-      ...(activity.payload as Record<string, unknown>),
-      ...(agentId !== undefined ? { agentId } : {}),
-      ...(event.bridgeAgentId !== undefined ? { bridgeAgentId: event.bridgeAgentId } : {}),
-      ...((event.type === "item.started" ||
-        event.type === "item.updated" ||
-        event.type === "item.completed") &&
-      event.payload.itemType === "user_message" &&
-      agentId !== undefined &&
-      event.payload.detail !== undefined
-        ? { prompt: event.payload.detail }
-        : {}),
-      ...(event.bridgeAgentId !== undefined && activity.kind.startsWith("task.")
-        ? { executionOwner: "cross-provider" }
-        : {}),
-    },
-  }));
-}
-
-function runtimeEventToUnattributedActivities(
-  event: ProviderRuntimeEvent,
-  taskTitle?: string,
-): ReadonlyArray<OrchestrationThreadActivity> {
-  // A child's reasoning and plan reach the transcript as completed items only.
-  // Their streaming deltas are dropped just like the main thread's: each one
-  // would otherwise become a durable activity row and a broadcast to every
-  // connected client.
-  if (
-    event.bridgeAgentId !== undefined &&
-    (event.type === "item.started" ||
-      event.type === "item.updated" ||
-      event.type === "item.completed") &&
-    ["reasoning", "plan", "context_compaction", "error"].includes(event.payload.itemType)
-  ) {
-    const kind =
-      event.payload.itemType === "context_compaction"
-        ? "context-compaction"
-        : event.payload.itemType === "error"
-          ? "runtime.error"
-          : event.type;
-    return [
-      {
-        id: event.eventId,
-        createdAt: event.createdAt,
-        kind,
-        tone: kind === "runtime.error" ? "error" : "info",
-        summary: event.payload.title ?? event.payload.itemType,
-        payload: {
-          ...event.payload,
-          ...(event.itemId !== undefined ? { itemId: event.itemId } : {}),
-        },
-        turnId: toTurnId(event.turnId) ?? null,
-      },
-    ];
-  }
   const maybeSequence = (() => {
     const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
     return eventWithSequence.sessionSequence !== undefined
@@ -557,11 +392,6 @@ function runtimeEventToUnattributedActivities(
             ...(event.payload.detail ? { detail: event.payload.detail } : {}),
             ...(event.payload.appName ? { appName: event.payload.appName } : {}),
             ...(event.payload.options ? { options: event.payload.options } : {}),
-            // Owning subagent, when a child raised the request. The prompt is
-            // still derived from this row for the thread (only the user can
-            // answer); the stamp re-homes the timeline row into that agent's
-            // transcript, and names which agent is actually blocked.
-            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -586,7 +416,6 @@ function runtimeEventToUnattributedActivities(
             ...(requestKind ? { requestKind } : {}),
             requestType: event.payload.requestType,
             ...(event.payload.decision ? { decision: event.payload.decision } : {}),
-            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -601,10 +430,7 @@ function runtimeEventToUnattributedActivities(
           createdAt: event.createdAt,
           tone: "error",
           kind: "runtime.error",
-          // Runtime failures are usually actionable (quota exhausted,
-          // authentication expired, provider unavailable). Keep the generic
-          // activity kind, but put the provider's reason in the visible row.
-          summary: truncateDetail(event.payload.message, 120),
+          summary: "Runtime error",
           payload: {
             message: truncateDetail(event.payload.message),
           },
@@ -667,9 +493,6 @@ function runtimeEventToUnattributedActivities(
             ...(event.payload.explanation !== undefined
               ? { explanation: event.payload.explanation }
               : {}),
-            // Owning subagent, when a child wrote this plan. Clients scope
-            // the chip to that agent's transcript instead of the parent turn.
-            ...(event.payload.agentId !== undefined ? { agentId: event.payload.agentId } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -688,12 +511,7 @@ function runtimeEventToUnattributedActivities(
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             questions: event.payload.questions,
-            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.responseMode ? { responseMode: event.payload.responseMode } : {}),
-            ...((event.payload.delivery === "agent" || event.bridgeAgentId !== undefined) &&
-            event.payload.responseMode === "message"
-              ? { delivery: "agent" }
-              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -708,15 +526,10 @@ function runtimeEventToUnattributedActivities(
           createdAt: event.createdAt,
           tone: "info",
           kind: "user-input.resolved",
-          summary: event.payload.cancelled ? "User input cancelled" : "User input submitted",
+          summary: "User input submitted",
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             answers: event.payload.answers,
-            ...(event.payload.cancelled !== undefined
-              ? { cancelled: event.payload.cancelled }
-              : {}),
-            ...(event.payload.reason !== undefined ? { reason: event.payload.reason } : {}),
-            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -743,11 +556,6 @@ function runtimeEventToUnattributedActivities(
             ...(event.payload.description
               ? { detail: truncateDetail(event.payload.description) }
               : {}),
-            // Detachment is reported at START for backgrounded shells/agents
-            // and for every resumed subagent; those never send a later patch.
-            ...(event.payload.isBackgrounded !== undefined
-              ? { isBackgrounded: event.payload.isBackgrounded }
-              : {}),
             ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -758,7 +566,6 @@ function runtimeEventToUnattributedActivities(
 
     case "task.progress": {
       const linkage = taskLinkageActivityFields(event.payload as Record<string, unknown>);
-      const hasPrompt = typeof linkage.prompt === "string";
       // Usage and activity are independent latest-state streams. Keeping them
       // under separate stable ids prevents a command/reasoning update from
       // replacing the last known token count (and prevents a usage-only tick
@@ -781,18 +588,10 @@ function runtimeEventToUnattributedActivities(
         ...(hasProgressState
           ? [
               {
-                // Keep a launch prompt in its own bounded row. Ordinary
-                // progress is latest-state and must not erase the exact
-                // parent instruction when the provider reports it after the
-                // child task was registered.
-                id: hasPrompt
-                  ? taskPromptActivityId({
-                      threadId: event.threadId,
-                      taskId: event.payload.taskId,
-                      promptId: linkage.promptId,
-                      eventId: event.eventId,
-                    })
-                  : EventId.make(`task-progress:${event.threadId}:${event.payload.taskId}`),
+                // Stable per-task id: activity is "latest state", not
+                // history, so each meaningful tick replaces the last. This
+                // bounds a large fleet to one activity row per task.
+                id: EventId.make(`task-progress:${event.threadId}:${event.payload.taskId}`),
                 createdAt: event.createdAt,
                 tone: "info" as const,
                 kind: "task.progress" as const,
@@ -846,12 +645,6 @@ function runtimeEventToUnattributedActivities(
     case "task.updated": {
       return [
         {
-          // Reopened-thread prompt recovery also arrives as task.updated, but
-          // it deliberately does NOT share the live prompt row's id: a resume
-          // stamps `createdAt` with the resume time, so upserting would drag
-          // every recovered instruction to the end of the transcript. The
-          // client folds the replay onto the original row by promptId and
-          // keeps the original timestamp instead.
           id: event.eventId,
           createdAt: event.createdAt,
           tone: event.payload.status === "failed" ? "error" : "info",
@@ -864,9 +657,6 @@ function runtimeEventToUnattributedActivities(
                 : "Task updated",
           payload: {
             taskId: event.payload.taskId,
-            // status and error already ride the linkage bundle below; only
-            // waitReason needs copying here.
-            ...(event.payload.waitReason ? { waitReason: event.payload.waitReason } : {}),
             ...(event.payload.description
               ? { detail: truncateDetail(event.payload.description) }
               : {}),
@@ -950,36 +740,6 @@ function runtimeEventToUnattributedActivities(
       ];
     }
 
-    case "session.state.changed": {
-      // Only the two compaction edges are persisted. Session state otherwise
-      // lives on the session row, and `running` in particular is republished
-      // on every heartbeat — a row per state change would be an activity
-      // stream made of nothing else.
-      if (event.payload.compacting === undefined) {
-        return [];
-      }
-      return [
-        {
-          // One row per thread, rewritten by each edge: the panel asks "is it
-          // compacting, and since when", which is latest-state. A row per edge
-          // would accumulate one pair per compaction for no reader.
-          id: EventId.make(
-            `session-compacting:${event.threadId}${event.bridgeAgentId !== undefined ? `:${event.bridgeAgentId}` : ""}`,
-          ),
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "session.compacting",
-          summary: event.payload.compacting ? "Compacting context" : "Context compaction finished",
-          payload: {
-            compacting: event.payload.compacting,
-            ...(event.payload.reason ? { reason: event.payload.reason } : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
     case "thread.state.changed": {
       if (event.payload.state !== "compacted") {
         return [];
@@ -1032,7 +792,10 @@ function runtimeEventToUnattributedActivities(
     }
 
     case "item.updated": {
-      if (!isPersistedItemLifecycle(event.payload)) {
+      if (
+        !isToolLifecycleItemType(event.payload.itemType) &&
+        !(event.payload.agentId && event.payload.itemType === "reasoning")
+      ) {
         return [];
       }
       // A streaming update's `data` carries the full tool output accumulated
@@ -1059,7 +822,6 @@ function runtimeEventToUnattributedActivities(
             ...(event.payload.toolIcon ? { toolIcon: event.payload.toolIcon } : {}),
             ...(event.payload.toolSource ? { toolSource: event.payload.toolSource } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-            ...(event.itemId ? { itemId: event.itemId } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
               ? { parentToolUseId: event.payload.parentToolUseId }
@@ -1072,7 +834,10 @@ function runtimeEventToUnattributedActivities(
     }
 
     case "item.completed": {
-      if (!isPersistedItemLifecycle(event.payload)) {
+      if (
+        !isToolLifecycleItemType(event.payload.itemType) &&
+        !(event.payload.agentId && event.payload.itemType === "reasoning")
+      ) {
         return [];
       }
       return [
@@ -1092,7 +857,6 @@ function runtimeEventToUnattributedActivities(
             ...(event.payload.toolIcon ? { toolIcon: event.payload.toolIcon } : {}),
             ...(event.payload.toolSource ? { toolSource: event.payload.toolSource } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-            ...(event.itemId ? { itemId: event.itemId } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
               ? { parentToolUseId: event.payload.parentToolUseId }
@@ -1105,7 +869,10 @@ function runtimeEventToUnattributedActivities(
     }
 
     case "item.started": {
-      if (!isPersistedItemLifecycle(event.payload)) {
+      if (
+        !isToolLifecycleItemType(event.payload.itemType) &&
+        !(event.payload.agentId && event.payload.itemType === "reasoning")
+      ) {
         return [];
       }
       return [
@@ -1125,7 +892,6 @@ function runtimeEventToUnattributedActivities(
             ...(event.payload.toolIcon ? { toolIcon: event.payload.toolIcon } : {}),
             ...(event.payload.toolSource ? { toolSource: event.payload.toolSource } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-            ...(event.itemId ? { itemId: event.itemId } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
               ? { parentToolUseId: event.payload.parentToolUseId }
@@ -1142,6 +908,18 @@ function runtimeEventToUnattributedActivities(
   }
 
   return [];
+}
+
+function sameCodexGoalRecord(current: CodexGoal, next: CodexGoal): boolean {
+  return (
+    current.objective === next.objective &&
+    current.status === next.status &&
+    (current.tokenBudget ?? null) === (next.tokenBudget ?? null) &&
+    current.tokensUsed === next.tokensUsed &&
+    current.timeUsedSeconds === next.timeUsedSeconds &&
+    current.createdAt === next.createdAt &&
+    current.updatedAt === next.updatedAt
+  );
 }
 
 const make = Effect.gen(function* () {
@@ -1188,20 +966,6 @@ const make = Effect.gen(function* () {
     capacity: BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY,
     timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
-  });
-
-  const childAssistantMessages = yield* Cache.make<
-    MessageId,
-    {
-      threadId: ThreadId;
-      agentId: string;
-      bridgeAgentId: string;
-      turnId?: TurnId;
-    }
-  >({
-    capacity: BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY,
-    timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
-    lookup: () => Effect.die("Child assistant segments must be registered before lookup"),
   });
 
   // Task names arrive on task.started/task.progress but not on task.completed,
@@ -1345,9 +1109,6 @@ const make = Effect.gen(function* () {
     turnId?: TurnId;
   }) =>
     Effect.gen(function* () {
-      if (input.event.type === "content.delta" && input.event.payload.agentId !== undefined) {
-        return assistantSegmentMessageId(assistantSegmentBaseKeyFromEvent(input.event), 0);
-      }
       if (!input.turnId) {
         return assistantSegmentMessageId(assistantSegmentBaseKeyFromEvent(input.event), 0);
       }
@@ -1414,15 +1175,6 @@ const make = Effect.gen(function* () {
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
 
-  // A child agent's plan is finalized as an activity, not a thread plan, so
-  // its buffered text is read and dropped here rather than upserted.
-  const takeBufferedProposedPlan = (planId: string) =>
-    Cache.getOption(bufferedProposedPlanById, planId).pipe(
-      Effect.flatMap((existingEntry) =>
-        clearBufferedProposedPlan(planId).pipe(Effect.as(Option.getOrUndefined(existingEntry))),
-      ),
-    );
-
   const clearAssistantMessageState = (messageId: MessageId) =>
     clearBufferedAssistantText(messageId);
 
@@ -1431,7 +1183,6 @@ const make = Effect.gen(function* () {
     threadId: ThreadId;
     messageId: MessageId;
     turnId?: TurnId;
-    agentId?: string;
     createdAt: string;
     commandTag: string;
   }) =>
@@ -1447,7 +1198,6 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         messageId: input.messageId,
         delta: bufferedText,
-        ...(input.agentId ? { agentId: input.agentId } : {}),
         ...(input.turnId ? { turnId: input.turnId } : {}),
         createdAt: input.createdAt,
       });
@@ -1491,8 +1241,8 @@ const make = Effect.gen(function* () {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
     messageId: MessageId;
-    turnId?: TurnId;
     agentId?: string;
+    turnId?: TurnId;
     createdAt: string;
     commandTag: string;
     finalDeltaCommandTag: string;
@@ -1515,8 +1265,8 @@ const make = Effect.gen(function* () {
           commandId: yield* providerCommandId(input.event, input.finalDeltaCommandTag),
           threadId: input.threadId,
           messageId: input.messageId,
-          delta: text,
           ...(input.agentId ? { agentId: input.agentId } : {}),
+          delta: text,
           ...(input.turnId ? { turnId: input.turnId } : {}),
           createdAt: input.createdAt,
         });
@@ -1656,7 +1406,7 @@ const make = Effect.gen(function* () {
       yield* Effect.forEach(
         proposedPlanKeys,
         (key) =>
-          key.startsWith(proposedPlanPrefix) && !key.startsWith(`${proposedPlanPrefix}agent:`)
+          key.startsWith(proposedPlanPrefix)
             ? Cache.invalidate(bufferedProposedPlanById, key)
             : Effect.void,
         { concurrency: 1 },
@@ -1753,30 +1503,98 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
+  const childReasoningText = yield* Cache.make<string, string>({
+    capacity: 512,
+    timeToLive: "1 hour",
+    lookup: () => Effect.succeed(""),
+  });
+
+  const processRuntimeEvent = (incomingEvent: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
+      if (
+        incomingEvent.type === "content.delta" &&
+        incomingEvent.payload.agentId &&
+        incomingEvent.itemId &&
+        (incomingEvent.payload.streamKind === "reasoning_text" ||
+          incomingEvent.payload.streamKind === "reasoning_summary_text")
+      ) {
+        const key = `${incomingEvent.threadId}:${incomingEvent.payload.agentId}:${incomingEvent.itemId}`;
+        const previous = yield* Cache.get(childReasoningText, key);
+        const detail = (previous + incomingEvent.payload.delta).slice(-8_000);
+        yield* Cache.set(childReasoningText, key, detail);
+        incomingEvent = {
+          ...incomingEvent,
+          type: "item.updated",
+          payload: {
+            agentId: incomingEvent.payload.agentId,
+            itemType: "reasoning",
+            title: "Thinking",
+            status: "inProgress",
+            detail,
+          },
+        };
+      }
+      const event = incomingEvent;
+      // Child messages have their own item identity and never participate in
+      // the parent's segmentation, completion, or checkpoint selection.
+      if (
+        ((event.type === "content.delta" && event.payload.streamKind === "assistant_text") ||
+          (event.type === "item.completed" && event.payload.itemType === "assistant_message")) &&
+        event.payload.agentId
+      ) {
+        if (!(yield* resolveThreadRuntimeContext(event.threadId))) return;
+        const agentId = event.payload.agentId;
+        const messageId = MessageId.make(
+          `assistant:agent:${agentId}:${event.itemId ?? event.eventId}`,
+        );
+        const turnId = toTurnId(event.turnId);
+        if (event.type === "content.delta") {
+          const settings = yield* serverSettingsService.getSettings;
+          const delta = settings.enableLegacyTokenStreaming
+            ? event.payload.delta
+            : yield* appendBufferedAssistantText(messageId, event.payload.delta);
+          if (!delta) return;
+          yield* orchestrationEngine.dispatch({
+            type: "thread.message.assistant.delta",
+            commandId: yield* providerCommandId(event, "child-assistant-delta"),
+            threadId: event.threadId,
+            messageId,
+            agentId,
+            delta,
+            ...(turnId ? { turnId } : {}),
+            createdAt: event.createdAt,
+          });
+        } else {
+          const existing = yield* getThreadMessageById(event.threadId, messageId);
+          if (existing?.isStreaming === false) return;
+          yield* finalizeAssistantMessage({
+            event,
+            threadId: event.threadId,
+            messageId,
+            agentId,
+            ...(turnId ? { turnId } : {}),
+            createdAt: event.createdAt,
+            commandTag: "child-assistant-complete",
+            finalDeltaCommandTag: "child-assistant-backfill",
+            hasProjectedMessage: existing !== undefined,
+            ...(!existing?.text && event.payload.detail
+              ? { fallbackText: event.payload.detail }
+              : {}),
+          });
+        }
+        return;
+      }
+
       if (event.type === "content.delta" && event.payload.streamKind !== "assistant_text") {
         return;
       }
 
       const thread = yield* resolveThreadRuntimeContext(event.threadId);
       if (!thread) return;
-      if (
-        event.type === "session.exited" &&
-        event.providerInstanceId !== undefined &&
-        thread.session?.providerInstanceId !== undefined &&
-        event.providerInstanceId !== thread.session.providerInstanceId
-      ) {
-        // A previous account's process can report its exit after a compatible
-        // replacement has already become active. Ignore the event completely
-        // so it cannot stop the new session or clear its turn/liveness state.
-        return;
-      }
 
       if (event.type === "thread.goal.updated" || event.type === "thread.goal.cleared") {
         // A child agent's goal is its own; only the root thread's goal is
         // projected onto the T3 thread.
-        if (event.bridgeAgentId !== undefined) return;
         // One row read, not a thread detail load: only the projected goal is
         // needed here, and the rest of ingestion no longer hydrates the thread.
         const currentGoal =
@@ -1850,7 +1668,6 @@ const make = Effect.gen(function* () {
           : false;
 
       const shouldApplyThreadLifecycle = (() => {
-        if (event.bridgeAgentId !== undefined) return false;
         if (!STRICT_PROVIDER_LIFECYCLE_GUARD) {
           return true;
         }
@@ -1987,21 +1804,12 @@ const make = Effect.gen(function* () {
 
       if (assistantDelta && assistantDelta.length > 0) {
         const turnId = toTurnId(event.turnId);
-        const agentId = event.type === "content.delta" ? event.payload.agentId : undefined;
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
           event,
           ...(turnId ? { turnId } : {}),
         });
-        if (agentId !== undefined && event.bridgeAgentId !== undefined) {
-          yield* Cache.set(childAssistantMessages, assistantMessageId, {
-            threadId: thread.id,
-            agentId,
-            bridgeAgentId: event.bridgeAgentId,
-            ...(turnId !== undefined ? { turnId } : {}),
-          });
-        }
-        if (turnId && agentId === undefined) {
+        if (turnId) {
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
         }
 
@@ -2018,7 +1826,6 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               messageId: assistantMessageId,
               delta: spillChunk,
-              ...(agentId ? { agentId } : {}),
               ...(turnId ? { turnId } : {}),
               createdAt: now,
             });
@@ -2030,7 +1837,6 @@ const make = Effect.gen(function* () {
             threadId: thread.id,
             messageId: assistantMessageId,
             delta: assistantDelta,
-            ...(agentId ? { agentId } : {}),
             ...(turnId ? { turnId } : {}),
             createdAt: now,
           });
@@ -2042,7 +1848,7 @@ const make = Effect.gen(function* () {
         (event.type === "user-input.requested" && event.payload.responseMode !== "message")
           ? toTurnId(event.turnId)
           : undefined;
-      if (pauseForUserTurnId && event.bridgeAgentId === undefined) {
+      if (pauseForUserTurnId) {
         const hasProjectedMessage = yield* projectionThreadMessages.hasAssistantMessageForTurn({
           threadId: thread.id,
           turnId: pauseForUserTurnId,
@@ -2088,39 +1894,13 @@ const make = Effect.gen(function* () {
         yield* appendBufferedProposedPlan(planId, proposedPlanDelta, now);
       }
 
-      if (
-        event.type === "turn.proposed.completed" &&
-        (event.bridgeAgentId !== undefined || event.payload.agentId !== undefined)
-      ) {
-        const planId = proposedPlanIdFromEvent(event, thread.id);
-        const buffered = yield* takeBufferedProposedPlan(planId);
-        yield* orchestrationEngine.dispatch({
-          type: "thread.activity.append",
-          commandId: yield* providerCommandId(event, "child-proposed-plan"),
-          threadId: thread.id,
-          activity: {
-            id: event.eventId,
-            createdAt: now,
-            kind: "turn.proposed.completed",
-            tone: "info",
-            summary: "Plan proposed",
-            turnId: eventTurnId ?? null,
-            payload: {
-              planMarkdown: event.payload.planMarkdown || buffered?.text,
-              agentId: event.payload.agentId ?? event.bridgeAgentId,
-              ...(event.bridgeAgentId !== undefined ? { bridgeAgentId: event.bridgeAgentId } : {}),
-            },
-          },
-          createdAt: now,
-        });
-      }
-
       const assistantCompletion =
         event.type === "item.completed" && event.payload.itemType === "assistant_message"
           ? {
-              messageId: assistantSegmentMessageId(assistantSegmentBaseKeyFromEvent(event), 0),
+              messageId: MessageId.make(
+                `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
+              ),
               fallbackText: event.payload.detail,
-              agentId: event.payload.agentId,
             }
           : undefined;
       const proposedPlanCompletion =
@@ -2134,17 +1914,16 @@ const make = Effect.gen(function* () {
 
       if (assistantCompletion) {
         const turnId = toTurnId(event.turnId);
-        const activeAssistantMessageId =
-          turnId && assistantCompletion.agentId === undefined
-            ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
-            : Option.none<MessageId>();
+        const activeAssistantMessageId = turnId
+          ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
+          : Option.none<MessageId>();
         const assistantMessageId = Option.getOrElse(
           activeAssistantMessageId,
           () => assistantCompletion.messageId,
         );
         const [existingAssistantMessage, hasAssistantMessagesForTurn] = yield* Effect.all([
           getThreadMessageById(thread.id, assistantMessageId),
-          turnId === undefined || assistantCompletion.agentId !== undefined
+          turnId === undefined
             ? Effect.succeed(false)
             : projectionThreadMessages.hasAssistantMessageForTurn({
                 threadId: thread.id,
@@ -2162,11 +1941,7 @@ const make = Effect.gen(function* () {
           (assistantCompletion.fallbackText?.trim().length ?? 0) === 0;
 
         if (!shouldSkipRedundantCompletion) {
-          if (
-            turnId &&
-            assistantCompletion.agentId === undefined &&
-            Option.isNone(activeAssistantMessageId)
-          ) {
+          if (turnId && Option.isNone(activeAssistantMessageId)) {
             yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
           }
 
@@ -2174,7 +1949,6 @@ const make = Effect.gen(function* () {
             event,
             threadId: thread.id,
             messageId: assistantMessageId,
-            ...(assistantCompletion.agentId ? { agentId: assistantCompletion.agentId } : {}),
             ...(turnId ? { turnId } : {}),
             createdAt: now,
             commandTag: "assistant-complete",
@@ -2184,60 +1958,18 @@ const make = Effect.gen(function* () {
               ? { fallbackText: assistantCompletion.fallbackText }
               : {}),
           });
-          yield* Cache.invalidate(childAssistantMessages, assistantMessageId);
 
-          if (turnId && assistantCompletion.agentId === undefined) {
+          if (turnId) {
             yield* forgetAssistantMessageId(thread.id, turnId, assistantMessageId);
           }
         }
 
-        if (turnId && assistantCompletion.agentId === undefined) {
+        if (turnId) {
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
         }
       }
 
-      if (
-        event.bridgeAgentId !== undefined &&
-        (event.type === "task.completed" ||
-          (event.type === "task.updated" &&
-            ["completed", "failed", "interrupted", "cancelled"].includes(
-              event.payload.status ?? "",
-            )) ||
-          event.type === "request.opened" ||
-          (event.type === "user-input.requested" && event.payload.responseMode !== "message"))
-      ) {
-        const owner =
-          "taskId" in event.payload
-            ? event.payload.taskId
-            : (payloadAgentId(event) ?? event.bridgeAgentId);
-        for (const messageId of yield* Cache.keys(childAssistantMessages)) {
-          const segment = yield* Cache.getOption(childAssistantMessages, messageId);
-          if (
-            Option.isNone(segment) ||
-            segment.value.threadId !== thread.id ||
-            segment.value.agentId !== owner
-          )
-            continue;
-          yield* finalizeAssistantMessage({
-            event,
-            threadId: thread.id,
-            messageId,
-            agentId: segment.value.agentId,
-            ...(segment.value.turnId !== undefined ? { turnId: segment.value.turnId } : {}),
-            createdAt: now,
-            commandTag: "child-assistant-complete",
-            finalDeltaCommandTag: "child-assistant-flush",
-            hasProjectedMessage: true,
-          });
-          yield* Cache.invalidate(childAssistantMessages, messageId);
-        }
-      }
-
-      if (
-        proposedPlanCompletion &&
-        event.bridgeAgentId === undefined &&
-        payloadAgentId(event) === undefined
-      ) {
+      if (proposedPlanCompletion) {
         yield* finalizeBufferedProposedPlan({
           event,
           threadId: thread.id,
@@ -2248,7 +1980,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (isTerminalTurn && event.bridgeAgentId === undefined) {
+      if (isTerminalTurn) {
         const turnId = toTurnId(event.turnId);
         if (turnId) {
           const userInputActivities =
@@ -2325,15 +2057,11 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "session.exited" && event.bridgeAgentId === undefined) {
+      if (event.type === "session.exited") {
         yield* clearTurnStateForSession(thread.id);
       }
 
-      if (
-        event.type === "runtime.error" &&
-        event.bridgeAgentId === undefined &&
-        event.payload.agentId === undefined
-      ) {
+      if (event.type === "runtime.error") {
         const runtimeErrorMessage = event.payload.message;
 
         const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
@@ -2362,11 +2090,7 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (
-        event.type === "thread.metadata.updated" &&
-        event.payload.name &&
-        event.bridgeAgentId === undefined
-      ) {
+      if (event.type === "thread.metadata.updated" && event.payload.name) {
         if (canReplaceThreadTitle(thread.title)) {
           yield* orchestrationEngine.dispatch({
             type: "thread.meta.update",
@@ -2377,7 +2101,7 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "turn.diff.updated" && event.bridgeAgentId === undefined) {
+      if (event.type === "turn.diff.updated") {
         const turnId = toTurnId(event.turnId);
         const checkpointContext = turnId
           ? yield* projectionSnapshotQuery
@@ -2430,16 +2154,11 @@ const make = Effect.gen(function* () {
       // Events carrying a turn id that conflicts with the active turn are
       // stale (superseded turn) and must neither overwrite nor clear the
       // active turn's progress; session.exited always clears.
-      if (event.type === "session.exited" && event.bridgeAgentId === undefined) {
+      if (event.type === "session.exited") {
         threadPlanProgress.clearThreadPlanProgress(thread.id);
-      } else if (!conflictsWithActiveTurn && event.bridgeAgentId === undefined) {
+      } else if (!conflictsWithActiveTurn) {
         if (event.type === "turn.plan.updated") {
-          // A subagent's own todo list is not the thread's working indicator:
-          // recording it here made the parent's status line narrate a child's
-          // steps (and a finished child's last step lingered on the parent).
-          if (event.payload.agentId === undefined) {
-            threadPlanProgress.recordPlanProgress(thread.id, event.payload.plan);
-          }
+          threadPlanProgress.recordPlanProgress(thread.id, event.payload.plan);
         } else if (isTerminalTurn && shouldApplyThreadLifecycle) {
           threadPlanProgress.clearThreadPlanProgress(thread.id);
         }
@@ -2457,9 +2176,6 @@ const make = Effect.gen(function* () {
             taskType?: string;
             status?: string;
             agentId?: string;
-            title?: string;
-            description?: string;
-            workflowName?: string;
           };
           threadBackgroundLiveness.recordTaskLiveness({
             threadId: thread.id,
@@ -2467,16 +2183,6 @@ const make = Effect.gen(function* () {
             taskType: payload.taskType,
             status: payload.status,
             agentId: payload.agentId,
-            // Whatever the provider called this work, in the order the panel
-            // uses: an agent's title, else its description (a shell's is its
-            // command line), else the workflow it belongs to. Absent on thin
-            // rows, which the registry treats as "keep the name I have". A
-            // bare task id (Codex progress rows) is not a name; the generated
-            // one arrives through the task-title reactor instead.
-            label: [payload.title, payload.description, payload.workflowName].find(
-              (candidate) => candidate !== undefined && !isUnnamedTask(candidate, payload.taskId),
-            ),
-            at: event.createdAt,
             kind:
               event.type === "task.started"
                 ? "started"
@@ -2488,21 +2194,8 @@ const make = Effect.gen(function* () {
           });
           break;
         }
-        // The same edges that persist the durable `session.compacting` row.
-        // The sidebar reads the shell, not thread activities, so this is how a
-        // compacting thread stops claiming its agent is working.
-        case "session.state.changed":
-          if (event.payload.compacting !== undefined && event.bridgeAgentId === undefined) {
-            threadBackgroundLiveness.recordSessionCompacting({
-              threadId: thread.id,
-              compacting: event.payload.compacting,
-              at: event.createdAt,
-            });
-          }
-          break;
         case "session.exited":
-          if (event.bridgeAgentId === undefined)
-            threadBackgroundLiveness.clearThreadLiveness(thread.id);
+          threadBackgroundLiveness.clearThreadLiveness(thread.id);
           break;
         default:
           break;
@@ -2580,28 +2273,7 @@ const make = Effect.gen(function* () {
         }
       }
 
-      // Whether a task row offers Stop: bridged (cross-provider) children are
-      // stopped through their own root, and only agent-kind Codex/OpenCode
-      // tasks and non-workflow Claude tasks accept an individual stop.
-      const activities = runtimeEventToActivities(activityEvent, taskTitle).map((activity) => {
-        if (!activity.kind.startsWith("task.")) return activity;
-        const payload = activity.payload as Record<string, unknown>;
-        return {
-          ...activity,
-          payload: {
-            ...payload,
-            canStop:
-              typeof payload.canStop === "boolean"
-                ? payload.canStop
-                : event.bridgeAgentId !== undefined
-                  ? false
-                  : (event.provider === "claudeAgent" &&
-                      !String(payload.taskId).includes(":wf:")) ||
-                    ((event.provider === "codex" || event.provider === "opencode") &&
-                      payload.agentKind === "agent"),
-          },
-        };
-      });
+      const activities = runtimeEventToActivities(activityEvent, taskTitle);
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
           Effect.flatMap((commandId) =>
@@ -2666,8 +2338,8 @@ export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
 ).pipe(
-  Layer.provide(ProjectionThreadActivityRepositoryLive),
   Layer.provide(ProjectionThreadRepositoryLive),
+  Layer.provide(ProjectionThreadActivityRepositoryLive),
   Layer.provide(ProjectionThreadMessageRepositoryLive),
   Layer.provide(ProjectionThreadProposedPlanRepositoryLive),
   Layer.provide(ProjectionTurnRepositoryLive),

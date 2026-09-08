@@ -10,44 +10,6 @@ export const resolveCodexLaunchArgs = (
 export const codexLaunchArgv = (launchArgs?: string): ReadonlyArray<string> =>
   tokenizeCliArgs(launchArgs);
 
-/** Account overlays keep authentication private while reading one conversation database. */
-export const withCodexAccountLaunchArgs = (launchArgs: string, sharedHomePath: string): string =>
-  `${launchArgs} --config cli_auth_credentials_store=file --config ${JSON.stringify(`sqlite_home=${sharedHomePath}`)}`.trim();
-
-export function hasCodexModelCatalogOverride(launchArgs: string): boolean {
-  const args = codexLaunchArgv(launchArgs);
-  for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index];
-    if (argument === undefined) continue;
-    // clap also accepts the attached short form `-cmodel_catalog_json=…`.
-    const configValue =
-      argument === "--config" || argument === "-c"
-        ? args[index + 1]
-        : argument.startsWith("--config=")
-          ? argument.slice("--config=".length)
-          : argument.startsWith("-c=")
-            ? argument.slice("-c=".length)
-            : argument.startsWith("-c") && argument.includes("=")
-              ? argument.slice(2)
-              : undefined;
-    if (configValue !== undefined && /^\s*model_catalog_json\s*=/.test(configValue)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-export const withCodexModelCatalogLaunchArgs = (
-  launchArgs: string | undefined,
-  modelCatalogPath: string | undefined,
-): string => {
-  const configured = launchArgs?.trim() ?? "";
-  if (modelCatalogPath === undefined) return configured;
-  if (hasCodexModelCatalogOverride(configured)) return configured;
-  const override = `--config model_catalog_json=${JSON.stringify(modelCatalogPath)}`;
-  return configured.length === 0 ? override : `${configured} ${override}`;
-};
-
 export const codexAppServerArgs = (launchArgs?: string) => [
   "app-server",
   ...codexLaunchArgv(launchArgs),

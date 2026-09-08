@@ -1,5 +1,4 @@
 import { NativeStackScreenOptions } from "../../native/StackHeader";
-import { buildThreadTurnInterruptInput } from "./threadTurnInterrupt";
 import {
   StackActions,
   useFocusEffect,
@@ -8,19 +7,12 @@ import {
 } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
-import * as Cause from "effect/Cause";
-import { AsyncResult } from "effect/unstable/reactivity";
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ThreadId,
   type ProjectScript,
 } from "@t3tools/contracts";
-import {
-  deriveAgentPanelModel,
-  foldSubagentActivities,
-  hasLiveCrossProviderTasks,
-} from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
@@ -30,7 +22,7 @@ import {
   projectScriptRuntimeEnv,
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
-import { Alert, Platform, ScrollView, View } from "react-native";
+import { Alert, Keyboard, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
@@ -41,8 +33,6 @@ import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vc
 import { vcsEnvironment } from "../../state/vcs";
 
 import { EmptyState } from "../../components/EmptyState";
-import { AppText as Text } from "../../components/AppText";
-import { ControlPill } from "../../components/ControlPill";
 import {
   AndroidScreenHeader,
   type AndroidHeaderAction,
@@ -84,9 +74,7 @@ import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-s
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
-import { setPendingConnectionError } from "../../state/use-remote-environment-registry";
 import { threadEnvironment } from "../../state/threads";
-import { useAttachedSideChats } from "../../state/entities";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import {
   useAdaptiveWorkspaceLayout,
@@ -223,19 +211,6 @@ function ThreadRouteContent(
   } = useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
-  const agentActivities = selectedThreadDetail?.activities;
-  const agentSessionStatus = selectedThreadDetail?.session?.status;
-  const liveAgentCount = useMemo(() => {
-    if (!agentActivities) return 0;
-    const sessionLive =
-      agentSessionStatus !== undefined &&
-      agentSessionStatus !== "stopped" &&
-      agentSessionStatus !== "interrupted" &&
-      agentSessionStatus !== "error";
-    return deriveAgentPanelModel({
-      agents: foldSubagentActivities(agentActivities, { sessionLive }),
-    }).liveCount;
-  }, [agentActivities, agentSessionStatus]);
   // "Load earlier turns" header state for windowed (paginated) thread loads.
   const loadEarlierTurns = useMemo(() => {
     if (selectedThread === null || !threadHasOlderTurns(selectedThreadDetailState)) {
@@ -252,20 +227,10 @@ function ThreadRouteContent(
   }, [selectedThread, selectedThreadDetailState]);
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
-  const attachedSideChats = useAttachedSideChats(
-    selectedThread
-      ? { environmentId: selectedThread.environmentId, threadId: selectedThread.id }
-      : null,
-  );
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
-  const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
-    reportFailure: false,
-  });
-  const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
-  const [sideChatAction, setSideChatAction] = useState<"promoting" | "closing" | null>(null);
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -540,21 +505,12 @@ function ThreadRouteContent(
     }
     return interruptThreadTurn({
       environmentId: selectedThread.environmentId,
-      input: buildThreadTurnInterruptInput(selectedThread),
-    });
-  }, [interruptThreadTurn, selectedThread]);
-
-  // Stop all only appears once a cross-provider child is running: until then
-  // the plain Stop already ends everything this thread owns.
-  const hasLiveCrossProviderChildren = useMemo(
-    () => (agentActivities ? hasLiveCrossProviderTasks(agentActivities) : false),
-    [agentActivities],
-  );
-  const handleStopAll = useCallback(() => {
-    if (!selectedThread) return;
-    return interruptThreadTurn({
-      environmentId: selectedThread.environmentId,
-      input: buildThreadTurnInterruptInput(selectedThread, "tree"),
+      input: {
+        threadId: selectedThread.id,
+        ...(selectedThread.session.activeTurnId
+          ? { turnId: selectedThread.session.activeTurnId }
+          : {}),
+      },
     });
   }, [interruptThreadTurn, selectedThread]);
 
@@ -669,7 +625,24 @@ function ThreadRouteContent(
       terminalMenuSessions,
     ],
   );
+  const handleOpenAgents = useCallback(() => {
+    if (!selectedThread) return;
+    navigation.navigate("ThreadAgents", {
+      environmentId: selectedThread.environmentId,
+      threadId: selectedThread.id,
+    });
+  }, [navigation, selectedThread]);
+  const handleOpenSideChats = useCallback(() => {
+    if (!selectedThread) return;
+    Keyboard.dismiss();
+    navigation.navigate("ThreadSideChats", {
+      environmentId: selectedThread.environmentId,
+      threadId: selectedThread.id,
+    });
+  }, [navigation, selectedThread]);
   const threadGitControlProps = {
+    onOpenSideChats: handleOpenSideChats,
+    onOpenAgents: handleOpenAgents,
     environmentId: environmentIdRaw ?? "",
     threadId: threadId ?? "",
     auxiliaryPaneControl:
@@ -703,102 +676,6 @@ function ThreadRouteContent(
   };
   const threadCenterHeaderItems = useThreadGitCenterHeaderItems(threadGitControlProps);
   const compactRightHeaderItems = useThreadGitRightHeaderItems(threadGitControlProps);
-  const handleOpenAgents = useCallback(() => {
-    if (!selectedThread) {
-      return;
-    }
-    navigation.navigate("ThreadAgents", {
-      environmentId: String(selectedThread.environmentId),
-      threadId: String(selectedThread.id),
-    });
-  }, [navigation, selectedThread]);
-  const agentsHeaderItem = useMemo(
-    () =>
-      withNativeGlassHeaderItem({
-        accessibilityLabel: "Open agents",
-        icon: { name: "person.2", type: "sfSymbol" as const },
-        identifier: "thread-right-agents",
-        onPress: handleOpenAgents,
-        type: "button" as const,
-      }),
-    [handleOpenAgents],
-  );
-  const isUnpromotedSideChat =
-    selectedThread?.forkedFromThreadId != null && selectedThread.sideChatPromotedAt == null;
-  const handlePromoteSideChat = useCallback(async () => {
-    if (!selectedThread || !isUnpromotedSideChat || sideChatAction !== null) return;
-    setSideChatAction("promoting");
-    const result = await updateThreadMetadata({
-      environmentId: selectedThread.environmentId,
-      input: { threadId: selectedThread.id, sideChatPromotedAt: new Date().toISOString() },
-    });
-    if (AsyncResult.isFailure(result)) {
-      const error = Cause.squash(result.cause);
-      setPendingConnectionError(
-        error instanceof Error ? error.message : "The side chat could not be promoted.",
-      );
-      setSideChatAction(null);
-      return;
-    }
-    setPendingConnectionError(null);
-    setSideChatAction(null);
-    Alert.alert("Added to main threads", "This side chat now appears in the main thread list.");
-  }, [isUnpromotedSideChat, selectedThread, sideChatAction, updateThreadMetadata]);
-  const handleOpenOriginalThread = useCallback(() => {
-    if (!selectedThread?.forkedFromThreadId) return;
-    navigation.navigate("Thread", {
-      environmentId: String(selectedThread.environmentId),
-      threadId: String(selectedThread.forkedFromThreadId),
-    });
-  }, [navigation, selectedThread]);
-  const handleCloseSideChat = useCallback(() => {
-    if (!selectedThread || !isUnpromotedSideChat || sideChatAction !== null) return;
-    const parentThreadId = selectedThread.forkedFromThreadId;
-    if (!parentThreadId) return;
-    Alert.alert("Close side chat?", "Its messages will be permanently deleted.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Close",
-        style: "destructive",
-        onPress: () => {
-          void (async () => {
-            setSideChatAction("closing");
-            const result = await deleteThread({
-              environmentId: selectedThread.environmentId,
-              input: { threadId: selectedThread.id },
-            });
-            if (AsyncResult.isFailure(result)) {
-              const error = Cause.squash(result.cause);
-              setPendingConnectionError(
-                error instanceof Error ? error.message : "The side chat could not be closed.",
-              );
-              setSideChatAction(null);
-              return;
-            }
-            setPendingConnectionError(null);
-            setSideChatAction(null);
-            navigation.dispatch(
-              StackActions.replace("Thread", {
-                environmentId: String(selectedThread.environmentId),
-                threadId: String(parentThreadId),
-              }),
-            );
-          })();
-        },
-      },
-    ]);
-  }, [deleteThread, isUnpromotedSideChat, navigation, selectedThread, sideChatAction]);
-  const promoteSideChatHeaderItem = useMemo(
-    () =>
-      withNativeGlassHeaderItem({
-        accessibilityLabel: "Promote side chat to thread",
-        icon: { name: "arrow.up.right.square", type: "sfSymbol" as const },
-        identifier: "thread-right-promote-side-chat",
-        onPress: () => void handlePromoteSideChat(),
-        type: "button" as const,
-      }),
-    [handlePromoteSideChat],
-  );
   const splitLeftHeaderItems = useMemo<NativeHeaderItems>(
     () => [
       {
@@ -843,14 +720,18 @@ function ThreadRouteContent(
   const androidHeaderActions = useMemo<ReadonlyArray<AndroidHeaderAction>>(() => {
     if (Platform.OS !== "android") return [];
 
-    const actions: AndroidHeaderAction[] = [];
-    if (isUnpromotedSideChat) {
-      actions.push({
-        accessibilityLabel: "Promote side chat to thread",
-        icon: "arrow.up.right.square",
-        onPress: () => void handlePromoteSideChat(),
-      });
-    }
+    const actions: AndroidHeaderAction[] = [
+      {
+        accessibilityLabel: "Open related chats",
+        icon: "bubble.left.and.bubble.right",
+        onPress: handleOpenSideChats,
+      },
+      {
+        accessibilityLabel: "Open agents",
+        icon: "point.3.connected.trianglepath.dotted",
+        onPress: handleOpenAgents,
+      },
+    ];
     if (props.onReturnToThread) {
       actions.push({
         accessibilityLabel: "Return to chat",
@@ -873,11 +754,6 @@ function ThreadRouteContent(
       });
     }
     actions.push({
-      accessibilityLabel: "Open agents",
-      icon: "person.2",
-      onPress: handleOpenAgents,
-    });
-    actions.push({
       accessibilityLabel: "Open git controls",
       icon: "point.topleft.down.curvedto.point.bottomright.up",
       onPress: handleOpenGitInspector,
@@ -894,11 +770,10 @@ function ThreadRouteContent(
     fileInspector.supported,
     handleOpenFilesInspector,
     handleOpenAgents,
+    handleOpenSideChats,
     handleOpenTerminal,
     handleOpenGitInspector,
     handleToggleInspector,
-    handlePromoteSideChat,
-    isUnpromotedSideChat,
     props.onReturnToThread,
     selectedThreadCwd,
     selectedThreadProject?.workspaceRoot,
@@ -988,79 +863,6 @@ function ThreadRouteContent(
           connectionState: routeConnectionState,
         });
   const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
-  // Side-chat controls live in the composer overlay (see
-  // ThreadDetailScreen.composerAccessory): a side chat keeps its way back,
-  // out, and up; the original thread lists the side chats attached to it.
-  // Memoized so the element identity only changes with its inputs; the
-  // detail screen is memo'd and would otherwise re-render on every route
-  // update (git polling, inspector state) while a side chat is present.
-  const sideChatAccessory = useMemo(
-    () =>
-      isUnpromotedSideChat || attachedSideChats.length > 0 ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          // A ScrollView grows by default; as a strip it must only take its
-          // content height.
-          style={{ flexGrow: 0, flexShrink: 0 }}
-          className="mb-2"
-          contentContainerStyle={{ alignItems: "center", gap: 8, paddingHorizontal: 12 }}
-        >
-          <Text className="text-xs font-t3-medium text-foreground-muted">
-            {isUnpromotedSideChat ? "Side chat" : "Side chats"}
-          </Text>
-          {isUnpromotedSideChat ? (
-            <>
-              <ControlPill
-                label="Original thread"
-                accessibilityLabel="Open the original thread"
-                variant="pill"
-                onPress={handleOpenOriginalThread}
-              />
-              <ControlPill
-                label={sideChatAction === "promoting" ? "Adding…" : "Add to main threads"}
-                accessibilityLabel="Add side chat to main threads"
-                variant="pill"
-                disabled={sideChatAction !== null}
-                onPress={() => void handlePromoteSideChat()}
-              />
-              <ControlPill
-                label={sideChatAction === "closing" ? "Closing…" : "Close"}
-                accessibilityLabel="Close side chat"
-                variant="pill"
-                disabled={sideChatAction !== null}
-                onPress={handleCloseSideChat}
-              />
-            </>
-          ) : (
-            attachedSideChats.map((sideChat) => (
-              <ControlPill
-                key={String(sideChat.id)}
-                label={sideChat.title}
-                accessibilityLabel={`Open side chat ${sideChat.title}`}
-                variant="pill"
-                onPress={() =>
-                  navigation.navigate("Thread", {
-                    environmentId: String(sideChat.environmentId),
-                    threadId: String(sideChat.id),
-                  })
-                }
-              />
-            ))
-          )}
-        </ScrollView>
-      ) : null,
-    [
-      attachedSideChats,
-      handleCloseSideChat,
-      handleOpenOriginalThread,
-      handlePromoteSideChat,
-      isUnpromotedSideChat,
-      navigation,
-      sideChatAction,
-    ],
-  );
   const renderThreadRouteBody = (showActionControls: boolean) => (
     <>
       <ThreadGitControls {...threadGitControlProps} showActionControls={showActionControls} />
@@ -1078,9 +880,6 @@ function ThreadRouteContent(
           onDismissFeedback={composer.dismissFeedback}
           selectedThreadFeed={composer.selectedThreadFeed}
           activeWorkStartedAt={composer.activeWorkStartedAt}
-          liveAgentCount={liveAgentCount}
-          onOpenAgents={handleOpenAgents}
-          composerAccessory={sideChatAccessory}
           isCompacting={composer.isCompacting}
           creationState={creationState}
           activePendingApproval={requests.activePendingApproval}
@@ -1110,8 +909,6 @@ function ThreadRouteContent(
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
-          onStopAll={hasLiveCrossProviderChildren ? handleStopAll : undefined}
-          onStopBackgroundWork={handleStopAll}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
@@ -1161,11 +958,7 @@ function ThreadRouteContent(
           // reserved for future breadcrumbs/status).
           unstable_headerRightItems:
             Platform.OS === "ios"
-              ? () => [
-                  ...(isUnpromotedSideChat ? [promoteSideChatHeaderItem] : []),
-                  agentsHeaderItem,
-                  ...(layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems),
-                ]
+              ? () => (layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems)
               : undefined,
           unstable_headerSubtitle: usesNativeHeaderGlass ? headerSubtitle : undefined,
         }}

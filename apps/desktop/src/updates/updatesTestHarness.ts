@@ -1,8 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { DesktopUpdateState, DesktopUpstreamMergeStatus } from "@t3tools/contracts";
+import type { DesktopUpdateState } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
@@ -33,11 +32,6 @@ export interface UpdatesHarnessOptions {
   readonly stopBackend?: Effect.Effect<void>;
   readonly startBackend?: Effect.Effect<void>;
   readonly env?: Record<string, string | undefined>;
-  /** Fork: overrides used by the private-GitHub update feed tests. */
-  readonly resourcesPath?: string;
-  readonly mockUpdates?: boolean;
-  readonly githubToken?: string;
-  readonly upstreamMerge?: DesktopUpstreamMergeStatus | null;
 }
 
 export function makeHarness(options: UpdatesHarnessOptions = {}) {
@@ -50,20 +44,6 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
   const sentStates: DesktopUpdateState[] = [];
   const installSteps: string[] = [];
-  const resourcesPath = options.resourcesPath ?? "/missing/resources";
-  const mockUpdates = options.mockUpdates === false ? "false" : "true";
-  const configLayer = Layer.unwrap(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-desktop-updates-" });
-      return DesktopConfig.layerTest({
-        T3CODE_HOME: home,
-        T3CODE_DESKTOP_MOCK_UPDATES: mockUpdates,
-        T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
-        ...options.env,
-      });
-    }),
-  ).pipe(Layer.provide(NodeServices.layer));
 
   const addListener = (eventName: string, listener: (...args: readonly unknown[]) => void) => {
     const eventListeners = listeners.get(eventName) ?? new Set();
@@ -124,13 +104,6 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
       ).pipe(Effect.asVoid),
   } satisfies ElectronUpdater.ElectronUpdater["Service"]);
 
-  const credentialsLayer = Layer.succeed(DesktopUpdates.DesktopUpdateCredentials, {
-    resolvePrivateGitHubToken: Effect.succeed(
-      options.githubToken ? Option.some(options.githubToken.trim()) : Option.none(),
-    ),
-    readUpstreamMergeStatus: () => Effect.succeed(options.upstreamMerge ?? null),
-  });
-
   const windowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
     create: () => Effect.die("unexpected BrowserWindow creation"),
     main: Effect.succeed(Option.none()),
@@ -177,9 +150,21 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     appVersion: "1.2.3",
     appPath: "/repo",
     isPackaged: true,
-    resourcesPath,
+    resourcesPath: "/missing/resources",
     runningUnderArm64Translation: false,
-  }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, configLayer)));
+  }).pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        DesktopConfig.layerTest({
+          T3CODE_HOME: `/tmp/t3-desktop-updates-test-${process.pid}`,
+          T3CODE_DESKTOP_MOCK_UPDATES: "true",
+          T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
+          ...options.env,
+        }),
+      ),
+    ),
+  );
 
   let testSettings: DesktopAppSettings.DesktopSettings = {
     ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
@@ -223,10 +208,16 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     Layer.provideMerge(backendLayer),
     Layer.provideMerge(DesktopState.layer),
     Layer.provideMerge(settingsLayer),
-    Layer.provideMerge(configLayer),
+    Layer.provideMerge(
+      DesktopConfig.layerTest({
+        T3CODE_HOME: `/tmp/t3-desktop-updates-test-${process.pid}`,
+        T3CODE_DESKTOP_MOCK_UPDATES: "true",
+        T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
+        ...options.env,
+      }),
+    ),
     Layer.provideMerge(environmentLayer),
     Layer.provideMerge(NodeServices.layer),
-    Layer.provideMerge(credentialsLayer),
   );
 
   return {

@@ -29,7 +29,7 @@ import {
   type OrchestrationEventStoreShape,
 } from "../Services/OrchestrationEventStore.ts";
 
-const decodeEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
+const decodeCurrentEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
 const EventMetadataFromJsonString = Schema.fromJsonString(OrchestrationEventMetadata);
 
@@ -60,6 +60,50 @@ const OrchestrationEventPersistedRowSchema = Schema.Struct({
   payload: UnknownFromJsonString,
   metadata: EventMetadataFromJsonString,
 });
+
+const isLegacyTaskInterrupt = Schema.is(Schema.Struct({ taskId: Schema.String }));
+const isBridgePayload = Schema.is(Schema.Struct({ bridgeAgentId: Schema.String }));
+
+// Retired controls remain history. In particular, stripping taskId from an old
+// interrupt would incorrectly turn a child-only request into a parent interrupt.
+const decodeEvent = (row: typeof OrchestrationEventPersistedRowSchema.Type) => {
+  const retired =
+    row.type === "thread.turn-interrupt-requested" && isLegacyTaskInterrupt(row.payload);
+  return decodeCurrentEvent(
+    retired
+      ? {
+          ...row,
+          type: "thread.activity-appended",
+          payload: {
+            threadId: row.aggregateId,
+            activity: {
+              id: row.eventId,
+              tone: "info",
+              kind: "legacy.task-interrupt",
+              summary: "Archived agent control",
+              payload: row.payload,
+              turnId: null,
+              createdAt: row.occurredAt,
+            },
+          },
+        }
+      : row,
+  ).pipe(
+    Effect.map((event) => {
+      if (event.type !== "thread.activity-appended") return event;
+      const activity = event.payload.activity;
+      if (
+        (activity.kind !== "approval.requested" && activity.kind !== "user-input.requested") ||
+        !isBridgePayload(activity.payload)
+      )
+        return event;
+      return {
+        ...event,
+        payload: { ...event.payload, activity: { ...activity, kind: `legacy.${activity.kind}` } },
+      };
+    }),
+  );
+};
 
 const HasEventAfterRequestSchema = Schema.Struct({
   aggregateKind: Schema.String,

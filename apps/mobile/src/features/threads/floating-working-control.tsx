@@ -25,7 +25,6 @@ import { SymbolView } from "../../components/AppSymbol";
 import { ControlPill } from "../../components/ControlPill";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import type { FloatingWorkingStatus } from "./floating-working-status";
-export type { FloatingWorkingStatus } from "./floating-working-status";
 import { ShimmeringWorkContent } from "./thread-work-log";
 
 const CONTROL_HEIGHT = 38.5; // h-11 with the mobile 14px rem
@@ -64,22 +63,12 @@ export const FLOATING_WORKING_CONTROL_COVERAGE = CONTROL_OVERLAY_OFFSET + CONTRO
 export function FloatingWorkingControl(props: {
   readonly colorScheme: "light" | "dark";
   readonly status: FloatingWorkingStatus | null;
-  readonly liveAgentCount: number;
-  readonly onOpenAgents?: (() => void) | undefined;
   readonly showScrollToEnd: boolean;
   readonly onScrollToEnd: () => void;
-  /** Stops the background work holding the thread; labelled by whether a
-   * cross-provider child is live, since a plain Stop already covers the rest. */
-  readonly onStopBackgroundWork?: (() => void) | undefined;
-  readonly stopBackgroundWorkLabel?: "Stop" | "Stop all";
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const [overlayWidth, setOverlayWidth] = useState(windowWidth);
-  const [accessoryWidth, setAccessoryWidth] = useState(0);
-  const labelWidth = Math.max(
-    0,
-    Math.min(overlayWidth, windowWidth) - CONTROL_HEIGHT - 16 - accessoryWidth,
-  );
+  const labelWidth = Math.max(0, Math.min(overlayWidth, windowWidth) - CONTROL_HEIGHT - 16);
   const separationProgress = useSharedValue(props.showScrollToEnd ? 1 : 0);
 
   useEffect(() => {
@@ -128,54 +117,29 @@ export function FloatingWorkingControl(props: {
     return null;
   }
 
-  const showAgents =
-    props.status?.kind !== "syncing" && props.liveAgentCount > 0 && props.onOpenAgents;
-  const statusInteractive =
-    props.status?.kind === "connection" || Boolean(showAgents || props.onStopBackgroundWork);
+  // Only the connection label is a button (tap to reconnect); the others
+  // pass touches through to the feed like before.
+  const statusInteractive = props.status?.kind === "connection";
   // The host stays centered on the capsule, but its measurement constraint
   // comes from the overlay, independent of the capsule's current width.
   const statusContent =
     props.status !== null ? (
       <>
-        <View className="relative h-11 items-center justify-center" pointerEvents="box-none">
-          <Animated.View className="h-11" style={capsuleSizerStyle} />
-          <View
-            pointerEvents="box-none"
-            className="absolute h-11 items-center justify-center"
-            style={{ width: labelWidth }}
-          >
-            <FloatingStatusLabel
-              key={
-                props.status.kind === "working" || props.status.kind === "compacting"
-                  ? props.status.kind
-                  : `${props.status.kind}:${props.status.label}`
-              }
-              status={props.status}
-              onLayout={handleLabelLayout}
-            />
-          </View>
-        </View>
+        <Animated.View className="h-11" style={capsuleSizerStyle} />
         <View
-          className="h-11 flex-row items-center"
-          onLayout={(event) => setAccessoryWidth(event.nativeEvent.layout.width)}
+          pointerEvents="box-none"
+          className="absolute h-11 items-center justify-center"
+          style={{ width: labelWidth }}
         >
-          {showAgents ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Open Agents, ${props.liveAgentCount} active ${props.liveAgentCount === 1 ? "subagent" : "subagents"}`}
-              onPress={props.onOpenAgents}
-              className="h-11 min-w-11 flex-row items-center justify-center gap-1.5 px-3 active:opacity-70"
-            >
-              <SymbolView name="person.2" size={14} tintColorClassName="accent-foreground-muted" />
-              <Text className="text-xs tabular-nums text-foreground">{props.liveAgentCount}</Text>
-            </Pressable>
-          ) : null}
-          {props.onStopBackgroundWork ? (
-            <StopBackgroundWorkButton
-              label={props.stopBackgroundWorkLabel ?? "Stop"}
-              onPress={props.onStopBackgroundWork}
-            />
-          ) : null}
+          <FloatingStatusLabel
+            key={
+              props.status.kind === "working" || props.status.kind === "compacting"
+                ? props.status.kind
+                : `${props.status.kind}:${props.status.label}`
+            }
+            status={props.status}
+            onLayout={handleLabelLayout}
+          />
         </View>
       </>
     ) : null;
@@ -200,7 +164,7 @@ export function FloatingWorkingControl(props: {
             glassEffectStyle="regular"
             isInteractive={statusInteractive}
             pointerEvents={statusInteractive ? "box-none" : "none"}
-            className="h-11 flex-row items-center justify-center overflow-hidden rounded-full"
+            className="h-11 items-center justify-center overflow-hidden rounded-full"
             style={capsuleStyle}
           >
             {statusContent}
@@ -225,7 +189,7 @@ export function FloatingWorkingControl(props: {
         <View pointerEvents="box-none" className="flex-row items-center gap-4">
           <Animated.View
             pointerEvents={statusInteractive ? "box-none" : "none"}
-            className="h-11 flex-row items-center justify-center overflow-hidden rounded-full border border-border bg-card shadow-md shadow-black/10"
+            className="h-11 items-center justify-center overflow-hidden rounded-full border border-border bg-card shadow-md shadow-black/10"
             style={capsuleStyle}
           >
             {statusContent}
@@ -269,22 +233,6 @@ export function FloatingWorkingControl(props: {
   );
 }
 
-function StopBackgroundWorkButton(props: {
-  readonly label: "Stop" | "Stop all";
-  readonly onPress: () => void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={props.label}
-      className="min-h-11 justify-center px-3"
-      onPress={props.onPress}
-    >
-      <Text className="text-xs text-danger-foreground">{props.label}</Text>
-    </Pressable>
-  );
-}
-
 function CompactingLabel(props: { readonly onLayout: (event: LayoutChangeEvent) => void }) {
   return (
     <StatusLabelRow accessibilityLabel="Compacting" className="gap-1.5" onLayout={props.onLayout}>
@@ -318,15 +266,6 @@ function FloatingStatusLabel(props: {
           {props.status.label}
         </Text>
       </StatusLabelRow>
-    );
-  }
-  if (props.status.kind === "waiting") {
-    return (
-      <WaitingLabel
-        label={props.status.label}
-        since={props.status.since}
-        onLayout={props.onLayout}
-      />
     );
   }
   if (props.status.kind === "compacting") {
@@ -419,45 +358,6 @@ function StatusLabelRow(props: {
         </View>
       )}
     </Animated.View>
-  );
-}
-
-function WaitingLabel(props: {
-  readonly label: string;
-  readonly since: string | null;
-  readonly onLayout: (event: LayoutChangeEvent) => void;
-}) {
-  return (
-    <StatusLabelRow accessibilityLabel={props.label} onLayout={props.onLayout}>
-      <Text className="font-t3-medium text-xs text-foreground" numberOfLines={1}>
-        {props.label}
-      </Text>
-      {props.since === null ? null : (
-        <>
-          <Text className="font-t3-medium text-xs text-foreground"> · </Text>
-          <WaitingDuration since={props.since} />
-        </>
-      )}
-    </StatusLabelRow>
-  );
-}
-
-function WaitingDuration(props: { readonly since: string }) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-
-  useEffect(() => {
-    setNowMs(Date.now());
-    const intervalId = setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => clearInterval(intervalId);
-  }, [props.since]);
-
-  return (
-    <SystemText
-      className="text-xs text-foreground"
-      style={{ fontVariant: ["tabular-nums"], fontWeight: "500" }}
-    >
-      {formatWorkingDuration(props.since, nowMs)}
-    </SystemText>
   );
 }
 

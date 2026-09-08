@@ -113,32 +113,6 @@ export function shouldOfferModelPickerSetup(
   );
 }
 
-/**
- * Tooltip for an instance the locked picker will not offer. Another provider
- * needs a new thread. A Claude or Codex account is locked out because it keeps
- * its conversations in a different home, which the user can change, so name
- * the setting. Every other provider keys continuation to the instance itself.
- */
-export function describeLockedOutInstance(input: {
-  readonly entry: Pick<ProviderInstanceEntry, "displayName" | "driverKind">;
-  readonly lockedProvider: ProviderDriverKind;
-  readonly lockedDisplayName: string | undefined;
-}): string {
-  const name = input.entry.displayName;
-  if (input.entry.driverKind !== input.lockedProvider) {
-    return `${name} is unavailable in this thread. Start a new thread to switch providers.`;
-  }
-  const owner = input.lockedDisplayName ?? "the account that started it";
-  switch (input.entry.driverKind) {
-    case "claudeAgent":
-      return `${name} keeps its conversations in a different home. Set its Shared conversation home to the directory that holds the conversations of ${owner} in Settings > Providers to continue this thread.`;
-    case "codex":
-      return `${name} uses a different CODEX_HOME path. Give it the same CODEX_HOME path as ${owner}, with its own shadow home, in Settings > Providers to continue this thread.`;
-    default:
-      return `${name} cannot continue this thread. Start a new thread to switch accounts.`;
-  }
-}
-
 const EMPTY_MODEL_JUMP_LABELS = new Map<string, string>();
 
 function ModelListSeparator() {
@@ -374,8 +348,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     return out;
   }, [modelOptionsByInstance, entryByInstanceId, props.activeInstanceId, activeModelSlug]);
 
-  const lockedProvider = props.lockedProvider;
-  const isLocked = lockedProvider !== null;
+  const isLocked = props.lockedProvider !== null;
   const isSearching = searchQuery.trim().length > 0;
   const lockedDisabledInstanceIds = useMemo(() => {
     if (!isLocked) {
@@ -767,15 +740,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             instanceEntries={sidebarInstanceEntries}
             showFavorites
             {...(selectableUnavailableInstanceIds ? { selectableUnavailableInstanceIds } : {})}
-            {...(lockedDisabledInstanceIds && lockedProvider !== null
+            {...(lockedDisabledInstanceIds
               ? {
                   disabledInstanceIds: lockedDisabledInstanceIds,
                   getDisabledInstanceTooltip: (entry: ProviderInstanceEntry) =>
-                    describeLockedOutInstance({
-                      entry,
-                      lockedProvider,
-                      lockedDisplayName: entryByInstanceId.get(props.activeInstanceId)?.displayName,
-                    }),
+                    `${entry.displayName} is unavailable in this thread. Start a new thread to switch providers.`,
                 }
               : {})}
           />

@@ -37,45 +37,10 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   };
 });
 
-/**
- * The config directory the spawned CLI will actually use, with the CLI's own
- * precedence: the instance's `homePath`, then a `CLAUDE_CONFIG_DIR` already in
- * the instance environment, then `~/.claude`. Unlike `resolveClaudeHomePath`,
- * an empty setting never means the OS home directory.
- */
-export const resolveClaudeConfigDirPath = Effect.fn("resolveClaudeConfigDirPath")(function* (
-  config: Pick<ClaudeSettings, "homePath">,
-  environment: NodeJS.ProcessEnv = process.env,
-): Effect.fn.Return<string, never, Path.Path> {
-  const path = yield* Path.Path;
-  const homePath = config.homePath.trim();
-  if (homePath.length > 0) {
-    return path.resolve(expandHomePath(homePath));
-  }
-  const environmentConfigDir = environment.CLAUDE_CONFIG_DIR?.trim() ?? "";
-  if (environmentConfigDir.length > 0) {
-    return path.resolve(environmentConfigDir);
-  }
-  return path.join(NodeOS.homedir(), ".claude");
-});
-
-/**
- * Threads continue across instances that share this key. It names the
- * directory holding `projects`: the instance's own config directory, or the
- * shared conversation home (see ClaudeSharedHome.ts) when one is set, so two
- * accounts resuming from one `projects` folder report the same key.
- */
 export const makeClaudeContinuationGroupKey = Effect.fn("makeClaudeContinuationGroupKey")(
-  function* (
-    config: Pick<ClaudeSettings, "homePath"> & Partial<Pick<ClaudeSettings, "sharedHomePath">>,
-    environment: NodeJS.ProcessEnv = process.env,
-  ): Effect.fn.Return<string, never, Path.Path> {
-    const path = yield* Path.Path;
-    const sharedHomePath = config.sharedHomePath?.trim() ?? "";
-    if (sharedHomePath.length > 0) {
-      return `claude:home:${path.resolve(expandHomePath(sharedHomePath))}`;
-    }
-    return `claude:home:${yield* resolveClaudeConfigDirPath(config, environment)}`;
+  function* (config: Pick<ClaudeSettings, "homePath">): Effect.fn.Return<string, never, Path.Path> {
+    const resolvedHomePath = yield* resolveClaudeHomePath(config);
+    return `claude:home:${resolvedHomePath}`;
   },
 );
 

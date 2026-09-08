@@ -8,7 +8,6 @@ import {
   MAX_RECENT_THREAD_SHORTCUTS,
   NEW_TASK_SHORTCUT_ID,
   shortcutHref,
-  withoutRecentThreadShortcut,
   withRecentThreadShortcut,
 } from "./appShortcuts";
 
@@ -55,20 +54,6 @@ describe("withRecentThreadShortcut", () => {
     const next = withRecentThreadShortcut(current, thread("a", "Fix the build"));
     expect(next[0]?.title).toBe("Fix the build");
     expect(next).toHaveLength(1);
-  });
-});
-
-describe("withoutRecentThreadShortcut", () => {
-  it("removes a hidden side chat from launcher recents", () => {
-    const current = [thread("a"), thread("b")];
-    const next = withoutRecentThreadShortcut(current, thread("a"));
-
-    expect(next.map((entry) => entry.threadId)).toEqual(["thread-b"]);
-  });
-
-  it("returns the same array when the hidden side chat was never recorded", () => {
-    const current = [thread("a")];
-    expect(withoutRecentThreadShortcut(current, thread("b"))).toBe(current);
   });
 });
 

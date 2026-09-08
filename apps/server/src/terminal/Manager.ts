@@ -1365,7 +1365,7 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
   if (instance.driver === "codex") {
     const config = decodeCodexSettings(instance.config ?? {});
     if (Option.isSome(config)) {
-      const layout = yield* resolveCodexHomeLayout(config.value, resolved).pipe(
+      const layout = yield* resolveCodexHomeLayout(config.value).pipe(
         Effect.provideService(Path.Path, input.path),
       );
       if (layout.effectiveHomePath)
