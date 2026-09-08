@@ -16,6 +16,7 @@ vi.mock("@legendapp/list/react", async () => {
     renderItem: (args: { item: { id: string } }) => ReactNode;
     ListHeaderComponent?: ReactNode;
     ListFooterComponent?: ReactNode;
+    onStartReached?: () => void;
     anchoredEndSpace?: {
       anchorIndex: number;
       anchorMaxSize?: number;
@@ -40,6 +41,7 @@ vi.mock("@legendapp/list/react", async () => {
     return (
       <div
         data-testid={legendListTestId}
+        onScroll={props.onStartReached}
         data-anchor-index={props.anchoredEndSpace?.anchorIndex}
         data-anchor-max-size={props.anchoredEndSpace?.anchorMaxSize}
         data-anchor-offset={props.anchoredEndSpace?.anchorOffset}
@@ -266,6 +268,74 @@ function buildSnapShotTimelineEntry(previewUrl?: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("loads through empty agent history pages without retrying a failed cursor or prefetching populated history", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const request = vi.fn();
+    const props = buildProps();
+    let renderer!: ReactTestRenderer;
+    const render = (cursor: string, populated = false, loading = false) => (
+      <MessagesTimeline
+        {...props}
+        timelineEntries={
+          populated
+            ? [
+                {
+                  id: "earlier",
+                  kind: "work",
+                  createdAt: MESSAGE_CREATED_AT,
+                  entry: {
+                    id: "earlier",
+                    createdAt: MESSAGE_CREATED_AT,
+                    label: "Earlier agent instruction",
+                    tone: "info",
+                  },
+                },
+              ]
+            : []
+        }
+        loadEarlier={{ cursor, loading, onLoadEarlier: request }}
+      />
+    );
+    await act(async () => {
+      renderer = create(render("page-3"));
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      renderer.update(render("page-3", false, true));
+    });
+    await act(async () => {
+      renderer.update(render("page-2"));
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      renderer.update(render("page-2"));
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      renderer.update(render("page-1", true));
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(renderer.toJSON())).toContain("Earlier agent instruction");
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("Load earlier turns");
+    await act(async () => {
+      renderer.root.findByProps({ "data-testid": "legend-list" }).props.onScroll();
+    });
+    expect(request).toHaveBeenCalledTimes(3);
+    // The next parent-history page has no additional rows for this agent.
+    await act(async () => {
+      renderer.update(render("page-0", true));
+    });
+    expect(request).toHaveBeenCalledTimes(4);
+    await act(async () => {
+      renderer.update(render("page-0", true));
+    });
+    expect(request).toHaveBeenCalledTimes(4);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
   it.each([
     { toolLifecycleStatus: "inProgress", isAtEnd: true },
     { toolLifecycleStatus: "inProgress", isAtEnd: false },

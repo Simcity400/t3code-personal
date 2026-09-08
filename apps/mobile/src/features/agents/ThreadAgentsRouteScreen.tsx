@@ -1,6 +1,9 @@
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { selectAgentTranscript } from "@t3tools/client-runtime/state/agent-transcripts";
+import {
+  deriveAgentTranscriptTurn,
+  selectAgentTranscript,
+} from "@t3tools/client-runtime/state/agent-transcripts";
 import { foldSubagentActivities } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   requestOlderThreadTurns,
@@ -8,7 +11,7 @@ import {
 } from "@t3tools/client-runtime/state/threads";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { FlatList, Pressable, View } from "react-native";
 import { useSharedValue } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -51,6 +54,7 @@ function useAgentThread(params: ThreadParams) {
   });
   const loadEarlier = threadHasOlderTurns(state)
     ? {
+        cursor: Option.getOrNull(state.page)?.beforeCursor ?? null,
         loading: Option.isSome(state.page) && state.page.value.loadingOlder,
         onLoadEarlier: () => requestOlderThreadTurns(environmentId, threadId),
       }
@@ -60,8 +64,21 @@ function useAgentThread(params: ThreadParams) {
 
 export function ThreadAgentsRouteScreen(props: StaticScreenProps<ThreadParams>) {
   const navigation = useNavigation();
-  const { agents, presentation, loadEarlier } = useAgentThread(props.route.params);
+  const { environmentId, threadId, agents, presentation, loadEarlier } = useAgentThread(
+    props.route.params,
+  );
   const insets = useSafeAreaInsets();
+  const historyRequest = useRef<{ key: string | null; size: number }>({ key: null, size: 0 });
+
+  // Parent history pages may contain no agents, leaving the list too short to reach its edge again.
+  useEffect(() => {
+    if (agents.length !== historyRequest.current.size || !loadEarlier || loadEarlier.loading)
+      return;
+    const key = `${environmentId}:${threadId}:${loadEarlier.cursor}`;
+    if (historyRequest.current.key === key) return;
+    historyRequest.current = { key, size: agents.length };
+    loadEarlier.onLoadEarlier();
+  }, [agents.length, environmentId, threadId, loadEarlier]);
 
   if (presentation.kind === "loading") return <LoadingScreen message="Loading agents…" />;
   if (presentation.kind === "unavailable") {
@@ -103,20 +120,16 @@ export function ThreadAgentsRouteScreen(props: StaticScreenProps<ThreadParams>) 
           detail="Native agents will appear here when the provider reports them."
         />
       }
-      ListFooterComponent={
-        loadEarlier ? (
-          <Pressable
-            accessibilityRole="button"
-            disabled={loadEarlier.loading}
-            className="items-center p-4"
-            onPress={loadEarlier.onLoadEarlier}
-          >
-            <Text className="text-sm text-foreground">
-              {loadEarlier.loading ? "Loading…" : "Load earlier turns"}
-            </Text>
-          </Pressable>
-        ) : null
-      }
+      onEndReached={() => {
+        if (loadEarlier && !loadEarlier.loading) {
+          historyRequest.current = {
+            key: `${environmentId}:${threadId}:${loadEarlier.cursor}`,
+            size: agents.length,
+          };
+          loadEarlier.onLoadEarlier();
+        }
+      }}
+      onEndReachedThreshold={0.25}
     />
   );
 }
@@ -130,39 +143,20 @@ export function ThreadAgentTranscriptRouteScreen(
   const agent = agents.find((entry) => entry.id === agentId);
   const messages = thread?.messages;
   const activities = thread?.activities;
-  const feed = useMemo(
-    () => buildThreadFeed(selectAgentTranscript(messages ?? [], activities ?? [], agentId)),
+  const scoped = useMemo(
+    () => selectAgentTranscript(messages ?? [], activities ?? [], agentId),
     [messages, activities, agentId],
   );
+  const feed = useMemo(() => buildThreadFeed(scoped), [scoped]);
+  const turn = useMemo(() => deriveAgentTranscriptTurn(scoped, agent), [scoped, agent]);
   const listRef = useRef<LegendListRef>(null);
   const freeze = useSharedValue(false);
   const contentInsetEndAdjustment = useSharedValue(0);
   const insets = useSafeAreaInsets();
-  const transcriptPresentation =
-    presentation.kind === "ready" && feed.length === 0
-      ? {
-          kind: "unavailable" as const,
-          title: "No transcript yet",
-          detail:
-            "This provider has not reported transcript messages or tools for this agent in the loaded turns.",
-        }
-      : presentation;
 
   return (
     <View className="flex-1 bg-screen">
       <NativeStackScreenOptions options={{ title: agent?.title ?? "Agent transcript" }} />
-      {transcriptPresentation.kind === "unavailable" && loadEarlier ? (
-        <Pressable
-          accessibilityRole="button"
-          disabled={loadEarlier.loading}
-          className="items-center p-4"
-          onPress={loadEarlier.onLoadEarlier}
-        >
-          <Text className="text-sm text-foreground">
-            {loadEarlier.loading ? "Loading…" : "Load earlier turns"}
-          </Text>
-        </Pressable>
-      ) : null}
       <ThreadFeed
         key={agentId}
         environmentId={environmentId}
@@ -172,10 +166,10 @@ export function ThreadAgentTranscriptRouteScreen(
         queuedMessages={[]}
         dispatchingMessageId={null}
         onEditPendingMessage={() => undefined}
-        contentPresentation={transcriptPresentation}
+        contentPresentation={presentation}
         agentLabel={agent?.title ?? "Agent"}
-        latestTurn={null}
-        activeWorkStartedAt={null}
+        latestTurn={turn.latestTurn}
+        activeWorkStartedAt={turn.activeTurnStartedAt}
         listRef={listRef}
         freeze={freeze}
         anchorMessageId={null}

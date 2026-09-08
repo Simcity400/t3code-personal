@@ -1,4 +1,44 @@
 import type { OrchestrationMessage, OrchestrationThreadActivity } from "@t3tools/contracts";
+import { isActiveSubagentStatus, type RuntimeSubagent } from "./subagentRuntime.ts";
+
+/** Feed the ordinary turn renderer the selected agent's lifecycle, not its parent's. */
+export function deriveAgentTranscriptTurn(
+  transcript: ReturnType<typeof selectAgentTranscript>,
+  agent: RuntimeSubagent | undefined,
+) {
+  let turnId: OrchestrationMessage["turnId"] = null;
+  let latestAt = "";
+  for (const entries of [transcript.messages, transcript.activities]) {
+    for (const entry of entries) {
+      if (entry.turnId !== null && entry.createdAt >= latestAt) {
+        turnId = entry.turnId;
+        latestAt = entry.createdAt;
+      }
+    }
+  }
+  const isWorking = agent !== undefined && isActiveSubagentStatus(agent.status);
+  const state = isWorking
+    ? ("running" as const)
+    : agent?.status === "failed"
+      ? ("error" as const)
+      : agent?.status === "cancelled" || agent?.status === "interrupted"
+        ? ("interrupted" as const)
+        : ("completed" as const);
+  return {
+    isWorking,
+    activeTurnStartedAt: isWorking ? (agent?.startedAt ?? null) : null,
+    runningTurnId: isWorking ? turnId : null,
+    latestTurn:
+      turnId === null
+        ? null
+        : {
+            turnId,
+            state,
+            startedAt: agent?.startedAt ?? null,
+            completedAt: isWorking ? null : (agent?.completedAt ?? agent?.updatedAt ?? latestAt),
+          },
+  };
+}
 
 export function isAgentMessage(message: Pick<OrchestrationMessage, "agentId">): boolean {
   return typeof message.agentId === "string" && message.agentId.trim().length > 0;

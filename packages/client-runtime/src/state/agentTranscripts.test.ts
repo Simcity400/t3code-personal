@@ -1,12 +1,18 @@
 import {
   EventId,
   MessageId,
+  TurnId,
   type OrchestrationMessage,
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { isAgentMessage, selectAgentTranscript } from "./agentTranscripts.ts";
+import {
+  deriveAgentTranscriptTurn,
+  isAgentMessage,
+  selectAgentTranscript,
+} from "./agentTranscripts.ts";
+import { foldSubagentActivities } from "./subagentRuntime.ts";
 
 const at = "2026-09-08T00:00:00.000Z";
 function message(id: string, agentId?: string): OrchestrationMessage {
@@ -34,6 +40,57 @@ function activity(id: string, payload: unknown): OrchestrationThreadActivity {
 }
 
 describe("agent transcripts", () => {
+  it("follows the agent's current turn and settles it without using the parent's lifecycle", () => {
+    const agent = foldSubagentActivities([
+      {
+        ...activity("start", { taskId: "agent-a", agentKind: "agent", status: "running" }),
+        kind: "task.started",
+      },
+    ])[0]!;
+    const transcript = selectAgentTranscript(
+      [
+        { ...message("old", "agent-a"), turnId: TurnId.make("old-turn") },
+        {
+          ...message("new", "agent-a"),
+          turnId: TurnId.make("new-turn"),
+          createdAt: "2026-09-08T00:01:00.000Z",
+        },
+        {
+          ...message("parent"),
+          turnId: TurnId.make("parent-turn"),
+          createdAt: "2026-09-08T00:02:00.000Z",
+        },
+      ],
+      [],
+      "agent-a",
+    );
+    expect(deriveAgentTranscriptTurn(transcript, agent)).toMatchObject({
+      isWorking: true,
+      runningTurnId: "new-turn",
+      latestTurn: { turnId: "new-turn", state: "running", completedAt: null },
+    });
+    expect(
+      deriveAgentTranscriptTurn(transcript, {
+        ...agent,
+        status: "completed",
+        completedAt: "2026-09-08T00:03:00.000Z",
+      }),
+    ).toMatchObject({
+      isWorking: false,
+      runningTurnId: null,
+      latestTurn: {
+        turnId: "new-turn",
+        state: "completed",
+        completedAt: "2026-09-08T00:03:00.000Z",
+      },
+    });
+    expect(
+      deriveAgentTranscriptTurn(transcript, { ...agent, status: "interrupted" }).latestTurn?.state,
+    ).toBe("interrupted");
+    expect(
+      deriveAgentTranscriptTurn(transcript, { ...agent, status: "failed" }).latestTurn?.state,
+    ).toBe("error");
+  });
   it("isolates interleaved agent messages and activities without claiming unattributed history", () => {
     const messages = [
       message("root"),

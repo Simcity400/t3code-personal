@@ -257,6 +257,7 @@ export interface ThreadFeedProps {
   readonly onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   /** Non-null when older turns exist beyond the loaded window. */
   readonly loadEarlier?: {
+    readonly cursor?: string | null;
     readonly loading: boolean;
     readonly onLoadEarlier: () => void;
   } | null;
@@ -1942,6 +1943,16 @@ function ThreadFeedPlaceholder(props: {
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
   const { themeAppearance } = useAppearancePreferences();
+  const historyRequest = useRef<{ key: string | null; size: number }>({ key: null, size: 0 });
+  // Parent-history pages may contain no new rows for the selected agent.
+  useEffect(() => {
+    const page = props.loadEarlier;
+    if (props.feed.length !== historyRequest.current.size || !page || page.loading) return;
+    const key = `${props.environmentId}:${props.threadId}:${page.cursor}`;
+    if (historyRequest.current.key === key) return;
+    historyRequest.current = { key, size: props.feed.length };
+    page.onLoadEarlier();
+  }, [props.feed.length, props.loadEarlier, props.environmentId, props.threadId]);
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
   const disclosureSettleSecondFrameRef = useRef<number | null>(null);
@@ -2904,26 +2915,23 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             alignItemsAtEnd
             initialScrollAtEnd
             onScroll={handleScroll}
+            onStartReached={() => {
+              if (props.loadEarlier && !props.loadEarlier.loading) {
+                historyRequest.current = {
+                  key: `${props.environmentId}:${props.threadId}:${props.loadEarlier.cursor}`,
+                  size: props.feed.length,
+                };
+                props.loadEarlier.onLoadEarlier();
+              }
+            }}
+            onStartReachedThreshold={0.25}
             onScrollBeginDrag={handleScrollBeginDrag}
             onScrollEndDrag={handleScrollEndDrag}
             onMomentumScrollBegin={handleMomentumScrollBegin}
             onMomentumScrollEnd={handleMomentumScrollEnd}
             scrollEventThrottle={16}
             ListHeaderComponent={
-              <>
-                {usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />}
-                {props.loadEarlier != null ? (
-                  <Pressable
-                    onPress={props.loadEarlier.onLoadEarlier}
-                    disabled={props.loadEarlier.loading}
-                    className="items-center py-2"
-                  >
-                    <Text className="text-xs text-foreground-secondary">
-                      {props.loadEarlier.loading ? "Loading earlier turns…" : "Load earlier turns"}
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </>
+              <>{usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />}</>
             }
             contentContainerStyle={{
               paddingTop: 12,

@@ -1469,7 +1469,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const activeServerThread = serverThread ?? loadingServerThread;
   // Pagination window state for the routed server thread: drives the
-  // "load earlier turns" header when the loaded window has older history.
+  // automatic pagination when the loaded window has older history.
   const routeThreadState = useEnvironmentThread(
     routeKind === "server" ? routeThreadRef.environmentId : null,
     routeKind === "server" ? routeThreadRef.threadId : null,
@@ -7982,7 +7982,7 @@ export default function ChatView(props: ChatViewProps) {
         renderTranscript={(agent) => (
           <AgentTranscript
             key={agent.id}
-            agentId={agent.id}
+            agent={agent}
             messages={activeThread.messages}
             activities={activeThread.activities}
             routeThreadKey={routeThreadKey}
@@ -7992,6 +7992,12 @@ export default function ChatView(props: ChatViewProps) {
             timestampFormat={timestampFormat}
             workspaceRoot={activeWorkspaceRoot ?? undefined}
             loadEarlier={loadEarlierTurns}
+            onUseArtifactTemplate={useArtifactTemplate}
+            skills={
+              activeProviderStatus
+                ? resolveProviderSkillsForCwd(activeProviderStatus, gitCwd)
+                : EMPTY_PROVIDER_SKILLS
+            }
             onImageExpand={onExpandTimelineImage}
             onFileOpen={openFileAttachment}
             onFileDownload={downloadFileAttachment}

@@ -211,12 +211,13 @@ function ThreadRouteContent(
   } = useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
-  // "Load earlier turns" header state for windowed (paginated) thread loads.
+  // History pagination state for the transcript.
   const loadEarlierTurns = useMemo(() => {
     if (selectedThread === null || !threadHasOlderTurns(selectedThreadDetailState)) {
       return null;
     }
     return {
+      cursor: Option.getOrNull(selectedThreadDetailState.page)?.beforeCursor ?? null,
       loading:
         selectedThreadDetailState.page._tag === "Some" &&
         selectedThreadDetailState.page.value.loadingOlder,

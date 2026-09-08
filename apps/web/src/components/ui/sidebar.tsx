@@ -698,7 +698,10 @@ function SidebarContent({
 }) {
   return (
     <>
-      {fixedHeader ? <div className="w-full shrink-0">{fixedHeader}</div> : null}
+      {/* Header artwork can extend Electron's drag region over this control row. */}
+      {fixedHeader ? (
+        <div className="w-full shrink-0 [-webkit-app-region:no-drag]">{fixedHeader}</div>
+      ) : null}
       <ScrollArea hideScrollbars scrollFade className="h-auto min-h-0 flex-1">
         <div
           className={cn(
