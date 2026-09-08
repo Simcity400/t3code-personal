@@ -149,3 +149,42 @@ describe("mobile slash commands", () => {
     ).toEqual({ text: "/plan ", cursor: 6, interactionMode: null });
   });
 });
+
+describe("side chat command", () => {
+  it.each(["codex", "claudeAgent"])(
+    "offers a local command for an existing %s thread",
+    (driver) => {
+      const input = {
+        query: "side",
+        atMessageStart: true,
+        hasThread: true,
+        allowInteractionMode: false,
+        selectedProviderStatus: { driver: ProviderDriverKind.make(driver), slashCommands: [] },
+      };
+      const item = buildComposerSlashCommandItems(input)[0];
+      expect(item?.label).toBe("/side");
+      if (!item) throw new Error("Missing side command");
+      expect(
+        resolveComposerCommandSelection({
+          draftMessage: "/si",
+          trigger: { rangeStart: 0, rangeEnd: 3 },
+          item,
+          allowInteractionMode: false,
+        }),
+      ).toEqual({ text: "/side ", cursor: 6, interactionMode: null });
+      expect(buildComposerSlashCommandItems({ ...input, hasThread: false })).toEqual([]);
+      expect(buildComposerSlashCommandItems({ ...input, atMessageStart: false })).toEqual([]);
+    },
+  );
+  it("does not advertise a fork for unsupported providers", () => {
+    expect(
+      buildComposerSlashCommandItems({
+        query: "side",
+        atMessageStart: true,
+        hasThread: true,
+        allowInteractionMode: false,
+        selectedProviderStatus: { driver: ProviderDriverKind.make("cursor"), slashCommands: [] },
+      }),
+    ).toEqual([]);
+  });
+});

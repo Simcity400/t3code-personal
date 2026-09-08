@@ -87,11 +87,15 @@ it.layer(NodeSqliteClient.layerMemory())("upstream database compatibility", (it)
       yield* runMigrations();
       yield* sql`ALTER TABLE projection_thread_messages DROP COLUMN agent_id`;
       yield* sql`ALTER TABLE projection_threads DROP COLUMN goal_json`;
+      yield* sql`ALTER TABLE projection_threads DROP COLUMN forked_from_thread_id`;
+      yield* sql`ALTER TABLE projection_threads DROP COLUMN side_chat_promoted_at`;
       assert.deepEqual(yield* runMigrations(), []);
       const columns = yield* sql<{ name: string }>`PRAGMA table_info(projection_thread_messages)`;
       assert.isTrue(columns.some((column) => column.name === "agent_id"));
       const threadColumns = yield* sql<{ name: string }>`PRAGMA table_info(projection_threads)`;
       assert.isTrue(threadColumns.some((column) => column.name === "goal_json"));
+      assert.isTrue(threadColumns.some((column) => column.name === "forked_from_thread_id"));
+      assert.isTrue(threadColumns.some((column) => column.name === "side_chat_promoted_at"));
       assert.deepEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE name = 'retired_fork_migrations'`,
         [],

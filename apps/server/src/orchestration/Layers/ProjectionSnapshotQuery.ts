@@ -507,6 +507,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           linked_pull_request_json AS "linkedPullRequest",
           goal_json AS "goal",
           branch_pull_request_json AS "branchPullRequest",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -548,6 +550,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           linked_pull_request_json AS "linkedPullRequest",
           goal_json AS "goal",
           branch_pull_request_json AS "branchPullRequest",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -591,6 +595,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           linked_pull_request_json AS "linkedPullRequest",
           goal_json AS "goal",
           branch_pull_request_json AS "branchPullRequest",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1016,6 +1022,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE project_id = ${projectId}
           AND deleted_at IS NULL
           AND archived_at IS NULL
+          AND (forked_from_thread_id IS NULL OR side_chat_promoted_at IS NOT NULL)
         ORDER BY created_at ASC, thread_id ASC
         LIMIT 1
       `,
@@ -1084,6 +1091,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           linked_pull_request_json AS "linkedPullRequest",
           goal_json AS "goal",
           branch_pull_request_json AS "branchPullRequest",
+          forked_from_thread_id AS "forkedFromThreadId",
+          side_chat_promoted_at AS "sideChatPromotedAt",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -2090,6 +2099,12 @@ pending_approval_requests AS (
                   ? {}
                   : { linkedPullRequest: row.linkedPullRequest }),
                 ...(row.goal === null ? {} : { goal: row.goal }),
+                ...(row.forkedFromThreadId != null
+                  ? { forkedFromThreadId: row.forkedFromThreadId }
+                  : {}),
+                ...(row.sideChatPromotedAt != null
+                  ? { sideChatPromotedAt: row.sideChatPromotedAt }
+                  : {}),
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -2306,6 +2321,12 @@ pending_approval_requests AS (
                     ? {}
                     : { linkedPullRequest: row.linkedPullRequest }),
                   ...(row.goal === null ? {} : { goal: row.goal }),
+                  ...(row.forkedFromThreadId != null
+                    ? { forkedFromThreadId: row.forkedFromThreadId }
+                    : {}),
+                  ...(row.sideChatPromotedAt != null
+                    ? { sideChatPromotedAt: row.sideChatPromotedAt }
+                    : {}),
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -2448,6 +2469,12 @@ pending_approval_requests AS (
                       ...(row.linkedPullRequest === null
                         ? {}
                         : { linkedPullRequest: row.linkedPullRequest }),
+                      ...(row.forkedFromThreadId != null
+                        ? { forkedFromThreadId: row.forkedFromThreadId }
+                        : {}),
+                      ...(row.sideChatPromotedAt != null
+                        ? { sideChatPromotedAt: row.sideChatPromotedAt }
+                        : {}),
                       latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                       createdAt: row.createdAt,
                       updatedAt: row.updatedAt,
@@ -2594,6 +2621,8 @@ pending_approval_requests AS (
                 interactionMode: row.interactionMode,
                 branch: row.branch,
                 worktreePath: row.worktreePath,
+                forkedFromThreadId: row.forkedFromThreadId,
+                sideChatPromotedAt: row.sideChatPromotedAt,
                 branchPullRequest: row.branchPullRequest,
                 ...(row.linkedPullRequest === null
                   ? {}
@@ -2921,6 +2950,12 @@ pending_approval_requests AS (
         ...(threadRow.value.linkedPullRequest === null
           ? {}
           : { linkedPullRequest: threadRow.value.linkedPullRequest }),
+        ...(threadRow.value.forkedFromThreadId != null
+          ? { forkedFromThreadId: threadRow.value.forkedFromThreadId }
+          : {}),
+        ...(threadRow.value.sideChatPromotedAt != null
+          ? { sideChatPromotedAt: threadRow.value.sideChatPromotedAt }
+          : {}),
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
@@ -3206,6 +3241,12 @@ pending_approval_requests AS (
           ? {}
           : { linkedPullRequest: threadRow.value.linkedPullRequest }),
         ...(threadRow.value.goal === null ? {} : { goal: threadRow.value.goal }),
+        ...(threadRow.value.forkedFromThreadId != null
+          ? { forkedFromThreadId: threadRow.value.forkedFromThreadId }
+          : {}),
+        ...(threadRow.value.sideChatPromotedAt != null
+          ? { sideChatPromotedAt: threadRow.value.sideChatPromotedAt }
+          : {}),
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,

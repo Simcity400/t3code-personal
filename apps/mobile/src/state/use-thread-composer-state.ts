@@ -1,6 +1,13 @@
+import { StackActions, useNavigation } from "@react-navigation/native";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import { parseSideChatSlashCommand } from "@t3tools/shared/composerTrigger";
+import { deriveThreadTitleFromPrompt } from "../lib/projectThreadStartTurn";
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert } from "react-native";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Alert, Keyboard } from "react-native";
 
 import {
   CommandId,
@@ -11,7 +18,7 @@ import {
   type ModelSelection,
   type ProviderInteractionMode,
   type RuntimeMode,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
@@ -21,7 +28,7 @@ import {
 } from "@t3tools/client-runtime/state/threads";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
-import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
+import { makeQueuedMessageMetadata, makeTurnCommandMetadata } from "../lib/commandMetadata";
 import { isModelSelectionUnavailable } from "../lib/modelOptions";
 import { resolveProviderInteractionMode } from "../features/threads/legacy-plan-mode";
 import {
@@ -115,6 +122,10 @@ export function useThreadComposerState() {
   const [feedbackSubmissionsByThreadKey, setFeedbackSubmissionsByThreadKey] = useState<
     Record<string, ReadonlyArray<CodexFeedbackSubmission>>
   >({});
+  const navigation = useNavigation();
+  const sideChatCreationInFlight = useRef(false);
+  const createSideChat = useAtomCommand(threadEnvironment.create, { reportFailure: false });
+  const startSideChatTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const uploadThreadFeedback = useAtomCommand(threadEnvironment.uploadFeedback, {
     reportFailure: false,
   });
@@ -126,6 +137,13 @@ export function useThreadComposerState() {
   const selectedThreadKey = selectedThreadShell
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
     : null;
+  const sideChatParentKeyRef = useRef(selectedThreadKey);
+  useLayoutEffect(() => {
+    sideChatParentKeyRef.current = selectedThreadKey;
+    return () => {
+      sideChatParentKeyRef.current = null;
+    };
+  }, [selectedThreadKey]);
   // The creation entry is the thread itself (rendered as the first message),
   // not a follow-up waiting behind it.
   const selectedThreadQueuedMessages = useMemo(
@@ -341,6 +359,123 @@ export function useThreadComposerState() {
     const provider = serverConfig?.providers.find(
       (entry) => entry.instanceId === modelSelection.instanceId,
     );
+    const sideCommand = parseSideChatSlashCommand(text);
+    if (sideCommand !== null) {
+      if (sideChatCreationInFlight.current) return null;
+      if (provider?.driver !== "codex" && provider?.driver !== "claudeAgent") {
+        Alert.alert("Side chat unavailable", "Side chats require Codex or Claude.");
+        return null;
+      }
+      if (selectedEnvironmentRuntime?.connectionState !== "connected") {
+        Alert.alert("Connect to start a side chat", "Reconnect to your environment and try again.");
+        return null;
+      }
+      if (attachments.length > 0) {
+        Alert.alert(
+          "Open the side chat first",
+          "Remove these attachments, use /side, then attach them in the side chat.",
+        );
+        return null;
+      }
+      if (
+        !selectedThreadDetail?.session ||
+        modelSelection.instanceId !== selectedThreadShell.modelSelection.instanceId
+      ) {
+        Alert.alert(
+          "Start the original conversation first",
+          "Use the original conversation's provider to inherit its context.",
+        );
+        return null;
+      }
+      sideChatCreationInFlight.current = true;
+      try {
+        const metadata = makeTurnCommandMetadata();
+        const sideThreadId = ThreadId.make(metadata.threadId);
+        const created = await createSideChat({
+          environmentId: selectedThreadShell.environmentId,
+          input: {
+            threadId: sideThreadId,
+            projectId: selectedThreadShell.projectId,
+            title: sideCommand.prompt
+              ? deriveThreadTitleFromPrompt(sideCommand.prompt)
+              : "Side chat",
+            modelSelection,
+            runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
+            interactionMode: resolveProviderInteractionMode(
+              provider,
+              draft.interactionMode ?? thread.interactionMode,
+            ),
+            branch: selectedThreadShell.branch,
+            worktreePath: selectedThreadShell.worktreePath,
+            forkedFromThreadId: selectedThreadShell.id,
+            createdAt: metadata.createdAt,
+          },
+        });
+        if (created._tag === "Failure") {
+          if (!isAtomCommandInterrupted(created)) {
+            const error = squashAtomCommandFailure(created);
+            Alert.alert(
+              "Could not create side chat",
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+          return null;
+        }
+        if (sideCommand.prompt) {
+          const childDraftKey = scopedThreadKey(selectedThreadShell.environmentId, sideThreadId);
+          setComposerDraftText(childDraftKey, sideCommand.prompt);
+          const started = await startSideChatTurn({
+            environmentId: selectedThreadShell.environmentId,
+            input: {
+              threadId: sideThreadId,
+              message: {
+                messageId: MessageId.make(metadata.messageId),
+                role: "user",
+                text: sideCommand.prompt,
+                attachments: [],
+              },
+              modelSelection,
+              runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
+              interactionMode: resolveProviderInteractionMode(
+                provider,
+                draft.interactionMode ?? thread.interactionMode,
+              ),
+              createdAt: metadata.createdAt,
+            },
+          });
+          if (started._tag !== "Failure") {
+            const currentChildDraft = getComposerDraftSnapshot(childDraftKey);
+            if (
+              currentChildDraft.text === sideCommand.prompt &&
+              currentChildDraft.attachments.length === 0
+            ) {
+              clearComposerDraftContent(childDraftKey);
+            }
+          } else if (!isAtomCommandInterrupted(started)) {
+            Alert.alert(
+              "Message saved as a draft",
+              "The side chat was created, but the message could not be sent. You can retry there.",
+            );
+          }
+        }
+        const currentParentDraft = getComposerDraftSnapshot(threadKey);
+        if (currentParentDraft.text === draft.text && currentParentDraft.attachments.length === 0) {
+          clearComposerDraftContent(threadKey);
+        }
+        if (sideChatParentKeyRef.current !== threadKey || !navigation.isFocused()) return null;
+        Keyboard.dismiss();
+        navigation.dispatch(
+          StackActions.push("Thread", {
+            environmentId: String(selectedThreadShell.environmentId),
+            threadId: String(sideThreadId),
+          }),
+        );
+        return null;
+      } finally {
+        sideChatCreationInFlight.current = false;
+      }
+    }
+
     const feedbackCommand =
       attachments.length === 0 &&
       (provider?.driver === "codex" || thread.session?.providerName === "codex")
@@ -433,6 +568,9 @@ export function useThreadComposerState() {
     selectedThreadDetail,
     selectedThreadShell,
     uploadThreadFeedback,
+    createSideChat,
+    startSideChatTurn,
+    navigation,
   ]);
 
   const onChangeDraftMessage = useCallback(

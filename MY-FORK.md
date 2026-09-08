@@ -4,18 +4,19 @@ This fork tracks published upstream nightlies with a small personal keep list:
 
 - Compact web and mobile composers and brighter text.
 - Expanded transcripts for agents created through a provider's native delegation.
+- Native Codex/Claude side chats with full-screen mobile navigation.
 - Codex goal controls, including `/goal`, budgets, pause, resume, and clear.
 - Personal Windows x64/ARM64 installers and iPhone preview builds.
 - The release and sync automation needed to maintain those builds.
 
 Everything else follows upstream. The previous fork is archived at
-`archive/pre-simplification-20260908` for historical reference. Its custom
-side chats, cross-provider delegation, account management, task observability,
+`archive/pre-simplification-20260908` for historical reference. Its cross-provider delegation, account management, task observability,
 private-feed authentication, and in-app merge notices are outside the maintained
 scope. The [native transcript guide](docs/user/agent-transcripts.md) describes the
 retained agent view.
 
-Existing side chats appear as ordinary threads. Saved agent messages retain their
+Side chats remain visible in the normal thread list. Related chats link their parents,
+children, and siblings without adding panels to the mobile composer. Saved agent messages retain their
 transcript attribution. Saved goals remain available, and requests belonging
 to the removed cross-provider bridge no longer offer active controls. The database
 upgrade preserves the old migration ledger while returning to upstream numbering.

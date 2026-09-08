@@ -22,7 +22,7 @@ import {
   projectScriptRuntimeEnv,
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
-import { Alert, Platform, ScrollView, View } from "react-native";
+import { Alert, Keyboard, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
@@ -632,7 +632,16 @@ function ThreadRouteContent(
       threadId: selectedThread.id,
     });
   }, [navigation, selectedThread]);
+  const handleOpenSideChats = useCallback(() => {
+    if (!selectedThread) return;
+    Keyboard.dismiss();
+    navigation.navigate("ThreadSideChats", {
+      environmentId: selectedThread.environmentId,
+      threadId: selectedThread.id,
+    });
+  }, [navigation, selectedThread]);
   const threadGitControlProps = {
+    onOpenSideChats: handleOpenSideChats,
     onOpenAgents: handleOpenAgents,
     environmentId: environmentIdRaw ?? "",
     threadId: threadId ?? "",
@@ -713,6 +722,11 @@ function ThreadRouteContent(
 
     const actions: AndroidHeaderAction[] = [
       {
+        accessibilityLabel: "Open related chats",
+        icon: "bubble.left.and.bubble.right",
+        onPress: handleOpenSideChats,
+      },
+      {
         accessibilityLabel: "Open agents",
         icon: "point.3.connected.trianglepath.dotted",
         onPress: handleOpenAgents,
@@ -756,6 +770,7 @@ function ThreadRouteContent(
     fileInspector.supported,
     handleOpenFilesInspector,
     handleOpenAgents,
+    handleOpenSideChats,
     handleOpenTerminal,
     handleOpenGitInspector,
     handleToggleInspector,

@@ -1117,6 +1117,9 @@ const makeWsRpcLayer = (
                 interactionMode: bootstrap.createThread.interactionMode,
                 branch: bootstrap.createThread.branch,
                 worktreePath: bootstrap.createThread.worktreePath,
+                ...(bootstrap.createThread.forkedFromThreadId !== undefined
+                  ? { forkedFromThreadId: bootstrap.createThread.forkedFromThreadId }
+                  : {}),
                 createdAt: bootstrap.createThread.createdAt,
               });
               // The successful create is a fence in the engine command queue:

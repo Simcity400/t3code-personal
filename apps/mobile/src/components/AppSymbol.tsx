@@ -61,6 +61,7 @@ import IconLayoutSidebarRight from "@tabler/icons-react-native/IconLayoutSidebar
 import IconLetterSpacing from "@tabler/icons-react-native/IconLetterSpacing";
 import IconLink from "@tabler/icons-react-native/IconLink";
 import IconMessage from "@tabler/icons-react-native/IconMessage";
+import IconMessages from "@tabler/icons-react-native/IconMessages";
 import IconMinus from "@tabler/icons-react-native/IconMinus";
 import IconMoon from "@tabler/icons-react-native/IconMoon";
 import IconNetwork from "@tabler/icons-react-native/IconNetwork";
@@ -100,6 +101,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "arrow.triangle.branch": IconGitBranch,
   "arrow.triangle.pull": IconGitPullRequest,
   "arrow.turn.left.up": IconArrowBackUp,
+  "arrow.turn.up.left": IconArrowBackUp,
   "arrow.up": IconArrowUp,
   "arrow.up.circle": IconArrowUpCircle,
   "arrow.up.left.and.arrow.down.right": IconArrowsMaximize,
@@ -113,6 +115,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "bolt.circle": IconBolt,
   "bolt.horizontal.circle": IconBolt,
   brain: IconBrain,
+  "bubble.left.and.bubble.right": IconMessages,
   camera: IconCamera,
   "chart.bar.xaxis": IconChartBar,
   checkmark: IconCheck,

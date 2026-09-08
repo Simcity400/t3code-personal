@@ -6,6 +6,7 @@
 - [Messages and context](./user/composer.md)
 - [Working with threads](./user/thread-sidebar.md)
 - [Native agent transcripts](./user/agent-transcripts.md)
+- [Side chats](user/side-chats.md)
 - [Permission modes](./user/permission-modes.md)
 - [Terminal history](./user/terminal.md)
 - [Source control](./user/source-control.md)

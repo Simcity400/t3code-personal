@@ -9,6 +9,7 @@ The maintained differences are small:
 
 - Compact web and mobile composers, with brighter text.
 - Expanded [native agent transcripts](docs/user/agent-transcripts.md).
+- Codex/Claude [side chats](docs/user/side-chats.md), with full-screen mobile navigation.
 - Codex goal controls, including `/goal`, budgets, pause, resume, and clear.
 - Personal Windows installers and iPhone preview builds, with upstream nightly sync.
 

@@ -80,7 +80,7 @@ export const reconcileForkMigrations = Effect.fn("reconcileForkMigrations")(func
   );
 });
 
-// Keep the transcript and goal extensions outside upstream's numbered migration
+// Keep the personal extensions outside upstream's numbered migration
 // namespace so future upstream migrations cannot collide with it again.
 export const ensureForkColumns = Effect.fn("ensureForkColumns")(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -91,6 +91,14 @@ export const ensureForkColumns = Effect.fn("ensureForkColumns")(function* () {
         yield* sql`ALTER TABLE projection_thread_messages ADD COLUMN agent_id TEXT`;
       }
       const threadColumns = yield* sql<{ name: string }>`PRAGMA table_info(projection_threads)`;
+      if (threadColumns.length > 0) {
+        if (!threadColumns.some((column) => column.name === "forked_from_thread_id")) {
+          yield* sql`ALTER TABLE projection_threads ADD COLUMN forked_from_thread_id TEXT`;
+        }
+        if (!threadColumns.some((column) => column.name === "side_chat_promoted_at")) {
+          yield* sql`ALTER TABLE projection_threads ADD COLUMN side_chat_promoted_at TEXT`;
+        }
+      }
       if (
         threadColumns.length > 0 &&
         !threadColumns.some((column) => column.name === "goal_json")

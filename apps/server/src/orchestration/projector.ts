@@ -340,6 +340,12 @@ export function projectEvent(
             branch: payload.branch,
             worktreePath: payload.worktreePath,
             branchPullRequest: null,
+            ...(payload.forkedFromThreadId != null
+              ? { forkedFromThreadId: payload.forkedFromThreadId }
+              : {}),
+            ...(payload.sideChatPromotedAt != null
+              ? { sideChatPromotedAt: payload.sideChatPromotedAt }
+              : {}),
             latestTurn: null,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -521,6 +527,9 @@ export function projectEvent(
               : {}),
             ...(payload.branchPullRequest !== undefined
               ? { branchPullRequest: payload.branchPullRequest }
+              : {}),
+            ...(payload.sideChatPromotedAt !== undefined
+              ? { sideChatPromotedAt: payload.sideChatPromotedAt }
               : {}),
             updatedAt: payload.updatedAt,
           }),

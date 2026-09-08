@@ -2046,6 +2046,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         label: `/${command.name}`,
         description: command.description ?? command.input?.hint ?? "Run provider command",
       }));
+      if (
+        (selectedProvider === "codex" || selectedProvider === "claudeAgent") &&
+        !providerSlashCommandItems.some((item) => item.command.name === "side")
+      ) {
+        providerSlashCommandItems.push({
+          id: "t3:side",
+          type: "provider-slash-command",
+          provider: selectedProvider,
+          command: { name: "side", description: "Start a side chat" },
+          label: "/side",
+          description: "Start a side chat",
+        });
+      }
       const query = composerTrigger.query.trim().toLowerCase();
       const skillItems = slashMenuSkills.map((skill) => ({
         id: `skill:${selectedProvider}:${skill.name}`,

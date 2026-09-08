@@ -1,5 +1,5 @@
 export type ComposerTriggerKind = "path" | "slash-command" | "slash-model" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default";
+export type ComposerSlashCommand = "model" | "plan" | "default" | "side";
 
 export interface ComposerTrigger {
   kind: ComposerTriggerKind;
@@ -113,6 +113,11 @@ export function detectComposerTrigger(
     rangeStart: tokenStart,
     rangeEnd: cursor,
   };
+}
+
+export function parseSideChatSlashCommand(text: string): { readonly prompt: string } | null {
+  const match = /^\/side(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  return match ? { prompt: (match[1] ?? "").trim() } : null;
 }
 
 export function replaceTextRange(

@@ -1,3 +1,5 @@
+import { parseSideChatSlashCommand } from "@t3tools/shared/composerTrigger";
+import { RelatedChatsMenu } from "./chat/RelatedChatsMenu";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import {
@@ -1414,6 +1416,13 @@ export default function ChatView(props: ChatViewProps) {
   const openTerminal = useAtomCommand(terminalEnvironment.open, "terminal open");
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
   const closeTerminalMutation = useAtomCommand(terminalEnvironment.close, "terminal close");
+  const sideChatRouteRef = useRef<typeof routeThreadKey | null>(routeThreadKey);
+  useLayoutEffect(() => {
+    sideChatRouteRef.current = routeThreadKey;
+    return () => {
+      sideChatRouteRef.current = null;
+    };
+  }, [routeThreadKey]);
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
@@ -6545,6 +6554,114 @@ export default function ChatView(props: ChatViewProps) {
         composerPreviewAnnotations.length +
         composerReviewComments.length,
     });
+    const sideCommand = parseSideChatSlashCommand(trimmed);
+    if (sideCommand !== null) {
+      if (
+        !isServerThread ||
+        activeThread.session === null ||
+        ctxSelectedModelSelection.instanceId !== activeThread.modelSelection.instanceId ||
+        (ctxSelectedProvider !== "codex" && ctxSelectedProvider !== "claudeAgent")
+      ) {
+        setThreadError(
+          activeThread.id,
+          "Start a Codex or Claude conversation before creating a side chat.",
+        );
+        return;
+      }
+      if (
+        composerImages.length ||
+        composerFiles.length ||
+        composerTerminalContexts.length ||
+        composerElementContexts.length ||
+        composerPreviewAnnotations.length ||
+        composerReviewComments.length
+      ) {
+        setThreadError(
+          activeThread.id,
+          "Open the side chat with /side first, then add attachments or context there.",
+        );
+        return;
+      }
+      if (sendInFlightRef.current) return;
+      sendInFlightRef.current = true;
+      const sideThreadId = newThreadId();
+      const createdAt = new Date().toISOString();
+      try {
+        const created = await createThread({
+          environmentId,
+          input: {
+            threadId: sideThreadId,
+            projectId: activeThread.projectId,
+            title: sideCommand.prompt ? truncate(sideCommand.prompt) : "Side chat",
+            modelSelection: ctxSelectedModelSelection,
+            runtimeMode,
+            interactionMode: sendInteractionMode,
+            branch: activeThread.branch,
+            worktreePath: activeThread.worktreePath,
+            forkedFromThreadId: activeThread.id,
+            createdAt,
+          },
+        });
+        if (created._tag === "Failure") {
+          if (!isAtomCommandInterrupted(created)) {
+            const error = squashAtomCommandFailure(created);
+            setThreadError(
+              activeThread.id,
+              error instanceof Error ? error.message : "Could not create side chat.",
+            );
+          }
+          return;
+        }
+        const sideRef = scopeThreadRef(activeThread.environmentId, sideThreadId);
+        setComposerDraftPrompt(sideRef, sideCommand.prompt);
+        if (sideCommand.prompt) {
+          const started = await startThreadTurn({
+            environmentId,
+            input: {
+              threadId: sideThreadId,
+              message: {
+                messageId: newMessageId(),
+                role: "user",
+                text: sideCommand.prompt,
+                attachments: [],
+              },
+              modelSelection: ctxSelectedModelSelection,
+              runtimeMode,
+              interactionMode: sendInteractionMode,
+              createdAt,
+            },
+          });
+          if (started._tag !== "Failure") {
+            const latestChildDraft = useComposerDraftStore.getState().getComposerDraft(sideRef);
+            if (latestChildDraft?.prompt === sideCommand.prompt)
+              setComposerDraftPrompt(sideRef, "");
+          } else if (!isAtomCommandInterrupted(started)) {
+            const error = squashAtomCommandFailure(started);
+            setThreadError(
+              sideThreadId,
+              error instanceof Error
+                ? error.message
+                : "Message saved as a draft. Try sending it again.",
+            );
+          }
+        }
+        if (
+          useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ===
+          promptForSend
+        ) {
+          setComposerDraftPrompt(composerDraftTarget, "");
+          if (sideChatRouteRef.current === routeThreadKey) promptRef.current = "";
+        }
+        if (sideChatRouteRef.current !== routeThreadKey) return;
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(sideRef),
+        });
+      } finally {
+        sendInFlightRef.current = false;
+      }
+      return;
+    }
     const isUnadornedCodexCommand =
       ctxSelectedProvider === "codex" &&
       !directAnnotation &&
@@ -8218,6 +8335,10 @@ export default function ChatView(props: ChatViewProps) {
                 }}
               />
             </div>
+            <RelatedChatsMenu
+              environmentId={activeThread.environmentId}
+              threadId={activeThread.id}
+            />
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}

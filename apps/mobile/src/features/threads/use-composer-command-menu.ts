@@ -75,6 +75,22 @@ export function buildComposerSlashCommandItems(input: {
     (item) => item.command.includes(query) && (item.command === "model" || allowInteractionMode),
   );
 
+  if (
+    input.hasThread &&
+    input.atMessageStart &&
+    "side".includes(query) &&
+    (input.selectedProviderStatus?.driver === "codex" ||
+      input.selectedProviderStatus?.driver === "claudeAgent")
+  ) {
+    items.push({
+      id: "cmd:side",
+      type: "slash-command",
+      command: "side",
+      label: "/side",
+      description: "Start a side chat",
+    });
+  }
+
   // Providers expand commands only at the start of a message. T3 commands
   // change local state and do not have this restriction.
   if (!input.atMessageStart) return items;

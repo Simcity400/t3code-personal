@@ -1574,6 +1574,71 @@ it.effect(
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+const sideForkRouting = makeProviderServiceLayer();
+sideForkRouting.layer("ProviderService side chats", (it) => {
+  it.effect("forks the parent once and resumes the child's own continuation on reopening", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const parentId = asThreadId("side-parent");
+      const childId = asThreadId("side-child");
+      const parent = yield* provider.startSession(parentId, {
+        providerInstanceId: codexInstanceId,
+        threadId: parentId,
+        runtimeMode: "full-access",
+      });
+      const original = sideForkRouting.codex.startSession.getMockImplementation()!;
+      sideForkRouting.codex.startSession.mockImplementationOnce((input) =>
+        original(input).pipe(
+          Effect.map((session) => ({ ...session, resumeCursor: { opaque: "child-continuation" } })),
+        ),
+      );
+      yield* provider.startSession(childId, {
+        providerInstanceId: codexInstanceId,
+        threadId: childId,
+        runtimeMode: "full-access",
+        forkFromThreadId: parentId,
+      });
+      const first = sideForkRouting.codex.startSession.mock.calls.at(-1)?.[0];
+      assert.equal(first?.forkFromThreadId, parentId);
+      assert.deepEqual(first?.resumeCursor, parent.resumeCursor);
+      yield* provider.stopSession({ threadId: childId });
+      yield* provider.startSession(childId, {
+        providerInstanceId: codexInstanceId,
+        threadId: childId,
+        runtimeMode: "full-access",
+        forkFromThreadId: parentId,
+      });
+      const reopened = sideForkRouting.codex.startSession.mock.calls.at(-1)?.[0];
+      assert.equal(reopened?.forkFromThreadId, undefined);
+      assert.deepEqual(reopened?.resumeCursor, { opaque: "child-continuation" });
+    }),
+  );
+  it.effect("rejects missing parents and forks across provider instances", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const parentId = asThreadId("side-claude-parent");
+      yield* provider.startSession(parentId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId: parentId,
+        runtimeMode: "full-access",
+      });
+      for (const parent of [parentId, asThreadId("side-missing-parent")]) {
+        const result = yield* provider
+          .startSession(asThreadId("side-invalid-child"), {
+            providerInstanceId: codexInstanceId,
+            threadId: asThreadId("side-invalid-child"),
+            runtimeMode: "full-access",
+            forkFromThreadId: parent,
+          })
+          .pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") assert.instanceOf(result.failure, ProviderValidationError);
+      }
+    }),
+  );
+});
+
 routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("rejects native Codex Goal operations for unsupported providers", () =>
     Effect.gen(function* () {
