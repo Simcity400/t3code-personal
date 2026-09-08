@@ -1390,8 +1390,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             );
           }
         }
+        // The continuation-group check above also permits a saved cursor from
+        // another account. After a restart there is no live session to supply it.
         const hasCompatiblePersistedCursor =
-          persistedBinding?.providerInstanceId === resolvedInstanceId &&
+          persistedBinding?.provider === resolvedProvider &&
           persistedBinding.resumeCursor !== null &&
           persistedBinding.resumeCursor !== undefined;
         const shouldForkFromParent =
@@ -1449,8 +1451,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.resume_cursor.source":
             input.resumeCursor !== undefined
               ? "request"
-              : effectiveResumeCursor !== undefined &&
-                  persistedBinding?.providerInstanceId === resolvedInstanceId
+              : hasCompatiblePersistedCursor
                 ? "persisted"
                 : "none",
           "provider.resume_cursor.present": effectiveResumeCursor !== undefined,
@@ -1478,6 +1479,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           }
         }
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
+        if (
+          effectiveResumeCursor !== undefined &&
+          persistedBinding?.provider === resolvedProvider &&
+          persistedBinding.providerInstanceId !== resolvedInstanceId
+        ) {
+          // A native conversation can have only one writer. Release the old
+          // account before resuming it; keep the saved binding if resume fails.
+          const previousInstanceId = yield* requireBindingInstanceId(
+            "ProviderService.startSession",
+            persistedBinding,
+          );
+          const previousAdapter = yield* registry.getByInstance(previousInstanceId);
+          if (yield* previousAdapter.hasSession(threadId)) {
+            yield* previousAdapter.stopSession(threadId);
+            yield* analytics.record("provider.session.stopped", { provider: resolvedProvider });
+          }
+        }
         yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
         yield* prepareMcpSession(threadId, resolvedInstanceId);
         const { forkFromThreadId: _forkFromThreadId, ...adapterInput } = input;
