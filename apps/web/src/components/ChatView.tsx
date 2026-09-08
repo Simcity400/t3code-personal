@@ -1,4 +1,5 @@
 import { parseSideChatSlashCommand } from "@t3tools/shared/composerTrigger";
+import { SideChatPanel } from "./SideChatPanel";
 import { RelatedChatsMenu } from "./chat/RelatedChatsMenu";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
@@ -2061,6 +2062,39 @@ export default function ChatView(props: ChatViewProps) {
     activeThread ? environmentShell.stateAtom(activeThread.environmentId) : null,
   );
   const activeEnvironmentBootstrapComplete = activeEnvironmentShell.data?.snapshot._tag === "Some";
+  const sideChatTitlesById = useMemo(() => {
+    const snapshot = activeEnvironmentShell.data?.snapshot;
+    return new Map(
+      snapshot?._tag === "Some"
+        ? snapshot.value.threads
+            .filter((thread) => thread.forkedFromThreadId === activeThreadId)
+            .map((thread) => [String(thread.id), thread.title])
+        : [],
+    );
+  }, [activeEnvironmentShell.data?.snapshot, activeThreadId]);
+  useEffect(() => {
+    if (!activeThreadRef || !activeEnvironmentBootstrapComplete) return;
+    useRightPanelStore
+      .getState()
+      .reconcileSideChatSurfaces(activeThreadRef, [...sideChatTitlesById.keys()]);
+  }, [activeThreadRef, activeEnvironmentBootstrapComplete, sideChatTitlesById]);
+  const openSideChatSurface = useCallback(
+    (sideThreadId: string) => {
+      if (!activeThreadRef) return;
+      if (window.matchMedia(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY).matches) {
+        void navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams({
+            environmentId: activeThreadRef.environmentId,
+            threadId: sideThreadId as ThreadId,
+          }),
+        });
+      } else {
+        useRightPanelStore.getState().openSideChat(activeThreadRef, sideThreadId);
+      }
+    },
+    [activeThreadRef, navigate],
+  );
   const activeProjectKey = activeProject
     ? `${activeProject.environmentId}:${activeProject.workspaceRoot}`
     : null;
@@ -6404,6 +6438,103 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
+  const sideChatAvailable =
+    isServerThread &&
+    activeThread?.session != null &&
+    (selectedProvider === "codex" || selectedProvider === "claudeAgent") &&
+    activeProviderInstanceId === activeThread.modelSelection.instanceId;
+  const createSideChat = async (
+    prompt: string,
+    modelSelection: ModelSelection,
+    sideInteractionMode: ProviderInteractionMode,
+  ): Promise<boolean> => {
+    if (!activeThread || !sideChatAvailable || activeEnvironmentUnavailable) return false;
+    if (sendInFlightRef.current) return false;
+    sendInFlightRef.current = true;
+    const sideThreadId = newThreadId();
+    const parentRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    const panelRevision = useRightPanelStore.getState().getUserActionRevision(parentRef);
+    const createdAt = new Date().toISOString();
+    try {
+      const created = await createThread({
+        environmentId,
+        input: {
+          threadId: sideThreadId,
+          projectId: activeThread.projectId,
+          title: prompt ? truncate(prompt) : "Side chat",
+          modelSelection: modelSelection,
+          runtimeMode,
+          interactionMode: sideInteractionMode,
+          branch: activeThread.branch,
+          worktreePath: activeThread.worktreePath,
+          forkedFromThreadId: activeThread.id,
+          createdAt,
+        },
+      });
+      if (created._tag === "Failure") {
+        if (!isAtomCommandInterrupted(created)) {
+          const error = squashAtomCommandFailure(created);
+          setThreadError(
+            activeThread.id,
+            error instanceof Error ? error.message : "Could not create side chat.",
+          );
+        }
+        return false;
+      }
+      const sideRef = scopeThreadRef(activeThread.environmentId, sideThreadId);
+      setComposerDraftPrompt(sideRef, prompt);
+      if (prompt) {
+        const started = await startThreadTurn({
+          environmentId,
+          input: {
+            threadId: sideThreadId,
+            message: {
+              messageId: newMessageId(),
+              role: "user",
+              text: prompt,
+              attachments: [],
+            },
+            modelSelection: modelSelection,
+            runtimeMode,
+            interactionMode: sideInteractionMode,
+            createdAt,
+          },
+        });
+        if (started._tag !== "Failure") {
+          const latestChildDraft = useComposerDraftStore.getState().getComposerDraft(sideRef);
+          if (latestChildDraft?.prompt === prompt) setComposerDraftPrompt(sideRef, "");
+        } else if (!isAtomCommandInterrupted(started)) {
+          const error = squashAtomCommandFailure(started);
+          toastManager.add({
+            type: "error",
+            title: "Side chat message saved as a draft",
+            description:
+              error instanceof Error ? error.message : "Try sending it again in the side chat.",
+          });
+          setThreadError(
+            sideThreadId,
+            error instanceof Error
+              ? error.message
+              : "Message saved as a draft. Try sending it again.",
+          );
+        }
+      }
+      if (
+        sideChatRouteRef.current === routeThreadKey &&
+        useRightPanelStore.getState().getUserActionRevision(parentRef) === panelRevision
+      ) {
+        openSideChatSurface(sideThreadId);
+      }
+      return true;
+    } finally {
+      sendInFlightRef.current = false;
+    }
+  };
+  const addSideChatSurface = () => {
+    if (activeThread)
+      void createSideChat("", activeThread.modelSelection, activeThread.interactionMode);
+  };
+
   const onSend = async (
     e?: { preventDefault: () => void },
     submissionIntent: ComposerSubmissionIntent = "foreground",
@@ -6582,69 +6713,9 @@ export default function ChatView(props: ChatViewProps) {
         );
         return;
       }
-      if (sendInFlightRef.current) return;
-      sendInFlightRef.current = true;
-      const sideThreadId = newThreadId();
-      const createdAt = new Date().toISOString();
-      try {
-        const created = await createThread({
-          environmentId,
-          input: {
-            threadId: sideThreadId,
-            projectId: activeThread.projectId,
-            title: sideCommand.prompt ? truncate(sideCommand.prompt) : "Side chat",
-            modelSelection: ctxSelectedModelSelection,
-            runtimeMode,
-            interactionMode: sendInteractionMode,
-            branch: activeThread.branch,
-            worktreePath: activeThread.worktreePath,
-            forkedFromThreadId: activeThread.id,
-            createdAt,
-          },
-        });
-        if (created._tag === "Failure") {
-          if (!isAtomCommandInterrupted(created)) {
-            const error = squashAtomCommandFailure(created);
-            setThreadError(
-              activeThread.id,
-              error instanceof Error ? error.message : "Could not create side chat.",
-            );
-          }
-          return;
-        }
-        const sideRef = scopeThreadRef(activeThread.environmentId, sideThreadId);
-        setComposerDraftPrompt(sideRef, sideCommand.prompt);
-        if (sideCommand.prompt) {
-          const started = await startThreadTurn({
-            environmentId,
-            input: {
-              threadId: sideThreadId,
-              message: {
-                messageId: newMessageId(),
-                role: "user",
-                text: sideCommand.prompt,
-                attachments: [],
-              },
-              modelSelection: ctxSelectedModelSelection,
-              runtimeMode,
-              interactionMode: sendInteractionMode,
-              createdAt,
-            },
-          });
-          if (started._tag !== "Failure") {
-            const latestChildDraft = useComposerDraftStore.getState().getComposerDraft(sideRef);
-            if (latestChildDraft?.prompt === sideCommand.prompt)
-              setComposerDraftPrompt(sideRef, "");
-          } else if (!isAtomCommandInterrupted(started)) {
-            const error = squashAtomCommandFailure(started);
-            setThreadError(
-              sideThreadId,
-              error instanceof Error
-                ? error.message
-                : "Message saved as a draft. Try sending it again.",
-            );
-          }
-        }
+      if (
+        await createSideChat(sideCommand.prompt, ctxSelectedModelSelection, sendInteractionMode)
+      ) {
         if (
           useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ===
           promptForSend
@@ -6652,13 +6723,6 @@ export default function ChatView(props: ChatViewProps) {
           setComposerDraftPrompt(composerDraftTarget, "");
           if (sideChatRouteRef.current === routeThreadKey) promptRef.current = "";
         }
-        if (sideChatRouteRef.current !== routeThreadKey) return;
-        await navigate({
-          to: "/$environmentId/$threadId",
-          params: buildThreadRouteParams(sideRef),
-        });
-      } finally {
-        sendInFlightRef.current = false;
       }
       return;
     }
@@ -8159,6 +8223,37 @@ export default function ChatView(props: ChatViewProps) {
         }
         composerDraftTarget={composerDraftTarget}
       />
+    ) : renderedRightPanelSurface?.kind === "side-chat" ? (
+      <SideChatPanel
+        key={scopedThreadKey({
+          environmentId: activeThreadRef.environmentId,
+          threadId: renderedRightPanelSurface.threadId as ThreadId,
+        })}
+        threadRef={scopeThreadRef(
+          activeThreadRef.environmentId,
+          renderedRightPanelSurface.threadId as ThreadId,
+        )}
+        parentTitle={activeThread.title}
+        cwd={gitCwd ?? undefined}
+        skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
+        resolvedTheme={resolvedTheme}
+        timestampFormat={timestampFormat}
+        onImageExpand={onExpandTimelineImage}
+        onFileOpen={openFileAttachment}
+        onFileDownload={downloadFileAttachment}
+        onOpenFullView={() =>
+          void navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams({
+              environmentId: activeThreadRef.environmentId,
+              threadId: renderedRightPanelSurface.threadId as ThreadId,
+            }),
+          })
+        }
+        onRemoveSurface={() =>
+          useRightPanelStore.getState().closeSurface(activeThreadRef, renderedRightPanelSurface.id)
+        }
+      />
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
         key={activeThreadKey}
@@ -8336,6 +8431,7 @@ export default function ChatView(props: ChatViewProps) {
               />
             </div>
             <RelatedChatsMenu
+              onOpenSideChat={openSideChatSurface}
               environmentId={activeThread.environmentId}
               threadId={activeThread.id}
             />
@@ -8759,6 +8855,10 @@ export default function ChatView(props: ChatViewProps) {
           onAddFiles={addFilesSurface}
           onAddPullRequest={addPullRequestSurface}
           onAddAgents={addAgentsSurface}
+          onAddSideChat={addSideChatSurface}
+          onOpenSideChat={openSideChatSurface}
+          sideChatAvailable={sideChatAvailable}
+          sideChatTitlesById={sideChatTitlesById}
           browserAvailable={isPreviewSupportedInRuntime()}
           terminalAvailable={activeProject !== null}
           diffAvailable={isServerThread && isGitRepo}
@@ -8773,6 +8873,7 @@ export default function ChatView(props: ChatViewProps) {
       {rightPanelPresent && shouldUseRightPanelSheet && activeThreadRef ? (
         <RightPanelSheet
           animationDurationMs={panelAnimationsActive ? panelAnimationDurationMs : 0}
+          fullWidth={renderedRightPanelSurface?.kind === "side-chat"}
           open={rightPanelOpen}
           underFloatingPreview={previewMiniPlayerVisible}
           onClose={closePreviewPanel}
@@ -8809,6 +8910,10 @@ export default function ChatView(props: ChatViewProps) {
             onAddFiles={addFilesSurface}
             onAddPullRequest={addPullRequestSurface}
             onAddAgents={addAgentsSurface}
+            onAddSideChat={addSideChatSurface}
+            onOpenSideChat={openSideChatSurface}
+            sideChatAvailable={sideChatAvailable}
+            sideChatTitlesById={sideChatTitlesById}
             browserAvailable={isPreviewSupportedInRuntime()}
             terminalAvailable={activeProject !== null}
             diffAvailable={isServerThread && isGitRepo}

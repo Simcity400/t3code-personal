@@ -11,20 +11,28 @@ import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../ui/menu";
 export const RelatedChatsMenu = memo(function RelatedChatsMenu({
   environmentId,
   threadId,
+  onOpenSideChat,
 }: {
   environmentId: EnvironmentId;
   threadId: ThreadId;
+  onOpenSideChat: (threadId: string) => void;
 }) {
   const navigate = useNavigate();
   const thread = useThreadShell({ environmentId, threadId });
+  const threads = useThreadShells();
+  const chats = useMemo(() => (thread ? relatedChats(thread, threads) : []), [thread, threads]);
   const onOpen = (id: ThreadId) => {
+    if (
+      chats.some((chat) => chat.thread.id === id && chat.thread.forkedFromThreadId === threadId)
+    ) {
+      onOpenSideChat(id);
+      return;
+    }
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams({ environmentId, threadId: id }),
     });
   };
-  const threads = useThreadShells();
-  const chats = useMemo(() => (thread ? relatedChats(thread, threads) : []), [thread, threads]);
   if (chats.length === 0) return null;
   return (
     <div className="shrink-0 border-b border-border/60 px-3 py-1">

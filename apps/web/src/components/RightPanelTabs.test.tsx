@@ -120,6 +120,9 @@ function renderTabs(
       onAddDiff={() => undefined}
       onAddFiles={() => undefined}
       onAddAgents={() => undefined}
+      onAddSideChat={() => undefined}
+      onOpenSideChat={() => undefined}
+      sideChatAvailable={false}
       liveAgentCount={0}
       browserAvailable
       terminalAvailable={false}
