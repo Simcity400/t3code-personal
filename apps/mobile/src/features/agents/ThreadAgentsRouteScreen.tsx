@@ -302,6 +302,8 @@ export function ThreadAgentTranscriptRouteScreen(
         contentInsetEndAdjustment={contentInsetEndAdjustment}
         contentTopInset={0}
         contentBottomInset={insets.bottom + 16}
+        // No composer here: a short transcript reads from the top, as on desktop.
+        alignContentToEnd={false}
         loadEarlier={loadEarlier}
       />
     </View>

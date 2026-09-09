@@ -250,6 +250,12 @@ export interface ThreadFeedProps {
   readonly contentBottomInset?: number;
   readonly contentMaxWidth?: number;
   readonly layoutVariant?: LayoutVariant;
+  /**
+   * Chat-style bottom alignment: short content rests just above the composer.
+   * Screens without a composer (an agent transcript) read top-down instead.
+   * Defaults to true.
+   */
+  readonly alignContentToEnd?: boolean;
   readonly usesAutomaticContentInsets?: boolean;
   readonly onHeaderMaterialVisibilityChange?: (visible: boolean) => void;
   readonly onEndFollowEnabledChange?: (enabled: boolean) => void;
@@ -2921,7 +2927,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             // viewport, pad above the content so messages rest just above the
             // composer instead of under the header. No effect on threads that
             // overflow the viewport (the padding clamps to zero).
-            alignItemsAtEnd
+            alignItemsAtEnd={props.alignContentToEnd !== false}
             initialScrollAtEnd
             onScroll={handleScroll}
             onStartReached={() => {
