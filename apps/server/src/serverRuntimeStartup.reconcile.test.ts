@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  EventId,
   type OrchestrationCommand,
   type OrchestrationSessionStatus,
   ProviderDriverKind,
@@ -18,6 +19,11 @@ import * as Stream from "effect/Stream";
 import { OrchestrationCommandInvariantError } from "./orchestration/Errors.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { TASK_LIFECYCLE_ACTIVITY_KINDS } from "./orchestration/ThreadBackgroundLiveness.ts";
+import {
+  type ProjectionThreadActivity,
+  ProjectionThreadActivityRepository,
+} from "./persistence/Services/ProjectionThreadActivities.ts";
 import {
   ProviderSessionDirectoryPersistenceError,
   ProviderSessionNotFoundError,
@@ -74,6 +80,18 @@ const makeProviderService = (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
     streamEvents: Stream.empty,
   }) satisfies ProviderService.ProviderService["Service"];
 
+const makeActivityRepository = (
+  listByThreadId: ProjectionThreadActivityRepository["Service"]["listByThreadId"] = () =>
+    Effect.succeed([]),
+) =>
+  ({
+    upsert: () => Effect.die("unused"),
+    listByThreadId,
+    listUserInputLifecycleByThreadId: () => Effect.die("unused"),
+    getLatestTaskActivity: () => Effect.die("unused"),
+    deleteByThreadId: () => Effect.die("unused"),
+  }) satisfies ProjectionThreadActivityRepository["Service"];
+
 const queryWithThreads = (threads: ReadonlyArray<ReturnType<typeof makeThread>>) =>
   ({
     getUserInputActivity: () => Effect.die("unused"),
@@ -87,8 +105,13 @@ const runReconciliation = (input: {
   readonly providerService?: ProviderService.ProviderService["Service"];
   readonly directory: ProviderSessionDirectory.ProviderSessionDirectory["Service"];
   readonly dispatch: OrchestrationEngine.OrchestrationEngineService["Service"]["dispatch"];
+  readonly listActivities?: ProjectionThreadActivityRepository["Service"]["listByThreadId"];
 }) =>
   ServerRuntimeStartup.reconcileProviderSessions.pipe(
+    Effect.provideService(
+      ProjectionThreadActivityRepository,
+      makeActivityRepository(input.listActivities),
+    ),
     Effect.provideService(
       ProjectionSnapshotQuery.ProjectionSnapshotQuery,
       queryWithThreads(input.threads),
@@ -696,6 +719,7 @@ it.effect("retries failed projections and continues after a persistent failure",
 it.effect("does not fail startup when the live provider session inventory cannot be read", () => {
   let queried = false;
   return ServerRuntimeStartup.reconcileProviderSessions.pipe(
+    Effect.provideService(ProjectionThreadActivityRepository, makeActivityRepository()),
     Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
       getUserInputActivity: () => Effect.die("unused"),
       getCommandReadModel: () =>
@@ -999,5 +1023,155 @@ it.effect("settles failed opt-in recovery without retrying the provider turn", (
       continueAfterServerUpdate: null,
       continueAfterServerUpdatePrepared: null,
     });
+  }),
+);
+
+it.effect("settles the tasks an orphaned session left running", () => {
+  const turnId = TurnId.make("turn-orphaned-tasks");
+  const thread = makeThread("thread-orphaned-tasks", "running", turnId);
+  const dispatched: OrchestrationCommand[] = [];
+  const listed: Array<ReadonlyArray<string> | undefined> = [];
+  let rowCount = 0;
+  const row = (kind: string, payload: Record<string, unknown>): ProjectionThreadActivity => ({
+    activityId: EventId.make(`row-${(rowCount += 1)}`),
+    threadId: thread.id,
+    turnId,
+    tone: "info",
+    kind,
+    summary: kind,
+    payload,
+    createdAt: updatedAt,
+  });
+
+  return runReconciliation({
+    threads: [thread],
+    directory: {
+      getBinding: (candidate) =>
+        Effect.succeed(
+          Option.some({
+            threadId: candidate,
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId,
+            status: "running" as const,
+            resumeCursor: { threadId: candidate },
+            runtimePayload: { activeTurnId: turnId },
+          }),
+        ),
+      upsert: () => Effect.void,
+      recordImportedTranscript: () => Effect.die("unused"),
+      getProvider: () => Effect.die("unused"),
+      listThreadIds: () => Effect.die("unused"),
+      listBindings: () => Effect.succeed([]),
+    },
+    listActivities: (input) =>
+      Effect.sync(() => {
+        listed.push(input.activityKinds);
+        return [
+          row("task.started", { taskId: "agent-live" }),
+          row("task.started", { taskId: "agent-done" }),
+          row("task.completed", { taskId: "agent-done", status: "completed" }),
+          row("task.started", { taskId: "agent-idle" }),
+          row("task.updated", { taskId: "agent-idle", status: "idle" }),
+        ];
+      }),
+    dispatch: (command) =>
+      Effect.sync(() => {
+        dispatched.push(command);
+        return { sequence: dispatched.length };
+      }),
+  }).pipe(
+    Effect.tap(() =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(listed, [[...TASK_LIFECYCLE_ACTIVITY_KINDS]]);
+        assert.deepStrictEqual(
+          dispatched.map((command) => command.type),
+          ["thread.session.set", "thread.activity.append"],
+        );
+        const appended = dispatched[1];
+        assert.equal(appended?.type, "thread.activity.append");
+        if (appended?.type !== "thread.activity.append") return;
+        assert.equal(appended.threadId, thread.id);
+        assert.equal(appended.activity.kind, "task.updated");
+        assert.equal(appended.activity.turnId, turnId);
+        assert.deepStrictEqual(appended.activity.payload, {
+          taskId: "agent-live",
+          status: "interrupted",
+          agentKind: "agent",
+          detail: "The provider session ended before this task finished.",
+        });
+      }),
+    ),
+  );
+});
+
+it.effect("settles orphaned tasks before continuing a session after a restart", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-continued-tasks");
+    const thread = makeThread("thread-continued-tasks", "running", turnId);
+    const activation = yield* Deferred.make<void>();
+    const dispatched: OrchestrationCommand[] = [];
+    let binding: ProviderSessionDirectory.ProviderRuntimeBinding = {
+      threadId: thread.id,
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId,
+      status: "running",
+      resumeCursor: { threadId: thread.id },
+      runtimePayload: { activeTurnId: turnId },
+    };
+
+    yield* runReconciliation({
+      threads: [thread],
+      continueAfterRestart: true,
+      providerService: {
+        ...makeProviderService(),
+        getCapabilities: () =>
+          Effect.succeed({
+            sessionModelSwitch: "in-session" as const,
+            promptlessTurnContinuation: true,
+          }),
+        sendTurn: (input) =>
+          Effect.succeed({ threadId: input.threadId, turnId: TurnId.make("turn-recovered") }),
+      },
+      directory: {
+        getBinding: () => Effect.sync(() => Option.some(binding)),
+        upsert: (next) =>
+          Effect.sync(() => {
+            binding = next;
+          }),
+        recordImportedTranscript: () => Effect.die("unused"),
+        getProvider: () => Effect.die("unused"),
+        listThreadIds: () => Effect.die("unused"),
+        listBindings: () => Effect.succeed([]),
+      },
+      listActivities: () =>
+        Effect.succeed([
+          {
+            activityId: EventId.make("row-live"),
+            threadId: thread.id,
+            turnId,
+            tone: "info",
+            kind: "task.started",
+            summary: "task.started",
+            payload: { taskId: "agent-live" },
+            createdAt: updatedAt,
+          },
+        ]),
+      dispatch: (command) =>
+        Effect.sync(() => {
+          dispatched.push(command);
+          return { sequence: dispatched.length };
+        }),
+    }).pipe(Effect.provideService(ServerActivation, Deferred.await(activation)), Effect.scoped);
+
+    assert.deepStrictEqual(
+      dispatched.map((command) =>
+        command.type === "thread.session.set"
+          ? `session:${command.session.status}`
+          : command.type === "thread.activity.append"
+            ? `activity:${String((command.activity.payload as { status?: string }).status)}`
+            : command.type,
+      ),
+      ["session:starting", "activity:interrupted"],
+    );
   }),
 );

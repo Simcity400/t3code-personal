@@ -4465,6 +4465,56 @@ describe("ProviderRuntimeIngestion", () => {
     expect(completed?.payload).toMatchObject({ title: "Watch round-3 CI and bots" });
   });
 
+  it("persists an interrupted row for each task a session exit leaves running", async () => {
+    const harness = await createHarness();
+    const provider = ProviderDriverKind.make("codex");
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-exit-1");
+    const task = (
+      type: "task.started" | "task.updated" | "task.completed",
+      eventId: string,
+      payload: Record<string, unknown>,
+    ) => ({
+      type,
+      eventId: asEventId(eventId),
+      provider,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId,
+      turnId,
+      payload,
+    });
+    await harness.emitAndDrain([
+      task("task.started", "evt-live-started", { taskId: "agent-live", title: "Live agent" }),
+      task("task.started", "evt-done-started", { taskId: "agent-done" }),
+      task("task.completed", "evt-done-completed", { taskId: "agent-done", status: "completed" }),
+      task("task.started", "evt-idle-started", { taskId: "agent-idle" }),
+      task("task.updated", "evt-idle-updated", { taskId: "agent-idle", status: "idle" }),
+      {
+        type: "session.exited",
+        eventId: asEventId("evt-session-exited-with-live-task"),
+        provider,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        threadId,
+        payload: {},
+      },
+    ]);
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    const interrupted = (thread?.activities ?? []).filter(
+      (activity) =>
+        activity.kind === "task.updated" &&
+        (activity.payload as { status?: string }).status === "interrupted",
+    );
+    expect(interrupted.map((activity) => activity.id)).toEqual([
+      "evt-session-exited-with-live-task:interrupted:agent-live",
+    ]);
+    expect(interrupted[0]?.payload).toMatchObject({
+      taskId: "agent-live",
+      status: "interrupted",
+      agentKind: "agent",
+    });
+  });
+
   it("projects structured user input request and resolution as thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

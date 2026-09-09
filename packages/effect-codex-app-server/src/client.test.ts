@@ -123,6 +123,39 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       ]);
     }),
   );
+  it.effect("keeps reading the peer after a notification handler crashes", () =>
+    Effect.gen(function* () {
+      const handle = yield* makeHandle();
+      const scope = yield* Scope.make();
+      const context = yield* Layer.buildWithScope(CodexClient.layerChildProcess(handle), scope);
+
+      const account = yield* Effect.gen(function* () {
+        const client = yield* CodexClient.CodexAppServerClient;
+        // The peer emits this delta right after `initialized`; the crash must
+        // cost that one notification, not the response to the next request.
+        yield* client.handleServerNotification("item/agentMessage/delta", () =>
+          Effect.sync(() => {
+            throw new Error("handler crashed");
+          }),
+        );
+        yield* client.request("initialize", {
+          clientInfo: {
+            name: "effect-codex-app-server-test",
+            title: "Effect Codex App Server Test",
+            version: "0.0.0",
+          },
+          capabilities: {
+            experimentalApi: true,
+            optOutNotificationMethods: null,
+          },
+        });
+        yield* client.notify("initialized", undefined);
+        return yield* client.request("account/read", {});
+      }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
+
+      assert.equal(account.requiresOpenaiAuth, false);
+    }),
+  );
   it.effect("drains child stderr so large diagnostics cannot block protocol responses", () =>
     Effect.gen(function* () {
       const handle = yield* makeHandle({

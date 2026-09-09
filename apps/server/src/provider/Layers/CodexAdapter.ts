@@ -34,6 +34,7 @@ import {
   ThreadId,
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as NodeCrypto from "node:crypto";
 import * as Crypto from "effect/Crypto";
@@ -2513,7 +2514,19 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               return;
             }
             yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
-          }),
+          }).pipe(
+            // The runtime keeps emitting whether or not this consumer is
+            // alive; a mapping crash must cost one event, not the session.
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.failCause(cause)
+                : Effect.logError("Dropped a Codex provider event the adapter could not map.", {
+                    method: event.method,
+                    threadId: event.threadId,
+                    cause,
+                  }),
+            ),
+          ),
         ).pipe(Effect.forkIn(sessionScope));
 
         const started = yield* runtime.start().pipe(

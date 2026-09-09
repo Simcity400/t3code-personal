@@ -19,12 +19,14 @@ import {
 } from "@t3tools/contracts";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { normalizeModelSlug } from "@t3tools/shared/model";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -911,6 +913,23 @@ export function makeMemoryConsolidationNotificationFilter(): (
   };
 }
 
+// Route ids are best-effort: the branded constructors throw on a blank id, and
+// readRouteFields runs for every notification before anything can catch that.
+// A blank id routes as "unknown" instead.
+const optionalTurnId = (value: string): TurnId | undefined =>
+  Option.getOrUndefined(TurnId.makeOption(value));
+const optionalProviderItemId = (value: string): ProviderItemId | undefined =>
+  Option.getOrUndefined(ProviderItemId.makeOption(value));
+
+/** Protocol terminations that only restate a process exit the exit watcher already reports. */
+function isProcessExitTermination(error: CodexErrors.CodexAppServerError): boolean {
+  return (
+    error._tag === "CodexAppServerProcessExitedError" ||
+    (error._tag === "CodexAppServerTransportError" &&
+      error.operation === "read-process-exit-status")
+  );
+}
+
 function readRouteFields(notification: CodexServerNotification): {
   readonly turnId: TurnId | undefined;
   readonly itemId: ProviderItemId | undefined;
@@ -924,18 +943,18 @@ function readRouteFields(notification: CodexServerNotification): {
     case "turn/started":
     case "turn/completed":
       return {
-        turnId: TurnId.make(notification.params.turn.id),
+        turnId: optionalTurnId(notification.params.turn.id),
         itemId: undefined,
       };
     case "error":
       return {
-        turnId: TurnId.make(notification.params.turnId),
+        turnId: optionalTurnId(notification.params.turnId),
         itemId: undefined,
       };
     case "turn/diff/updated":
     case "turn/plan/updated":
       return {
-        turnId: TurnId.make(notification.params.turnId),
+        turnId: optionalTurnId(notification.params.turnId),
         itemId: undefined,
       };
     case "serverRequest/resolved":
@@ -946,8 +965,8 @@ function readRouteFields(notification: CodexServerNotification): {
     case "item/started":
     case "item/completed":
       return {
-        turnId: TurnId.make(notification.params.turnId),
-        itemId: ProviderItemId.make(notification.params.item.id),
+        turnId: optionalTurnId(notification.params.turnId),
+        itemId: optionalProviderItemId(notification.params.item.id),
       };
     case "item/agentMessage/delta":
     case "item/plan/delta":
@@ -959,8 +978,8 @@ function readRouteFields(notification: CodexServerNotification): {
     case "item/reasoning/summaryPartAdded":
     case "item/reasoning/textDelta":
       return {
-        turnId: TurnId.make(notification.params.turnId),
-        itemId: ProviderItemId.make(notification.params.itemId),
+        turnId: optionalTurnId(notification.params.turnId),
+        itemId: optionalProviderItemId(notification.params.itemId),
       };
     default:
       return {
@@ -1303,10 +1322,10 @@ export const makeCodexSessionRuntime = (
         ),
       );
 
-    const clientContext = yield* CodexClient.layerChildProcess(child).pipe(
-      Layer.build,
-      Effect.provideService(Scope.Scope, runtimeScope),
-    );
+    const protocolTerminated = yield* Deferred.make<CodexErrors.CodexAppServerError>();
+    const clientContext = yield* CodexClient.layerChildProcess(child, {
+      onTermination: (error) => Deferred.succeed(protocolTerminated, error).pipe(Effect.asVoid),
+    }).pipe(Layer.build, Effect.provideService(Scope.Scope, runtimeScope));
     const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
       Effect.provide(clientContext),
     );
@@ -2310,8 +2329,23 @@ export const makeCodexSessionRuntime = (
       { concurrency: 1, discard: true },
     );
 
+    // One notification the runtime cannot handle must not end the pump: the
+    // queue is unbounded and Codex never blocks, so a dead pump means every
+    // later event is lost while the process keeps working unobserved.
     yield* Stream.fromQueue(serverNotifications).pipe(
-      Stream.runForEach(handleRawNotification),
+      Stream.runForEach((notification) =>
+        handleRawNotification(notification).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause)
+              : Effect.logError("Dropped a Codex notification the runtime could not handle.", {
+                  method: notification.method,
+                  threadId: options.threadId,
+                  cause,
+                }),
+          ),
+        ),
+      ),
       Effect.forkIn(runtimeScope),
     );
 
@@ -2348,11 +2382,21 @@ export const makeCodexSessionRuntime = (
       Effect.forkIn(runtimeScope),
     );
 
+    // One session end, reported once: either the process exits or the
+    // protocol dies first, and the other watcher must then stay quiet.
+    const exitReportedRef = yield* Ref.make(false);
+    const claimExitReport = Effect.gen(function* () {
+      if (yield* Ref.get(closedRef)) {
+        return false;
+      }
+      return !(yield* Ref.getAndSet(exitReportedRef, true));
+    });
+
     yield* child.exitCode.pipe(
       Effect.flatMap((exitCode) =>
-        Ref.get(closedRef).pipe(
-          Effect.flatMap((closed) => {
-            if (closed) {
+        claimExitReport.pipe(
+          Effect.flatMap((claimed) => {
+            if (!claimed) {
               return Effect.void;
             }
             const nextStatus = exitCode === 0 ? "closed" : "error";
@@ -2371,6 +2415,34 @@ export const makeCodexSessionRuntime = (
             );
           }),
         ),
+      ),
+      Effect.forkIn(runtimeScope),
+    );
+
+    // The protocol can stop while the process lives on (an undecodable frame,
+    // a read failure). Requests then fail and notifications stop with no exit
+    // code to report it, so the session would look alive forever while the
+    // process keeps changing the worktree unobserved. Report the error and
+    // stop the process; process exit itself stays with the watcher above.
+    yield* Deferred.await(protocolTerminated).pipe(
+      Effect.flatMap((error) =>
+        Effect.gen(function* () {
+          if (isProcessExitTermination(error) || !(yield* claimExitReport)) {
+            return;
+          }
+          yield* updateSession(sessionRef, {
+            status: "error",
+            activeTurnId: undefined,
+            lastError: error.message,
+          });
+          yield* emitSessionEvent(
+            "session/exited",
+            `Codex App Server connection ended: ${error.message}`,
+          );
+          yield* child
+            .kill({ forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER })
+            .pipe(Effect.ignore);
+        }),
       ),
       Effect.forkIn(runtimeScope),
     );

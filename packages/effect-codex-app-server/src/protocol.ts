@@ -419,11 +419,16 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
           return lines;
         }).pipe(Effect.flatMap((lines) => Effect.forEach(lines, handleLine, { discard: true }))),
       ),
-      Effect.matchEffect({
-        onFailure: (error) =>
-          handleTermination(() =>
-            Effect.succeed(normalizeIncomingError(error, "read-input-stream")),
-          ),
+      // A defect in the read loop must terminate the protocol like a failure
+      // does: otherwise the loop dies unobserved, pending requests never
+      // settle, and the peer's output is silently ignored for good.
+      Effect.matchCauseEffect({
+        onFailure: (cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : handleTermination(() =>
+                Effect.succeed(normalizeIncomingError(Cause.squash(cause), "read-input-stream")),
+              ),
         onSuccess: () =>
           Effect.sync(() => {
             const line = remainder.join("");

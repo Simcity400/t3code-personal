@@ -24,6 +24,12 @@ export interface CodexAppServerClientOptions {
   readonly logger?: (
     event: CodexProtocol.CodexAppServerProtocolLogEvent,
   ) => Effect.Effect<void, never>;
+  /**
+   * Runs once when the protocol stops reading the peer, including when the
+   * process is still alive (a frame that could not be decoded, a read
+   * failure). Without it the only signal is that requests start failing.
+   */
+  readonly onTermination?: (error: CodexError.CodexAppServerError) => Effect.Effect<void, never>;
 }
 
 interface CodexAppServerClientRaw {
@@ -147,20 +153,32 @@ const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make")(func
           ]
         : undefined;
     const handlers = notificationHandlers.get(notification.method) ?? [];
+    // Handlers run inside the read loop. A handler that throws would end the
+    // loop for every later message, so a crash costs one notification and a
+    // warning instead of the whole session.
+    const survive = <A>(self: Effect.Effect<A, CodexError.CodexAppServerError>) =>
+      self.pipe(
+        Effect.catch(() => Effect.void),
+        Effect.catchDefect((defect) =>
+          Effect.logWarning("Codex server notification handler crashed", {
+            method: notification.method,
+            defect,
+          }),
+        ),
+      );
 
     if (schema) {
-      return decodeNotificationPayload(notification.method, schema, notification.params).pipe(
-        Effect.flatMap((decoded) =>
-          Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
+      return survive(
+        decodeNotificationPayload(notification.method, schema, notification.params).pipe(
+          Effect.flatMap((decoded) =>
+            Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
+          ),
         ),
-        Effect.catch(() => Effect.void),
       );
     }
 
     return unknownNotificationHandler
-      ? unknownNotificationHandler(notification.method, notification.params).pipe(
-          Effect.catch(() => Effect.void),
-        )
+      ? survive(unknownNotificationHandler(notification.method, notification.params))
       : Effect.void;
   };
 
@@ -190,6 +208,7 @@ const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make")(func
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.onTermination ? { onTermination: options.onTermination } : {}),
     onNotification: dispatchNotification,
     onRequest: dispatchRequest,
   });

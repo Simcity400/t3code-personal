@@ -136,6 +136,10 @@ rl.on("line", (line) => {
     for (const notification of script.notifications) {
       write({ jsonrpc: "2.0", method: notification.method, params: notification.params });
     }
+    // Verbatim stdout lines: lets a test break the protocol on purpose.
+    for (const line of script.rawLines ?? []) {
+      process.stdout.write(`${line}\n`);
+    }
     for (const request of script.serverRequests ?? []) {
       write({ jsonrpc: "2.0", id: request.id, method: request.method, params: request.params });
     }

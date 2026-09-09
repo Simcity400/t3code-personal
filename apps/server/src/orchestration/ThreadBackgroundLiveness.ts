@@ -15,12 +15,34 @@
  *
  * @module ThreadBackgroundLivenessService
  */
-import { INERT_TASK_TYPES, MONITOR_TASK_TYPES } from "@t3tools/contracts";
+import {
+  EventId,
+  INERT_TASK_TYPES,
+  MONITOR_TASK_TYPES,
+  type OrchestrationThreadActivity,
+  type TurnId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 export type ThreadBackgroundLiveness = "working" | "monitoring" | null;
+
+/** The persisted activity kinds that feed the registry: `task.<transition>`. */
+export const TASK_LIFECYCLE_ACTIVITY_KINDS = [
+  "task.started",
+  "task.progress",
+  "task.updated",
+  "task.completed",
+] as const;
+
+type TaskLifecycleTransition = "started" | "progress" | "updated" | "completed";
+
+/** A task the registry still counts as live, with the bucket it landed in. */
+export interface LiveTask {
+  readonly taskId: string;
+  readonly agentKind: "agent" | "background";
+}
 
 interface ThreadLivenessState {
   readonly agents: Set<string>;
@@ -63,6 +85,9 @@ export class ThreadBackgroundLivenessService extends Context.Service<
 
     /** Session death orphans all of a thread's background work. */
     readonly clearThreadLiveness: (threadId: string) => void;
+
+    /** Tasks currently counted live for a thread (agents and monitors). */
+    readonly listThreadLiveTasks: (threadId: string) => ReadonlyArray<LiveTask>;
 
     /**
      * Two-state vocabulary by design: any live agent work is "working";
@@ -153,6 +178,17 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
       stateByThreadId.delete(threadId);
     },
 
+    listThreadLiveTasks: (threadId) => {
+      const state = stateByThreadId.get(threadId);
+      if (!state) {
+        return [];
+      }
+      return [
+        ...Array.from(state.agents, (taskId) => ({ taskId, agentKind: "agent" as const })),
+        ...Array.from(state.monitors, (taskId) => ({ taskId, agentKind: "background" as const })),
+      ];
+    },
+
     getThreadBackgroundLiveness: (threadId) => {
       const state = stateByThreadId.get(threadId);
       if (!state) {
@@ -170,3 +206,66 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
 }
 
 export const layer = Layer.effect(ThreadBackgroundLivenessService, Effect.sync(make));
+
+/**
+ * Replays persisted task rows (ascending order) through a scratch registry
+ * and returns what would still be live. The in-memory registry is empty after
+ * a server restart, but the projection holds every transition, so startup
+ * can still find the work an orphaned session left running.
+ */
+export function liveTasksFromActivities(
+  threadId: string,
+  activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>,
+): ReadonlyArray<LiveTask> {
+  const liveness = make();
+  for (const activity of activities) {
+    if (!TASK_LIFECYCLE_ACTIVITY_KINDS.some((kind) => kind === activity.kind)) {
+      continue;
+    }
+    const payload =
+      typeof activity.payload === "object" && activity.payload !== null
+        ? (activity.payload as Record<string, unknown>)
+        : {};
+    if (typeof payload.taskId !== "string") {
+      continue;
+    }
+    liveness.recordTaskLiveness({
+      threadId,
+      taskId: payload.taskId,
+      taskType: typeof payload.taskType === "string" ? payload.taskType : undefined,
+      status: typeof payload.status === "string" ? payload.status : undefined,
+      agentId: typeof payload.agentId === "string" ? payload.agentId : undefined,
+      kind: activity.kind.slice("task.".length) as TaskLifecycleTransition,
+    });
+  }
+  return liveness.listThreadLiveTasks(threadId);
+}
+
+/**
+ * The terminal row a dead session owes each task it was still running. It is
+ * stamped like every ingested task row (agentKind) so clients file it with
+ * the task it settles instead of rendering it as a stray background row.
+ * Without a persisted terminal row the Agents panel reads the task as running
+ * again the moment the session resumes.
+ */
+export function interruptedTaskActivity(input: {
+  readonly activityId: string;
+  readonly task: LiveTask;
+  readonly turnId: TurnId | null;
+  readonly createdAt: string;
+}): OrchestrationThreadActivity {
+  return {
+    id: EventId.make(input.activityId),
+    createdAt: input.createdAt,
+    tone: "info",
+    kind: "task.updated",
+    summary: "Task interrupted",
+    payload: {
+      taskId: input.task.taskId,
+      status: "interrupted",
+      agentKind: input.task.agentKind,
+      detail: "The provider session ended before this task finished.",
+    },
+    turnId: input.turnId,
+  };
+}

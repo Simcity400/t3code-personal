@@ -45,7 +45,11 @@ import { ProjectionThreadMessageRepositoryLive } from "../../persistence/Layers/
 import { ProjectionThreadProposedPlanRepository } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/Layers/ProjectionThreadProposedPlans.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import { ThreadBackgroundLivenessService } from "../ThreadBackgroundLiveness.ts";
+import {
+  interruptedTaskActivity,
+  type LiveTask,
+  ThreadBackgroundLivenessService,
+} from "../ThreadBackgroundLiveness.ts";
 import { ThreadPlanProgressService } from "../ThreadPlanProgress.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -2129,6 +2133,7 @@ const make = Effect.gen(function* () {
 
       // Sidebar background liveness: fed from the same lifecycle stream,
       // read by the shell query at mapping time (no persistence).
+      let orphanedTasks: ReadonlyArray<LiveTask> = [];
       switch (event.type) {
         case "task.started":
         case "task.progress":
@@ -2158,6 +2163,9 @@ const make = Effect.gen(function* () {
           break;
         }
         case "session.exited":
+          // Nothing survives the session; the rows appended below persist that
+          // so a later resume cannot revive these tasks in the Agents panel.
+          orphanedTasks = threadBackgroundLiveness.listThreadLiveTasks(thread.id);
           threadBackgroundLiveness.clearThreadLiveness(thread.id);
           break;
         default:
@@ -2236,7 +2244,17 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(activityEvent, taskTitle);
+      const activities = [
+        ...runtimeEventToActivities(activityEvent, taskTitle),
+        ...orphanedTasks.map((task) =>
+          interruptedTaskActivity({
+            activityId: `${event.eventId}:interrupted:${task.taskId}`,
+            task,
+            turnId: toTurnId(event.turnId) ?? null,
+            createdAt: event.createdAt,
+          }),
+        ),
+      ];
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
           Effect.flatMap((commandId) =>

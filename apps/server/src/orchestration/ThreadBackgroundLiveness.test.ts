@@ -226,4 +226,47 @@ describe("ThreadBackgroundLiveness", () => {
     a.clearThreadLiveness("t");
     expect(a.getThreadBackgroundLiveness("t")).toBeNull();
   });
+
+  it("lists the live tasks a session death has to settle, with their bucket", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    const record = (taskId: string, kind: "started" | "updated", status?: string) =>
+      liveness.recordTaskLiveness({ threadId: "t", taskId, taskType: undefined, status, kind });
+    record("agent-live", "started");
+    record("agent-idle", "started");
+    record("agent-idle", "updated", "idle");
+    record("agent-done", "started");
+    record("agent-done", "updated", "completed");
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "monitor",
+      taskType: "monitor",
+      status: undefined,
+      kind: "started",
+    });
+    expect(liveness.listThreadLiveTasks("t")).toEqual([
+      { taskId: "agent-live", agentKind: "agent" },
+      { taskId: "monitor", agentKind: "background" },
+    ]);
+    expect(liveness.listThreadLiveTasks("other")).toEqual([]);
+  });
+
+  it("replays persisted task rows to find what an orphaned session left running", () => {
+    const rows = [
+      { kind: "task.started", payload: { taskId: "agent-live" } },
+      { kind: "task.started", payload: { taskId: "agent-done" } },
+      { kind: "task.completed", payload: { taskId: "agent-done", status: "completed" } },
+      { kind: "task.started", payload: { taskId: "agent-idle" } },
+      { kind: "task.updated", payload: { taskId: "agent-idle", status: "idle" } },
+      // An agent's own shell is covered by the agent's liveness.
+      {
+        kind: "task.started",
+        payload: { taskId: "agent-live-shell", taskType: "shell", agentId: "agent-live" },
+      },
+      { kind: "tool.started", payload: { taskId: "not-a-task-row" } },
+      { kind: "task.started", payload: { title: "missing task id" } },
+    ];
+    expect(ThreadBackgroundLiveness.liveTasksFromActivities("t", rows)).toEqual([
+      { taskId: "agent-live", agentKind: "agent" },
+    ]);
+  });
 });

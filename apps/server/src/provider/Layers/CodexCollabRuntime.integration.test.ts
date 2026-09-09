@@ -765,4 +765,90 @@ describe("CodexSessionRuntime collab integration", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     );
   }
+
+  it.effect("keeps consuming notifications after one it cannot route", () =>
+    Effect.gen(function* () {
+      // Blank ids used to throw inside the notification pump; the pump died
+      // and every later notification was lost while Codex kept working.
+      const script = {
+        rootThreadId: ROOT,
+        notifications: [
+          {
+            method: "item/agentMessage/delta",
+            params: { threadId: ROOT, turnId: "", itemId: "", delta: "blank ids" },
+          },
+          capturedStartedActivity(),
+        ],
+      };
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(scriptPath, { force: true })),
+      );
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-collab-blank-ids"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      const eventsFiber = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.method === "turn/completed"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "route past a blank id" });
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.isTrue(
+        events.some((event) => event.method === "collabAgent/activity"),
+        "notifications after the unroutable one must still flow",
+      );
+      assert.isTrue(events.some((event) => event.method === "turn/completed"));
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("reports a broken protocol as a session error instead of going quiet", () =>
+    Effect.gen(function* () {
+      const script = {
+        rootThreadId: ROOT,
+        notifications: [],
+        rawLines: ["this is not a JSON-RPC frame"],
+        holdTurnOpen: true,
+      };
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(scriptPath, { force: true })),
+      );
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-collab-broken-protocol"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      const exitedFiber = yield* runtime.events.pipe(
+        Stream.filter((event) => event.method === "session/exited"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "break the protocol" });
+      const [exited] = Array.from(yield* Fiber.join(exitedFiber));
+      assert.include(exited?.message, "Codex App Server connection ended");
+      const session = yield* runtime.getSession;
+      assert.equal(session.status, "error");
+      assert.isUndefined(session.activeTurnId);
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

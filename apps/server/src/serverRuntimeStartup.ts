@@ -41,6 +41,12 @@ import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ProviderSessionReaper from "./provider/Services/ProviderSessionReaper.ts";
+import { ProjectionThreadActivityRepository } from "./persistence/Services/ProjectionThreadActivities.ts";
+import {
+  interruptedTaskActivity,
+  liveTasksFromActivities,
+  TASK_LIFECYCLE_ACTIVITY_KINDS,
+} from "./orchestration/ThreadBackgroundLiveness.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
@@ -478,6 +484,7 @@ export const reconcileProviderSessions = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
   const providerService = yield* ProviderService.ProviderService;
   const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const activityRepository = yield* ProjectionThreadActivityRepository;
   const settings = yield* ServerSettings.ServerSettingsService;
   const continueAfterRestart = yield* settings.getSettings.pipe(
     Effect.map((value) => value.continueThreadsAfterServerUpdate),
@@ -574,6 +581,49 @@ export const reconcileProviderSessions = Effect.gen(function* () {
       Option.isSome(binding) &&
       binding.value.status === "running" &&
       binding.value.resumeCursor != null;
+    // The liveness registry died with the old process, so replay the
+    // persisted task rows to find the work this session left running and
+    // settle it the way a live session exit would.
+    const settleOrphanedTasks = Effect.gen(function* () {
+      const rows = yield* activityRepository.listByThreadId({
+        threadId: thread.id,
+        activityKinds: [...TASK_LIFECYCLE_ACTIVITY_KINDS],
+      });
+      const orphanedTasks = liveTasksFromActivities(thread.id, rows);
+      if (orphanedTasks.length === 0) {
+        return;
+      }
+      const interruptedAt = DateTime.formatIso(yield* DateTime.now);
+      yield* Effect.forEach(
+        orphanedTasks,
+        (task) =>
+          Effect.gen(function* () {
+            const commandId = CommandId.make(yield* crypto.randomUUIDv4);
+            yield* orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId,
+              threadId: thread.id,
+              activity: interruptedTaskActivity({
+                activityId: `${commandId}:interrupted:${task.taskId}`,
+                task,
+                turnId: session.activeTurnId,
+                createdAt: interruptedAt,
+              }),
+              createdAt: interruptedAt,
+            });
+          }),
+        { discard: true },
+      );
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("failed to settle tasks orphaned by a provider session", {
+              threadId: thread.id,
+              cause,
+            }),
+      ),
+    );
     const settleAsError = (lastError: string) =>
       Effect.gen(function* () {
         yield* Effect.gen(function* () {
@@ -630,6 +680,8 @@ export const reconcileProviderSessions = Effect.gen(function* () {
                 }),
           ),
         );
+
+        yield* settleOrphanedTasks;
       });
 
     if (
@@ -678,6 +730,9 @@ export const reconcileProviderSessions = Effect.gen(function* () {
         yield* settleAsError(ORPHANED_PROVIDER_SESSION_ERROR);
         continue;
       }
+      // The resumed session starts a fresh process; whatever the old one was
+      // running is gone either way.
+      yield* settleOrphanedTasks;
 
       yield* forkParked(
         Effect.gen(function* () {

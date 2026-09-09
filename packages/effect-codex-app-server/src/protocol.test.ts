@@ -399,6 +399,36 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     }),
   );
 
+  it.effect("terminates the protocol when a notification callback crashes", () =>
+    Effect.gen(function* () {
+      const { stdio, input } = yield* makeInMemoryStdio();
+      const termination = yield* Deferred.make<CodexError.CodexAppServerError>();
+      const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+        stdio,
+        onNotification: () =>
+          Effect.sync(() => {
+            throw new Error("handler crashed");
+          }),
+        onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
+      });
+
+      yield* Queue.offer(input, encodeJsonl({ method: "x/crash", params: {} }));
+
+      // A crash used to end the read loop without a trace: no termination,
+      // pending requests never settled, later frames ignored forever.
+      const error = yield* Deferred.await(termination);
+      assert.instanceOf(error, CodexError.CodexAppServerTransportError);
+      assert.equal(error.operation, "read-input-stream");
+      const requestError = yield* transport.request("thread/read", {}).pipe(
+        Effect.match({
+          onFailure: (failure) => failure,
+          onSuccess: () => assert.fail("Expected requests to fail after termination"),
+        }),
+      );
+      assert.strictEqual(requestError, error);
+    }),
+  );
+
   it.effect("keeps only recent raw notifications after their callbacks run", () =>
     Effect.gen(function* () {
       const { stdio, input } = yield* makeInMemoryStdio();
