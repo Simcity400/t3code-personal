@@ -792,10 +792,7 @@ export function runtimeEventToActivities(
     }
 
     case "item.updated": {
-      if (
-        !isToolLifecycleItemType(event.payload.itemType) &&
-        !(event.payload.agentId && event.payload.itemType === "reasoning")
-      ) {
+      if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
       // A streaming update's `data` carries the full tool output accumulated
@@ -834,10 +831,7 @@ export function runtimeEventToActivities(
     }
 
     case "item.completed": {
-      if (
-        !isToolLifecycleItemType(event.payload.itemType) &&
-        !(event.payload.agentId && event.payload.itemType === "reasoning")
-      ) {
+      if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
       return [
@@ -869,10 +863,7 @@ export function runtimeEventToActivities(
     }
 
     case "item.started": {
-      if (
-        !isToolLifecycleItemType(event.payload.itemType) &&
-        !(event.payload.agentId && event.payload.itemType === "reasoning")
-      ) {
+      if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
       return [
@@ -1503,38 +1494,10 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const childReasoningText = yield* Cache.make<string, string>({
-    capacity: 512,
-    timeToLive: "1 hour",
-    lookup: () => Effect.succeed(""),
-  });
-
-  const processRuntimeEvent = (incomingEvent: ProviderRuntimeEvent) =>
+  const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
-      if (
-        incomingEvent.type === "content.delta" &&
-        incomingEvent.payload.agentId &&
-        incomingEvent.itemId &&
-        (incomingEvent.payload.streamKind === "reasoning_text" ||
-          incomingEvent.payload.streamKind === "reasoning_summary_text")
-      ) {
-        const key = `${incomingEvent.threadId}:${incomingEvent.payload.agentId}:${incomingEvent.itemId}`;
-        const previous = yield* Cache.get(childReasoningText, key);
-        const detail = (previous + incomingEvent.payload.delta).slice(-8_000);
-        yield* Cache.set(childReasoningText, key, detail);
-        incomingEvent = {
-          ...incomingEvent,
-          type: "item.updated",
-          payload: {
-            agentId: incomingEvent.payload.agentId,
-            itemType: "reasoning",
-            title: "Thinking",
-            status: "inProgress",
-            detail,
-          },
-        };
-      }
-      const event = incomingEvent;
+      // Child reasoning is dropped like the parent's: neither transcript
+      // persists reasoning, so agent transcripts read exactly like the main one.
       // Child messages have their own item identity and never participate in
       // the parent's segmentation, completion, or checkpoint selection.
       if (

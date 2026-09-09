@@ -116,11 +116,11 @@ describe("agent transcripts", () => {
     const payload = Object.freeze({
       agentId: "agent-a",
       timelineBypass: true,
-      itemType: "reasoning",
-      detail: "Consider the two options",
+      itemType: "command_execution",
+      detail: "ls src",
       data: { output: "full output" },
     });
-    const storedActivity = Object.freeze(activity("reasoning", payload));
+    const storedActivity = Object.freeze(activity("tool", payload));
     const scoped = selectAgentTranscript(
       Object.freeze([storedMessage]),
       Object.freeze([storedActivity]),
@@ -129,13 +129,25 @@ describe("agent transcripts", () => {
     expect(scoped.messages[0]).toMatchObject({ text: "answer", streaming: true });
     expect(isAgentMessage(scoped.messages[0]!)).toBe(false);
     expect(scoped.activities[0]?.payload).toEqual({
-      itemType: "reasoning",
-      detail: "Consider the two options",
+      itemType: "command_execution",
+      detail: "ls src",
       data: payload.data,
     });
     expect(storedMessage.agentId).toBe("agent-a");
     expect(storedActivity.payload).toBe(payload);
     expect(payload.timelineBypass).toBe(true);
+  });
+
+  it("drops persisted reasoning so agent transcripts read like the main transcript", () => {
+    const scoped = selectAgentTranscript(
+      [],
+      [
+        activity("thought", { agentId: "agent-a", itemType: "reasoning", detail: "Weigh both" }),
+        activity("tool", { agentId: "agent-a", itemType: "command_execution", detail: "pwd" }),
+      ],
+      "agent-a",
+    );
+    expect(scoped.activities.map((entry) => entry.id)).toEqual(["tool"]);
   });
 
   it("ignores malformed payloads and never treats an empty selection as the root transcript", () => {

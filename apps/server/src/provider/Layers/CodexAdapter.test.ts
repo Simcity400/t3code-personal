@@ -1228,6 +1228,38 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("labels a child's reasoning progress the way the main transcript does", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.progress"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const items = [
+        { type: "reasoning", id: "thought" },
+        { type: "webSearch", id: "search" },
+      ];
+      for (const [index, item] of items.entries())
+        yield* runtime.emit({
+          id: asEventId(`child-progress-${index}`),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-1"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method: "collabAgent/item",
+          payload: { agentThreadId: "child", phase: "started", item },
+        });
+      const progress = Array.from(yield* Fiber.join(eventsFiber));
+      NodeAssert.deepEqual(
+        progress.map((event) => event.payload.summary),
+        ["Thinking", "web search"],
+      );
+    }),
+  );
+
   it.effect("carries child model metadata through every task event", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

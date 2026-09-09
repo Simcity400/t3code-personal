@@ -59,8 +59,12 @@ export function selectAgentTranscript(
       if (!activity.payload || typeof activity.payload !== "object") return [];
       const payload = activity.payload as Record<string, unknown>;
       if (payload.agentId !== agentId) return [];
+      // The main transcript never shows persisted reasoning (only the live
+      // "Thinking" row), and agent transcripts must read the same way. Older
+      // history may still carry reasoning rows, so they are dropped here too.
+      if (payload.itemType === "reasoning") return [];
       // Root renderers hide attributed rows and provider-marked timeline bypasses.
-      // Remove only those routing stamps from copies; retain tool/reasoning payloads.
+      // Remove only those routing stamps from copies; retain tool payloads.
       const { agentId: _agentId, timelineBypass: _timelineBypass, ...scopedPayload } = payload;
       return [{ ...activity, payload: scopedPayload }];
     }),

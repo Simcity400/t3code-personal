@@ -4,10 +4,12 @@ import { expect, it } from "vite-plus/test";
 
 import { deriveTimelineEntries, deriveWorkLogEntries } from "../../session-logic";
 
-it("renders attributed stored text, reasoning and tool output through the main transcript projection", () => {
+it("renders attributed stored text and tool output through the main transcript projection", () => {
   const at = "2026-09-08T00:00:00.000Z";
   const activities: OrchestrationThreadActivity[] = [
     {
+      // Persisted by older servers; the main transcript never shows reasoning,
+      // so agent transcripts hide it as well.
       id: EventId.make("reasoning"),
       kind: "content.completed",
       summary: "Thinking",
@@ -62,11 +64,10 @@ it("renders attributed stored text, reasoning and tool output through the main t
   expect(deriveWorkLogEntries(activities)).toEqual([]);
   const scoped = selectAgentTranscript(messages, activities, "agent-a");
   const work = deriveWorkLogEntries(scoped.activities);
-  expect(work).toHaveLength(2);
-  expect(work[0]).toMatchObject({ detail: "Check the actual source first" });
-  expect(work[1]).toMatchObject({ detail: "source contents", command: "cat source.ts" });
+  expect(work).toHaveLength(1);
+  expect(work[0]).toMatchObject({ detail: "source contents", command: "cat source.ts" });
   const timeline = deriveTimelineEntries(scoped.messages, [], work);
-  expect(timeline).toHaveLength(3);
+  expect(timeline).toHaveLength(2);
   expect(timeline.find((entry) => entry.kind === "message")).toMatchObject({
     message: { text: "Here is what the source does" },
   });

@@ -480,13 +480,12 @@ describe("ProviderRuntimeIngestion", () => {
         ["child-a", "Child answer", false],
         ["child-b", "Snapshot answer", false],
       ]);
+      // Child reasoning is not persisted, exactly like the parent's reasoning.
       expect(
         active.activities.some(
-          (activity) =>
-            activity.kind === "tool.updated" &&
-            (activity.payload as Record<string, unknown>).agentId === "child-a",
+          (activity) => (activity.payload as Record<string, unknown>).agentId === "child-a",
         ),
-      ).toBe(true);
+      ).toBe(false);
       expect(
         active.activities.some(
           (activity) =>

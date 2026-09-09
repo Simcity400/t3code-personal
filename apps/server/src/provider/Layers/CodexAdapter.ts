@@ -1289,11 +1289,13 @@ function mapCollabAgentEvent(
           ? (payload.item as Record<string, unknown>)
           : undefined;
       const canonical = toCanonicalItemType(typeof item?.type === "string" ? item.type : "");
+      // Same words the main transcript uses for its live row, so a child's
+      // status never reads "reasoning" where the parent reads "Thinking".
       const summary =
         (typeof item?.command === "string" ? item.command : undefined) ??
         (typeof item?.title === "string" ? item.title : undefined) ??
         (typeof item?.query === "string" ? item.query : undefined) ??
-        canonical.replaceAll("_", " ");
+        (canonical === "reasoning" ? "Thinking" : canonical.replaceAll("_", " "));
       const progress: ProviderRuntimeEvent = {
         ...base,
         type: "task.progress",
