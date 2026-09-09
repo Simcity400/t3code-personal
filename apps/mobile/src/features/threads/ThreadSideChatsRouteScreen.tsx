@@ -1,27 +1,37 @@
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  StackActions,
+  useFocusEffect,
+  useNavigation,
+  type StaticScreenProps,
+} from "@react-navigation/native";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { attachedSideChatsOf } from "@t3tools/client-runtime/state/sideChat";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import * as Option from "effect/Option";
-import { useMemo, useRef, useState } from "react";
-import { Alert, FlatList, Pressable, View } from "react-native";
+import { useCallback, useMemo, useRef } from "react";
+import { Alert, FlatList, Pressable, useWindowDimensions, View } from "react-native";
+import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
-import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { EmptyState } from "../../components/EmptyState";
-import { LoadingScreen } from "../../components/LoadingScreen";
-import { useThreadShells } from "../../state/entities";
-import { useAtomCommand } from "../../state/use-atom-command";
-import { useThreadDetail } from "../../state/use-thread-detail";
-import { useRemoteEnvironmentRuntime } from "../../state/use-remote-environment-registry";
+import { relativeTime } from "../../lib/time";
+import { useUniwindTheme } from "../../lib/useUniwindTheme";
+import { useThreadShell, useThreadShells } from "../../state/entities";
 import { threadEnvironment } from "../../state/threads";
-import { relatedChats } from "@t3tools/client-runtime/state/sideChat";
-import { projectThreadContentPresentation } from "./threadContentPresentation";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { ThreadSwipeable } from "../home/thread-swipe-actions";
+import { resolveThreadStatus } from "./threadPresentation";
 
+/**
+ * The side chats attached to one thread. Reached from the thread header only
+ * when two or more exist (a single side chat opens directly). Rows swipe to
+ * promote or delete, matching the home list's row actions.
+ */
 export function ThreadSideChatsRouteScreen({
   route,
 }: StaticScreenProps<{
@@ -30,157 +40,162 @@ export function ThreadSideChatsRouteScreen({
 }>) {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  const theme = useUniwindTheme();
   const environmentId = EnvironmentId.make(route.params.environmentId);
   const threadId = ThreadId.make(route.params.threadId);
-  const state = useThreadDetail({ environmentId, threadId });
-  const thread = Option.getOrNull(state.data);
+  const parent = useThreadShell({ environmentId, threadId });
   const threads = useThreadShells();
-  const shell = threads.find(
-    (item) => item.environmentId === environmentId && item.id === threadId,
+  const chats = useMemo(
+    () => (parent ? attachedSideChatsOf(parent, threads) : []),
+    [parent, threads],
   );
-  const chats = useMemo(() => (shell ? relatedChats(shell, threads) : []), [shell, threads]);
-  const runtime = useRemoteEnvironmentRuntime(environmentId);
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
-  const inFlight = useRef(false);
-  const [busy, setBusy] = useState(false);
-  const presentation = projectThreadContentPresentation({
-    hasDetail: thread !== null,
-    detailError: Option.getOrNull(state.error),
-    detailDeleted: state.status === "deleted",
-    connectionState: runtime?.connectionState ?? "available",
+  const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
+    reportFailure: false,
   });
-  const openThread = (id: ThreadId) =>
-    navigation.dispatch(
-      StackActions.popTo("Thread", {
-        environmentId: String(environmentId),
-        threadId: String(id),
-      }),
-    );
+  const openSwipeableRef = useRef<SwipeableMethods | null>(null);
 
-  const removeSideChat = async () => {
-    if (inFlight.current || !thread) return;
-    inFlight.current = true;
-    setBusy(true);
-    try {
-      const result = await deleteThread({ environmentId, input: { threadId } });
-      if (result._tag === "Failure") {
-        if (!isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
-          Alert.alert(
-            "Could not update side chat",
-            error instanceof Error ? error.message : String(error),
-          );
-        }
-        return;
+  // Once every side chat is promoted or deleted there is nothing to list, so
+  // the screen leaves as soon as it is (or becomes) the focused one.
+  const hadChats = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (chats.length > 0) hadChats.current = true;
+      else if (hadChats.current) navigation.goBack();
+    }, [chats.length, navigation]),
+  );
+
+  const openChat = useCallback(
+    (chat: EnvironmentThreadShell) =>
+      navigation.dispatch(
+        StackActions.push("Thread", {
+          environmentId: String(chat.environmentId),
+          threadId: String(chat.id),
+        }),
+      ),
+    [navigation],
+  );
+  const promoteChat = useCallback(
+    async (chat: EnvironmentThreadShell) => {
+      const result = await updateThreadMetadata({
+        environmentId: chat.environmentId,
+        input: { threadId: chat.id, sideChatPromotedAt: new Date().toISOString() },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        Alert.alert(
+          "Could not promote side chat",
+          error instanceof Error ? error.message : String(error),
+        );
       }
-      const parent = chats.find((item) => item.relation === "Original thread");
-      if (parent) openThread(parent.thread.id);
-      else navigation.dispatch(StackActions.popTo("Home"));
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
+    },
+    [updateThreadMetadata],
+  );
+  const deleteChat = useCallback(
+    (chat: EnvironmentThreadShell) =>
+      Alert.alert("Delete side chat?", "This permanently deletes its messages.", [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () =>
+            void deleteThread({
+              environmentId: chat.environmentId,
+              input: { threadId: chat.id },
+            }).then((result) => {
+              if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+                const error = squashAtomCommandFailure(result);
+                Alert.alert(
+                  "Could not delete side chat",
+                  error instanceof Error ? error.message : String(error),
+                );
+              }
+            }),
+        },
+      ]),
+    [deleteThread],
+  );
+  const handleSwipeableWillOpen = useCallback((methods: SwipeableMethods) => {
+    if (openSwipeableRef.current !== methods) {
+      openSwipeableRef.current?.close();
+      openSwipeableRef.current = methods;
     }
-  };
+  }, []);
+  const handleSwipeableClose = useCallback((methods: SwipeableMethods) => {
+    if (openSwipeableRef.current === methods) openSwipeableRef.current = null;
+  }, []);
 
-  if (presentation.kind === "loading") return <LoadingScreen message="Loading side chats…" />;
-  if (presentation.kind === "unavailable" || !thread) {
-    return (
-      <EmptyState
-        title={presentation.kind === "unavailable" ? presentation.title : "Thread unavailable"}
-        detail={
-          presentation.kind === "unavailable"
-            ? presentation.detail
-            : "Return to your threads and try again."
-        }
-      />
-    );
+  if (!parent) {
+    return <EmptyState title="Thread unavailable" detail="Return to your threads and try again." />;
   }
 
   return (
     <FlatList
       className="flex-1 bg-screen"
       data={chats}
-      keyExtractor={({ thread: item }) => item.id}
-      contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 16, gap: 8 }}
+      keyExtractor={(item) => item.id}
+      contentContainerStyle={{ paddingVertical: 8, paddingBottom: insets.bottom + 16 }}
+      onScrollBeginDrag={() => openSwipeableRef.current?.close()}
       ListHeaderComponent={
-        <View className="mb-3 gap-3">
-          <View className="flex-row items-center gap-3 rounded-2xl border border-border bg-card p-4">
-            <View className="min-w-0 flex-1">
-              <Text className="text-xs text-foreground-muted">Current conversation</Text>
-              <Text className="mt-1 text-base font-t3-bold text-foreground" numberOfLines={2}>
-                {thread.title}
-              </Text>
-              <Text className="mt-1 text-sm text-foreground-muted">Saved in your thread list</Text>
-            </View>
-            {thread.forkedFromThreadId != null ? (
-              <ControlPillMenu
-                title="Side chat"
-                actions={[
-                  {
-                    id: "delete",
-                    title: "Delete side chat…",
-                    image: "trash",
-                    attributes: { destructive: true, disabled: busy },
-                  },
-                ]}
-                onPressAction={({ nativeEvent }) => {
-                  if (nativeEvent.event === "delete")
-                    Alert.alert(
-                      "Delete side chat?",
-                      "This permanently deletes its messages. Any attached side chats will be kept in the main thread list.",
-                      [
-                        { text: "Cancel", style: "cancel" },
-                        {
-                          text: "Delete",
-                          style: "destructive",
-                          onPress: () => void removeSideChat(),
-                        },
-                      ],
-                    );
-                }}
-              >
-                <ControlPill
-                  icon="ellipsis"
-                  accessibilityLabel="Side chat actions"
-                  disabled={busy}
-                />
-              </ControlPillMenu>
-            ) : null}
-          </View>
-          <Text className="px-1 text-sm text-foreground-muted">
-            Switch conversations below. Returning to another chat keeps this one saved.
-          </Text>
-        </View>
+        <Text className="px-5 pb-2 text-sm text-foreground-muted" numberOfLines={2}>
+          Side chats of {parent.title}. Swipe a row to promote or delete it.
+        </Text>
       }
-      renderItem={({ item }) => (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Open ${item.relation.toLowerCase()}: ${item.thread.title}`}
-          disabled={busy}
-          onPress={() => openThread(item.thread.id)}
-          className="flex-row items-center gap-3 rounded-2xl border border-border bg-card p-4 active:opacity-70"
-        >
-          <SymbolView
-            name={
-              item.relation === "Original thread"
-                ? "arrow.turn.up.left"
-                : "bubble.left.and.bubble.right"
-            }
-            size={20}
-            tintColorClassName="accent-icon"
-          />
-          <View className="min-w-0 flex-1">
-            <Text className="text-sm text-foreground-muted">{item.relation}</Text>
-            <Text className="mt-1 text-base text-foreground" numberOfLines={2}>
-              {item.thread.title}
-            </Text>
-          </View>
-          <SymbolView name="chevron.right" size={14} tintColorClassName="accent-icon-subtle" />
-        </Pressable>
-      )}
+      renderItem={({ item }) => {
+        const status = resolveThreadStatus(item);
+        return (
+          <ThreadSwipeable
+            threadKey={`${item.environmentId}:${item.id}`}
+            backgroundColor={theme["--color-screen"]}
+            fullSwipeWidth={windowWidth - 32}
+            onDelete={() => deleteChat(item)}
+            onSwipeableClose={handleSwipeableClose}
+            onSwipeableWillOpen={handleSwipeableWillOpen}
+            primaryAction={{
+              accessibilityLabel: `Promote ${item.title} to a thread`,
+              icon: "arrow.up.right.square",
+              label: "Promote",
+              onPress: () => void promoteChat(item),
+            }}
+            resetKey={`${item.environmentId}:${item.id}`}
+            threadTitle={item.title}
+          >
+            {() => (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Open side chat: ${item.title}`}
+                onPress={() => openChat(item)}
+                className="flex-row items-center gap-3 px-5 py-3 active:opacity-70"
+              >
+                <SymbolView
+                  name="bubble.left.and.bubble.right"
+                  size={20}
+                  tintColorClassName="accent-icon"
+                />
+                <View className="min-w-0 flex-1">
+                  <Text className="text-base text-foreground" numberOfLines={2}>
+                    {item.title}
+                  </Text>
+                  <Text className="mt-0.5 text-sm text-foreground-muted" numberOfLines={1}>
+                    {[status?.label, relativeTime(item.updatedAt ?? item.createdAt)]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </Text>
+                </View>
+                <SymbolView
+                  name="chevron.right"
+                  size={14}
+                  tintColorClassName="accent-icon-subtle"
+                />
+              </Pressable>
+            )}
+          </ThreadSwipeable>
+        );
+      }}
       ListEmptyComponent={
         <EmptyState
-          title="No related chats"
+          title="No side chats"
           detail="Use /side in the conversation to start a side chat with Codex or Claude."
         />
       }

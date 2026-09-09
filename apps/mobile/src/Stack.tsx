@@ -485,7 +485,7 @@ export const RootStack = createNativeStackNavigator({
     ThreadSideChats: createNativeStackScreen({
       screen: ThreadSideChatsRouteScreen,
       linking: `${THREAD_LINKING_PREFIX}/side-chats`,
-      options: { ...SOLID_HEADER_OPTIONS, title: "Related chats" },
+      options: { ...SOLID_HEADER_OPTIONS, title: "Side chats" },
     }),
     ThreadAgents: createNativeStackScreen({
       screen: ThreadAgentsRouteScreen,

@@ -1,7 +1,7 @@
 import { useSideChatCreation } from "./chat/useSideChatCreation";
 import { parseSideChatSlashCommand } from "@t3tools/shared/composerTrigger";
 import { SideChatPanel } from "./SideChatPanel";
-import { RelatedChatsMenu } from "./chat/RelatedChatsMenu";
+import { SideChatBar } from "./chat/SideChatBar";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import {
@@ -2035,7 +2035,10 @@ export default function ChatView(props: ChatViewProps) {
     return new Map(
       snapshot?._tag === "Some"
         ? snapshot.value.threads
-            .filter((thread) => thread.forkedFromThreadId === activeThreadId)
+            .filter(
+              (thread) =>
+                thread.forkedFromThreadId === activeThreadId && thread.sideChatPromotedAt == null,
+            )
             .map((thread) => [String(thread.id), thread.title])
         : [],
     );
@@ -8155,11 +8158,9 @@ export default function ChatView(props: ChatViewProps) {
                 }}
               />
             </div>
-            <RelatedChatsMenu
-              onOpenSideChat={openSideChatSurface}
-              environmentId={activeThread.environmentId}
-              threadId={activeThread.id}
-            />
+            {isServerThread ? (
+              <SideChatBar environmentId={activeThread.environmentId} threadId={activeThread.id} />
+            ) : null}
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}

@@ -9,7 +9,9 @@ import type {
   ScopedThreadRef,
   ServerConfig,
 } from "@t3tools/contracts";
+import { visibleThreadShells } from "@t3tools/client-runtime/state/sideChat";
 import { Atom } from "effect/unstable/reactivity";
+import { useMemo } from "react";
 
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom, serverEnvironment } from "./server";
@@ -31,6 +33,12 @@ export function useProjects(): ReadonlyArray<EnvironmentProject> {
 
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
   return useAtomValue(environmentThreadShells.threadShellsAtom);
+}
+
+/** Thread lists: everything except side chats still attached to a parent. */
+export function useVisibleThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
+  const threads = useThreadShells();
+  return useMemo(() => visibleThreadShells(threads), [threads]);
 }
 
 export function useProject(ref: ScopedProjectRef | null): EnvironmentProject | null {

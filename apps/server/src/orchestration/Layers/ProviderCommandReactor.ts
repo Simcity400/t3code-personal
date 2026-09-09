@@ -345,6 +345,10 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
+  // Whether each live session was started with the side chat framing. The
+  // framing is fixed at session start, so a promoted side chat restarts its
+  // session on the next turn instead of carrying the framing along.
+  const threadSideChatFraming = new Map<string, boolean>();
   const compactingThreadIds = new Set<ThreadId>();
   const stoppingThreadIds = new Set<ThreadId>();
 
@@ -718,6 +722,7 @@ const make = Effect.gen(function* () {
           .pipe(Effect.forkDetach)
       : Effect.void;
 
+    const sideChatFraming = thread.forkedFromThreadId != null && thread.sideChatPromotedAt == null;
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;
       readonly provider?: ProviderDriverKind;
@@ -734,9 +739,15 @@ const make = Effect.gen(function* () {
           ...(thread.forkedFromThreadId != null
             ? { forkFromThreadId: thread.forkedFromThreadId }
             : {}),
+          ...(sideChatFraming ? { sideChat: true } : {}),
           runtimeMode: desiredRuntimeMode,
         })
-        .pipe(Effect.tap(() => refreshWorkspaceSnapshot));
+        .pipe(
+          Effect.tap(() => {
+            threadSideChatFraming.set(threadId, sideChatFraming);
+            return refreshWorkspaceSnapshot;
+          }),
+        );
 
     const bindSessionToThread = (session: ProviderSession) =>
       Effect.gen(function* () {
@@ -786,13 +797,16 @@ const make = Effect.gen(function* () {
         preferredProvider === "claudeAgent" &&
         requestedModelSelection !== undefined &&
         !Equal.equals(previousModelSelection, requestedModelSelection);
+      const sideChatFramingChanged =
+        (threadSideChatFraming.get(threadId) ?? false) !== sideChatFraming;
 
       if (
         !runtimeModeChanged &&
         !cwdChanged &&
         !instanceChanged &&
         !shouldRestartForModelChange &&
-        !shouldRestartForModelSelectionChange
+        !shouldRestartForModelSelectionChange &&
+        !sideChatFramingChanged
       ) {
         yield* refreshWorkspaceSnapshot;
         return existingSessionThreadId;
@@ -818,6 +832,7 @@ const make = Effect.gen(function* () {
         instanceChanged,
         shouldRestartForModelChange,
         shouldRestartForModelSelectionChange,
+        sideChatFramingChanged,
         hasResumeCursor: resumeCursor !== undefined,
       });
       const restartedSession = yield* startProviderSession(

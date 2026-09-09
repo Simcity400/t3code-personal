@@ -69,6 +69,7 @@ type HeaderItems = HeaderItem[];
 type ThreadGitHeaderActionItems = {
   readonly agents: HeaderItem;
   readonly sideChats: HeaderItem;
+  readonly sideChat: HeaderItem;
   readonly terminal: HeaderItem;
   readonly files: HeaderItem;
   readonly git: HeaderItem;
@@ -99,7 +100,13 @@ type ThreadGitControlsProps = ThreadGitMenuProps & {
   };
   readonly canOpenTerminal: boolean;
   readonly onOpenAgents: () => void;
+  /** Present only while this thread has attached side chats. */
   readonly onOpenSideChats?: () => void;
+  /** Present only when this thread is itself an attached side chat. */
+  readonly sideChatActions?: {
+    readonly onPromote: () => void;
+    readonly onDelete: () => void;
+  };
   readonly canOpenFiles: boolean;
   readonly projectScripts: ReadonlyArray<ProjectScript>;
   readonly terminalSessions: ReadonlyArray<TerminalMenuSession>;
@@ -256,11 +263,40 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
   return useMemo(
     () => ({
       sideChats: {
-        accessibilityLabel: "Open related chats",
+        accessibilityLabel: "Open side chats",
         icon: { name: "bubble.left.and.bubble.right", type: "sfSymbol" },
-        identifier: "thread-related-chats",
+        identifier: "thread-side-chats",
         onPress: props.onOpenSideChats,
         type: "button",
+      },
+      sideChat: {
+        accessibilityLabel: "Side chat actions",
+        icon: { name: "text.bubble", type: "sfSymbol" },
+        identifier: "thread-side-chat",
+        label: "Side chat",
+        menu: {
+          items: [
+            {
+              description: "Keep it as a normal thread",
+              icon: { name: "arrow.up.right.square", type: "sfSymbol" },
+              label: "Promote to thread",
+              onPress: () => props.sideChatActions?.onPromote(),
+              type: "action",
+            },
+            {
+              description: "Permanently deletes its messages",
+              destructive: true,
+              icon: { name: "trash", type: "sfSymbol" },
+              label: "Delete side chat",
+              onPress: () => props.sideChatActions?.onDelete(),
+              type: "action",
+            },
+          ],
+          title: "Side chat",
+        },
+        sharesBackground: true,
+        type: "menu",
+        variant: "plain",
       },
       agents: {
         accessibilityLabel: "Open agents",
@@ -400,6 +436,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       props.canOpenFiles,
       props.onOpenAgents,
       props.onOpenSideChats,
+      props.sideChatActions,
       props.canOpenTerminal,
       props.gitStatus,
       props.onOpenNewTerminal,
@@ -416,13 +453,14 @@ export function useThreadGitRightHeaderItems(props: ThreadGitControlsProps): Hea
   return useMemo(
     () =>
       [
+        ...(props.sideChatActions ? [actionItems.sideChat] : []),
         ...(props.onOpenSideChats ? [actionItems.sideChats] : []),
         actionItems.agents,
         actionItems.git,
         actionItems.files,
         actionItems.terminal,
       ] as HeaderItems,
-    [actionItems, props.onOpenSideChats],
+    [actionItems, props.onOpenSideChats, props.sideChatActions],
   );
 }
 
@@ -431,13 +469,14 @@ export function useThreadGitCenterHeaderItems(props: ThreadGitControlsProps): He
   return useMemo(
     () =>
       [
+        ...(props.sideChatActions ? [actionItems.sideChat] : []),
         ...(props.onOpenSideChats ? [actionItems.sideChats] : []),
         actionItems.agents,
         actionItems.files,
         actionItems.git,
         actionItems.terminal,
       ] as HeaderItems,
-    [actionItems, props.onOpenSideChats],
+    [actionItems, props.onOpenSideChats, props.sideChatActions],
   );
 }
 
@@ -451,9 +490,32 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
 
   return (
     <NativeHeaderToolbar placement="right">
+      {props.sideChatActions ? (
+        <NativeHeaderToolbar.Menu
+          accessibilityLabel="Side chat actions"
+          icon="text.bubble"
+          title="Side chat"
+        >
+          <NativeHeaderToolbar.MenuAction
+            icon="arrow.up.right.square"
+            onPress={props.sideChatActions.onPromote}
+            subtitle="Keep it as a normal thread"
+          >
+            <NativeHeaderToolbar.Label>Promote to thread</NativeHeaderToolbar.Label>
+          </NativeHeaderToolbar.MenuAction>
+          <NativeHeaderToolbar.MenuAction
+            destructive
+            icon="trash"
+            onPress={props.sideChatActions.onDelete}
+            subtitle="Permanently deletes its messages"
+          >
+            <NativeHeaderToolbar.Label>Delete side chat</NativeHeaderToolbar.Label>
+          </NativeHeaderToolbar.MenuAction>
+        </NativeHeaderToolbar.Menu>
+      ) : null}
       {props.onOpenSideChats ? (
         <NativeHeaderToolbar.Button
-          accessibilityLabel="Open related chats"
+          accessibilityLabel="Open side chats"
           icon="bubble.left.and.bubble.right"
           onPress={props.onOpenSideChats}
         />

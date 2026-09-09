@@ -49,6 +49,7 @@ import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import type { ClaudeScopedLimitNames } from "./claudeUsageLimits.ts";
 import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
+import { SIDE_CHAT_INSTRUCTIONS } from "../SideChatInstructions.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -6289,6 +6290,42 @@ describe("ClaudeAdapterLive", () => {
         (session.resumeCursor as { resume?: string } | undefined)?.resume,
         createInput?.options.sessionId,
       );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("frames side chat sessions with the side conversation instructions", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const parentSessionId = "550e8400-e29b-41d4-a716-446655440000";
+      const appendedPrompt = () => {
+        const systemPrompt = harness.getLastCreateQueryInput()?.options.systemPrompt;
+        return typeof systemPrompt === "object" && systemPrompt !== null && "append" in systemPrompt
+          ? String(systemPrompt.append)
+          : "";
+      };
+
+      yield* adapter.startSession({
+        threadId: ThreadId.make("plain-fork-thread"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: { resume: parentSessionId, turnCount: 3 },
+        forkFromThreadId: ThreadId.make("parent-thread"),
+        runtimeMode: "full-access",
+      });
+      assert.isFalse(appendedPrompt().includes(SIDE_CHAT_INSTRUCTIONS));
+
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: { resume: parentSessionId, turnCount: 3 },
+        forkFromThreadId: ThreadId.make("parent-thread"),
+        sideChat: true,
+        runtimeMode: "full-access",
+      });
+      assert.isTrue(appendedPrompt().endsWith(SIDE_CHAT_INSTRUCTIONS));
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

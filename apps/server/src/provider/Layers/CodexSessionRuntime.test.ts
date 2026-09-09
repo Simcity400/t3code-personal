@@ -10,6 +10,7 @@ import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
+import { SIDE_CHAT_INSTRUCTIONS } from "../SideChatInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
@@ -176,6 +177,28 @@ describe("buildTurnStartParams", () => {
         },
       },
     });
+  });
+
+  it("frames side chat turns with the side conversation instructions", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "What does this module do?",
+        model: "gpt-5.3-codex",
+        effort: "medium",
+        interactionMode: "default",
+        sideChat: true,
+      }),
+    );
+
+    NodeAssert.equal(
+      params.collaborationMode?.settings.developer_instructions,
+      `${buildCodexDeveloperInstructions("default", {
+        model: "gpt-5.3-codex",
+        reasoningEffort: "medium",
+      })}\n\n${SIDE_CHAT_INSTRUCTIONS}`,
+    );
   });
 
   it("includes default collaboration mode and image attachments", () => {

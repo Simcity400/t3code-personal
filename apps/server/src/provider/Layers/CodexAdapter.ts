@@ -2340,6 +2340,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               ? { forkResumeCursor: input.resumeCursor }
               : { resumeCursor: input.resumeCursor }
             : {}),
+          ...(input.sideChat ? { sideChat: true } : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }

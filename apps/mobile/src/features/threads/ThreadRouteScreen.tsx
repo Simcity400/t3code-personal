@@ -14,6 +14,11 @@ import {
   type ProjectScript,
 } from "@t3tools/contracts";
 import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import { attachedSideChatsOf, isAttachedSideChat } from "@t3tools/client-runtime/state/sideChat";
+import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
@@ -47,6 +52,7 @@ import {
   useRemoteConnectionStatus,
   useRemoteEnvironmentRuntime,
 } from "../../state/use-remote-environment-registry";
+import { useThreadShells } from "../../state/entities";
 import { useKnownTerminalSessions } from "../../state/use-terminal-session";
 import { useSelectedThreadDetailState } from "../../state/use-thread-detail";
 import { useThreadSelection } from "../../state/use-thread-selection";
@@ -232,6 +238,17 @@ function ThreadRouteContent(
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
+  const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
+  const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
+    reportFailure: false,
+  });
+  const sideChatActionInFlight = useRef(false);
+  const allThreads = useThreadShells();
+  const sideChats = useMemo(
+    () => (selectedThread ? attachedSideChatsOf(selectedThread, allThreads) : []),
+    [allThreads, selectedThread],
+  );
+  const isSideChat = selectedThread !== null && isAttachedSideChat(selectedThread);
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -633,16 +650,105 @@ function ThreadRouteContent(
       threadId: selectedThread.id,
     });
   }, [navigation, selectedThread]);
+  // A single side chat opens directly; two or more go through the list.
   const handleOpenSideChats = useCallback(() => {
     if (!selectedThread) return;
     Keyboard.dismiss();
+    const only = sideChats.length === 1 ? sideChats[0] : undefined;
+    if (only) {
+      navigation.dispatch(
+        StackActions.push("Thread", {
+          environmentId: String(only.environmentId),
+          threadId: String(only.id),
+        }),
+      );
+      return;
+    }
     navigation.navigate("ThreadSideChats", {
       environmentId: selectedThread.environmentId,
       threadId: selectedThread.id,
     });
-  }, [navigation, selectedThread]);
+  }, [navigation, selectedThread, sideChats]);
+  const handlePromoteSideChat = useCallback(async () => {
+    if (!selectedThread || sideChatActionInFlight.current) return;
+    sideChatActionInFlight.current = true;
+    try {
+      const result = await updateThreadMetadata({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, sideChatPromotedAt: new Date().toISOString() },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        Alert.alert(
+          "Could not promote side chat",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    } finally {
+      sideChatActionInFlight.current = false;
+    }
+  }, [selectedThread, updateThreadMetadata]);
+  const handleDeleteSideChat = useCallback(() => {
+    if (!selectedThread || sideChatActionInFlight.current) return;
+    const {
+      environmentId: sideEnvironmentId,
+      id: sideThreadId,
+      forkedFromThreadId,
+    } = selectedThread;
+    Alert.alert(
+      "Delete side chat?",
+      "This permanently deletes its messages. The original thread is not affected.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            sideChatActionInFlight.current = true;
+            void deleteThread({
+              environmentId: sideEnvironmentId,
+              input: { threadId: sideThreadId },
+            })
+              .then((result) => {
+                if (result._tag === "Failure") {
+                  if (!isAtomCommandInterrupted(result)) {
+                    const error = squashAtomCommandFailure(result);
+                    Alert.alert(
+                      "Could not delete side chat",
+                      error instanceof Error ? error.message : String(error),
+                    );
+                  }
+                  return;
+                }
+                if (forkedFromThreadId != null) {
+                  navigation.dispatch(
+                    StackActions.popTo("Thread", {
+                      environmentId: String(sideEnvironmentId),
+                      threadId: String(forkedFromThreadId),
+                    }),
+                  );
+                } else {
+                  navigation.dispatch(StackActions.popTo("Home"));
+                }
+              })
+              .finally(() => {
+                sideChatActionInFlight.current = false;
+              });
+          },
+        },
+      ],
+    );
+  }, [deleteThread, navigation, selectedThread]);
+  const sideChatActions = useMemo(
+    () =>
+      isSideChat
+        ? { onPromote: () => void handlePromoteSideChat(), onDelete: handleDeleteSideChat }
+        : undefined,
+    [handleDeleteSideChat, handlePromoteSideChat, isSideChat],
+  );
   const threadGitControlProps = {
-    onOpenSideChats: handleOpenSideChats,
+    onOpenSideChats: sideChats.length > 0 ? handleOpenSideChats : undefined,
+    sideChatActions,
     onOpenAgents: handleOpenAgents,
     environmentId: environmentIdRaw ?? "",
     threadId: threadId ?? "",
@@ -721,18 +827,31 @@ function ThreadRouteContent(
   const androidHeaderActions = useMemo<ReadonlyArray<AndroidHeaderAction>>(() => {
     if (Platform.OS !== "android") return [];
 
-    const actions: AndroidHeaderAction[] = [
-      {
-        accessibilityLabel: "Open related chats",
+    const actions: AndroidHeaderAction[] = [];
+    if (sideChatActions) {
+      actions.push({
+        accessibilityLabel: "Side chat actions",
+        icon: "text.bubble",
+        onPress: () =>
+          Alert.alert("Side chat", undefined, [
+            { text: "Promote to thread", onPress: sideChatActions.onPromote },
+            { text: "Delete side chat", style: "destructive", onPress: sideChatActions.onDelete },
+            { text: "Cancel", style: "cancel" },
+          ]),
+      });
+    }
+    if (sideChats.length > 0) {
+      actions.push({
+        accessibilityLabel: "Open side chats",
         icon: "bubble.left.and.bubble.right",
         onPress: handleOpenSideChats,
-      },
-      {
-        accessibilityLabel: "Open agents",
-        icon: "point.3.connected.trianglepath.dotted",
-        onPress: handleOpenAgents,
-      },
-    ];
+      });
+    }
+    actions.push({
+      accessibilityLabel: "Open agents",
+      icon: "point.3.connected.trianglepath.dotted",
+      onPress: handleOpenAgents,
+    });
     if (props.onReturnToThread) {
       actions.push({
         accessibilityLabel: "Return to chat",
@@ -778,6 +897,8 @@ function ThreadRouteContent(
     props.onReturnToThread,
     selectedThreadCwd,
     selectedThreadProject?.workspaceRoot,
+    sideChatActions,
+    sideChats.length,
   ]);
 
   const handleEditFailedCreation = useCallback(async () => {

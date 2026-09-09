@@ -61,6 +61,11 @@ export const ProviderSessionStartInput = Schema.Struct({
   resumeCursor: Schema.optional(Schema.Unknown),
   /** Canonical parent thread whose provider continuation should be forked. */
   forkFromThreadId: Schema.optional(ThreadId),
+  /**
+   * The thread is a side chat still attached to its parent. Adapters frame the
+   * session so the agent treats inherited history as reference only.
+   */
+  sideChat: Schema.optional(Schema.Boolean),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,

@@ -832,6 +832,90 @@ describe("ProviderCommandReactor", () => {
     }),
   );
 
+  effectIt.effect("frames attached side chats and restarts the session once promoted", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const now = "2026-01-01T00:00:00.000Z";
+      const sideThreadId = ThreadId.make("thread-side");
+      const startTurn = (commandId: string, createdAt: string) =>
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(commandId),
+          threadId: sideThreadId,
+          message: {
+            messageId: asMessageId(`${commandId}-message`),
+            role: "user",
+            text: "what does this do?",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        });
+
+      yield* harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-create-side"),
+        threadId: sideThreadId,
+        projectId: asProjectId("project-1"),
+        title: "Side chat",
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5-codex"),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        forkedFromThreadId: ThreadId.make("thread-1"),
+        createdAt: now,
+      });
+      yield* startTurn("cmd-side-turn-1", now);
+      yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+      expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+        forkFromThreadId: ThreadId.make("thread-1"),
+        sideChat: true,
+      });
+
+      // The framing is fixed at session start, so promotion is not applied to
+      // the live session; the next turn restarts it as an ordinary thread.
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-side-session-ready"),
+        threadId: sideThreadId,
+        session: {
+          threadId: sideThreadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+      yield* harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-side-promote"),
+        threadId: sideThreadId,
+        sideChatPromotedAt: "2026-01-01T00:00:01.000Z",
+      });
+      yield* Effect.promise(() =>
+        waitFor(async () => {
+          const readModel = await harness.readModel();
+          return (
+            readModel.threads.find((entry) => entry.id === sideThreadId)?.sideChatPromotedAt != null
+          );
+        }),
+      );
+      expect(harness.startSession.mock.calls.length).toBe(1);
+
+      yield* startTurn("cmd-side-turn-2", "2026-01-01T00:00:02.000Z");
+      yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 2));
+      expect(harness.startSession.mock.calls.length).toBe(2);
+      expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("sideChat");
+      expect(harness.startSession.mock.calls[1]?.[1]).toHaveProperty("resumeCursor");
+    }),
+  );
+
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

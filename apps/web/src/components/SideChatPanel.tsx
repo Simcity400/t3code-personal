@@ -24,7 +24,7 @@ import type {
 } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { truncate } from "@t3tools/shared/String";
-import { ChevronDown, Maximize2, MessagesSquare, Square, Trash2 } from "lucide-react";
+import { ArrowUpRight, ChevronDown, Maximize2, MessagesSquare, Square, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
@@ -103,7 +103,7 @@ export function SideChatPanel(props: {
   onFileDownload?: ((attachment: ChatFileAttachment) => void) | undefined;
   /** Navigates to the side chat's full thread view. */
   onOpenFullView: () => void;
-  /** Removes this surface without deleting the saved conversation. */
+  /** Removes this tab. The side chat stays attached until deleted or promoted here. */
   onRemoveSurface: () => void;
 }) {
   const { threadRef, onOpenFullView, onRemoveSurface } = props;
@@ -141,7 +141,7 @@ export function SideChatPanel(props: {
   const [sending, setSending] = useState(false);
   const [sendStartedAt, setSendStartedAt] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
-  const [action, setAction] = useState<"closing" | null>(null);
+  const [action, setAction] = useState<"closing" | "promoting" | null>(null);
   const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
   const listRef = useRef<LegendListRef | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -289,6 +289,27 @@ export function SideChatPanel(props: {
     onRemoveSurface();
   }, [action, deleteThread, environmentId, onRemoveSurface, threadId]);
 
+  // Promotion detaches the side chat: it leaves this panel, joins the thread
+  // list, and opens as an ordinary thread.
+  const promote = useCallback(async () => {
+    if (action !== null) return;
+    setAction("promoting");
+    const result = await updateMetadata({
+      environmentId,
+      input: { threadId, sideChatPromotedAt: new Date().toISOString() },
+    });
+    setAction(null);
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setLocalError(error instanceof Error ? error.message : "Failed to promote side chat.");
+      }
+      return;
+    }
+    onRemoveSurface();
+    onOpenFullView();
+  }, [action, environmentId, onOpenFullView, onRemoveSurface, threadId, updateMetadata]);
+
   const title = shell?.title ?? SIDE_CHAT_PLACEHOLDER_TITLE;
   const statusLabel = isGone
     ? "Closed"
@@ -323,6 +344,13 @@ export function SideChatPanel(props: {
         ) : null}
         <HeaderAction label="Open full view" onClick={onOpenFullView}>
           <Maximize2 className="size-3.5" />
+        </HeaderAction>
+        <HeaderAction
+          label={action === "promoting" ? "Promoting…" : "Promote to thread"}
+          disabled={action !== null || isGone}
+          onClick={() => void promote()}
+        >
+          <ArrowUpRight className="size-3.5" />
         </HeaderAction>
         <HeaderAction
           label={action === "closing" ? "Deleting…" : "Delete side chat"}
