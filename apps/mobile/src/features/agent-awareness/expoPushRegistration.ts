@@ -1,4 +1,4 @@
-import type { ExpoPushNotificationRegistration } from "@t3tools/contracts";
+import type { EnvironmentId, ExpoPushNotificationRegistration } from "@t3tools/contracts";
 import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
@@ -30,6 +30,37 @@ export function getPersonalExpoPushRegistrationStatus(): PersonalExpoPushRegistr
 
 export function getPersonalExpoPushTokenError(): string | null {
   return tokenError;
+}
+
+/** Per environment, why the last registration pass did not get an acceptance. */
+export interface PersonalExpoPushRegistrationEnvironmentDetail {
+  readonly environmentId: EnvironmentId;
+  readonly reason: string;
+}
+
+const EMPTY_DETAILS: ReadonlyArray<PersonalExpoPushRegistrationEnvironmentDetail> = [];
+let registrationDetails = EMPTY_DETAILS;
+
+export function getPersonalExpoPushRegistrationDetails(): ReadonlyArray<PersonalExpoPushRegistrationEnvironmentDetail> {
+  return registrationDetails;
+}
+
+export function setPersonalExpoPushRegistrationDetails(
+  next: ReadonlyArray<PersonalExpoPushRegistrationEnvironmentDetail>,
+): void {
+  const normalized = next.length === 0 ? EMPTY_DETAILS : next;
+  if (
+    normalized.length === registrationDetails.length &&
+    normalized.every(
+      (detail, index) =>
+        detail.environmentId === registrationDetails[index]?.environmentId &&
+        detail.reason === registrationDetails[index]?.reason,
+    )
+  ) {
+    return;
+  }
+  registrationDetails = normalized;
+  statusListeners.forEach((listener) => listener());
 }
 
 export function setPersonalExpoPushTokenError(next: string | null): void {
@@ -137,6 +168,7 @@ export async function readPersonalExpoPushRegistration(): Promise<
 export function __resetPersonalExpoPushRegistrationForTest(): void {
   status = "unknown";
   tokenError = null;
+  registrationDetails = EMPTY_DETAILS;
   statusListeners.clear();
   refreshListeners.clear();
 }

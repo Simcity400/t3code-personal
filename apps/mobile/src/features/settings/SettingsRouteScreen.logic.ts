@@ -27,7 +27,13 @@ export function resolveNotificationRowSubtitle(input: {
   readonly registrationStatus: PersonalExpoPushRegistrationStatus;
   /** Why this phone has no push token; the one failure the user can act on. */
   readonly tokenError?: string | null;
+  /** Per environment, why the last pass got no acceptance, already labeled. */
+  readonly environmentDetails?: ReadonlyArray<{ readonly label: string; readonly reason: string }>;
 }): string | undefined {
+  const detail =
+    input.environmentDetails && input.environmentDetails.length > 0
+      ? ` ${input.environmentDetails.map((entry) => `${entry.label}: ${entry.reason}`).join("; ")}.`
+      : "";
   if (!input.personalExpoPushAlerts) return input.platformSubtitle;
   if (input.platformSubtitle !== undefined) return input.platformSubtitle;
   if (input.permissionStatus === "checking") return "Checking notification permission.";
@@ -41,15 +47,15 @@ export function resolveNotificationRowSubtitle(input: {
     case "registered":
       return "Registered with every connected T3 Code environment.";
     case "partial":
-      return "Some connected environments could not register this device; retrying.";
+      return `Some connected environments could not register this device; retrying.${detail}`;
     case "failed":
-      return "No connected environment accepted this device yet; retrying.";
+      return `No connected environment accepted this device yet; retrying.${detail}`;
     case "disabled":
       return "Alerts are off until iOS notification permission is granted.";
     // "pending" also covers "token in hand, but nothing is connected yet",
     // which is a resting state rather than work in progress.
     default:
-      return "Waiting to register with a connected environment.";
+      return `Waiting to register with a connected environment.${detail}`;
   }
 }
 

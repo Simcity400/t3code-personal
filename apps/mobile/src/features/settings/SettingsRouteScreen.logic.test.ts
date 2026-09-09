@@ -59,6 +59,21 @@ describe("resolveNotificationRowSubtitle", () => {
     permissionStatus: "enabled",
   } as const;
 
+  it("says per environment why registration is still waiting", () => {
+    expect(
+      resolveNotificationRowSubtitle({
+        ...base,
+        registrationStatus: "pending",
+        environmentDetails: [
+          { label: "Home PC", reason: "not connected" },
+          { label: "Office", reason: "did not answer within 15 seconds" },
+        ],
+      }),
+    ).toBe(
+      "Waiting to register with a connected environment. Home PC: not connected; Office: did not answer within 15 seconds.",
+    );
+  });
+
   it("names the push token error ahead of any registration state", () => {
     expect(
       resolveNotificationRowSubtitle({

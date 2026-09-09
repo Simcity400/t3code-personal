@@ -30,6 +30,7 @@ import {
   onPersonalExpoPushRegistrationRefresh,
   readPersonalExpoPushRegistration,
   resolvePersonalExpoPushRegistrationStatus,
+  setPersonalExpoPushRegistrationDetails,
   setPersonalExpoPushRegistrationStatus,
   setPersonalExpoPushTokenError,
   shouldReassertPersonalExpoPushRegistration,
@@ -43,7 +44,19 @@ const REPORT_INTERVAL_MS = 25_000;
 // the local "already registered" record expires on its own.
 const REGISTRATION_REASSERT_INTERVAL_MS = 5 * 60_000;
 const LEASE_TTL_MS = 45_000;
+const RPC_TIMEOUT = "15 seconds";
 const BASELINE_SCOPES: ReadonlyArray<BackgroundScope> = [{ type: "provider-status" }];
+
+/** Short reason for Settings when an environment refused or errored on registration. */
+function describeRegistrationFailure(cause: unknown): string {
+  const raw =
+    cause !== null && typeof cause === "object" && "_tag" in cause
+      ? String((cause as { readonly _tag: unknown })._tag)
+      : String(cause);
+  if (/Authorization/i.test(raw)) return "refused: this connection cannot operate threads";
+  const message = raw.replace(/\s+/g, " ").trim();
+  return message.length > 120 ? `${message.slice(0, 119)}…` : message || "unknown error";
+}
 
 function normalizeAppState(
   state: AppStateStatus,
@@ -114,7 +127,10 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
             observedAt: DateTime.makeUnsafe(input.observedAtMs),
           }),
         )
-        .pipe(Effect.ignore);
+        // The report consumer runs one pass at a time, so a request that never
+        // answers (a relay session that outlived its server) would otherwise
+        // stall every later pass, registration included, until the app restarts.
+        .pipe(Effect.timeout(RPC_TIMEOUT), Effect.ignore);
 
     const report = Effect.gen(function* () {
       const observedAtMs = yield* Clock.currentTimeMillis;
@@ -177,6 +193,7 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
       // form the denominator.
       let reachableExpoEnvironments = 0;
       let successfulExpoRegistrations = 0;
+      const details: Array<{ environmentId: EnvironmentId; reason: string }> = [];
       if (registration === undefined) return;
       yield* Effect.forEach(
         entries.keys(),
@@ -206,24 +223,51 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
                 }),
               )
               .pipe(
-                Effect.map((value) => ({ answered: true as const, registered: value.registered })),
-                // Only a missing session means "not reachable". Every other
-                // outcome -- an authorization rejection from a read-only
-                // environment, a server error, a defect -- is the environment
-                // answering that it will not register this device, so it must
-                // show up as a failure instead of quietly leaving the coverage
-                // ratio. Absorbing the defect here also stops one bad
+                Effect.timeout(RPC_TIMEOUT),
+                Effect.map((value) => ({
+                  answered: true as const,
+                  registered: value.registered,
+                  reason: value.registered ? null : "declined the registration",
+                })),
+                // Only a missing session or a silent one means "not reachable".
+                // Every other outcome -- an authorization rejection from a
+                // read-only environment, a server error, a defect -- is the
+                // environment answering that it will not register this device,
+                // so it must show up as a failure instead of quietly leaving the
+                // coverage ratio. Absorbing the defect here also stops one bad
                 // environment from killing the report consumer.
                 Effect.catchTag("EnvironmentRpcUnavailableError", () =>
-                  Effect.succeed({ answered: false as const, registered: false }),
+                  Effect.succeed({
+                    answered: false as const,
+                    registered: false,
+                    reason: "not connected",
+                  }),
                 ),
                 Effect.catchTag("EnvironmentNotRegisteredError", () =>
-                  Effect.succeed({ answered: false as const, registered: false }),
+                  Effect.succeed({
+                    answered: false as const,
+                    registered: false,
+                    reason: "not connected",
+                  }),
                 ),
-                Effect.catchCause(() =>
-                  Effect.succeed({ answered: true as const, registered: false }),
+                Effect.catchTag("TimeoutError", () =>
+                  Effect.succeed({
+                    answered: false as const,
+                    registered: false,
+                    reason: "did not answer within 15 seconds",
+                  }),
+                ),
+                Effect.catchCause((cause) =>
+                  Effect.succeed({
+                    answered: true as const,
+                    registered: false,
+                    reason: describeRegistrationFailure(cause),
+                  }),
                 ),
               );
+            if (outcome.reason !== null) {
+              details.push({ environmentId, reason: outcome.reason });
+            }
             if (!outcome.answered) return;
             reachableExpoEnvironments += 1;
             if (isPersonalExpoPushRegistrationAccepted(registration, outcome)) {
@@ -236,6 +280,7 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
           }),
         { concurrency: "unbounded", discard: true },
       );
+      setPersonalExpoPushRegistrationDetails(details);
       setPersonalExpoPushRegistrationStatus(
         resolvePersonalExpoPushRegistrationStatus({
           enabled: registration.enabled,
@@ -290,7 +335,17 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
     );
     yield* Stream.fromQueue(reportRequests).pipe(
       Stream.debounce("250 millis"),
-      Stream.runForEach(() => report),
+      // One failed pass must not end the consumer: with it gone, Settings
+      // would show "waiting to register" for the rest of the session.
+      Stream.runForEach(() =>
+        report.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("mobile background activity report failed", {
+              cause: String(cause),
+            }),
+          ),
+        ),
+      ),
       Effect.forkScoped,
     );
     yield* Effect.sync(requestReport).pipe(

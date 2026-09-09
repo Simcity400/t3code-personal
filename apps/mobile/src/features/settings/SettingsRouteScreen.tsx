@@ -26,6 +26,7 @@ import {
   usesPersonalExpoPushAlerts,
 } from "../agent-awareness/capabilities";
 import {
+  getPersonalExpoPushRegistrationDetails,
   getPersonalExpoPushRegistrationStatus,
   getPersonalExpoPushTokenError,
   requestPersonalExpoPushRegistrationRefresh,
@@ -185,6 +186,19 @@ function ConfiguredSettingsRouteScreen() {
     subscribePersonalExpoPushRegistrationStatus,
     getPersonalExpoPushTokenError,
     getPersonalExpoPushTokenError,
+  );
+  const pushRegistrationDetails = useSyncExternalStore(
+    subscribePersonalExpoPushRegistrationStatus,
+    getPersonalExpoPushRegistrationDetails,
+    getPersonalExpoPushRegistrationDetails,
+  );
+  const pushRegistrationEnvironmentDetails = useMemo(
+    () =>
+      pushRegistrationDetails.map((detail) => ({
+        label: savedConnectionsById[detail.environmentId]?.environmentLabel ?? detail.environmentId,
+        reason: detail.reason,
+      })),
+    [pushRegistrationDetails, savedConnectionsById],
   );
   const runPushTest = useAtomCommand(sendPersonalExpoPushTest, { reportFailure: false });
   const [pushTestRunning, setPushTestRunning] = useState(false);
@@ -573,6 +587,7 @@ function ConfiguredSettingsRouteScreen() {
               permissionStatus: notificationStatus,
               registrationStatus: pushRegistrationStatus,
               tokenError: pushTokenError,
+              environmentDetails: pushRegistrationEnvironmentDetails,
             })}
             // iOS permission is the durable user setting. Registration is an
             // operational state that retries in the background and must not
