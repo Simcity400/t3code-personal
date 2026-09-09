@@ -1369,6 +1369,9 @@ export interface ChatComposerProps {
 // Component
 // --------------------------------------------------------------------------
 
+// Breathing room between wrapped prompt text and the overlaid resting actions.
+const RESTING_ACTIONS_GAP_PX = 12;
+
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
   const {
     composerDraftTarget,
@@ -3807,6 +3810,43 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     hasImageAttachmentAttention;
   // Keep the compact layout while typing; multiline text grows within the editor.
   const isComposerResting = true;
+  // The resting footer overlays the editor's bottom-right corner, and its
+  // width varies (send alone, attach, context meter, or a question's
+  // Previous + Next pair). Reserve exactly the span the buttons cover, from
+  // the editor wrapper's right edge to the leftmost button, so wrapped text
+  // never runs underneath them.
+  const [restingActionsInset, setRestingActionsInset] = useState(0);
+  const restingEditorWrapperRef = useRef<HTMLDivElement | null>(null);
+  const restingActionsObserverRef = useRef<ResizeObserver | null>(null);
+  const observeRestingActions = useCallback((footer: HTMLDivElement | null) => {
+    restingActionsObserverRef.current?.disconnect();
+    restingActionsObserverRef.current = null;
+    if (!footer || typeof ResizeObserver === "undefined") {
+      setRestingActionsInset(0);
+      return;
+    }
+    const actions =
+      footer.querySelector<HTMLElement>('[data-chat-composer-actions="right"]') ?? footer;
+    const update = () => {
+      const wrapper = restingEditorWrapperRef.current;
+      // A hidden footer (mobile pending actions, approval state) has no rects.
+      const inset =
+        wrapper && actions.getClientRects().length > 0
+          ? Math.max(
+              0,
+              Math.ceil(
+                wrapper.getBoundingClientRect().right - actions.getBoundingClientRect().left,
+              ) + RESTING_ACTIONS_GAP_PX,
+            )
+          : 0;
+      setRestingActionsInset((current) => (current === inset ? current : inset));
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(footer);
+    observer.observe(actions);
+    restingActionsObserverRef.current = observer;
+  }, []);
   const expandedComposerImages = standaloneComposerImages;
   // The relocated controls live in the context strip whenever the composer is
   // collapsed for any reason, the desktop resting layout or the phone
@@ -5528,16 +5568,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 )}
 
               <div
-                className={cn(
-                  "relative",
-                  isComposerResting && "flex min-w-0 items-center gap-1",
-                  isComposerResting &&
-                    (settings.contextWindowMeterEnabled && activeContextWindow
-                      ? "pr-28"
-                      : showComposerAttachAction
-                        ? "pr-20"
-                        : "pr-12"),
-                )}
+                ref={restingEditorWrapperRef}
+                className={cn("relative", isComposerResting && "flex min-w-0 items-center gap-1")}
+                style={isComposerResting ? { paddingRight: restingActionsInset } : undefined}
               >
                 <ComposerPromptEditor
                   editorRef={composerEditorRef}
@@ -5637,6 +5670,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             {/* Bottom toolbar */}
             {isComposerCollapsedMobile || isComposerApprovalState ? null : (
               <div
+                ref={isComposerResting ? observeRestingActions : undefined}
                 data-chat-composer-footer="true"
                 data-chat-composer-footer-compact={isComposerFooterCompact ? "true" : "false"}
                 className={cn(
