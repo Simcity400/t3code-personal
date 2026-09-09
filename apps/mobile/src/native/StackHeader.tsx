@@ -212,11 +212,16 @@ function labelFromChildren(children: ReactNode): string {
 type NativeStackHeaderIcon = NonNullable<
   Extract<NativeStackHeaderItem, { type: "button" }>["icon"]
 >;
+/** An SF Symbol name, or a full header icon such as a tinted template image. */
+export type NativeHeaderIcon = string | NativeStackHeaderIcon;
 type NativeStackOptionsWithToolbar = NativeStackNavigationOptions & {
   unstable_headerToolbarItems?: () => NativeStackHeaderItem[];
 };
 
 function iconFromProp(icon: unknown): NativeStackHeaderIcon | undefined {
+  if (typeof icon === "object" && icon !== null && "type" in icon) {
+    return icon as NativeStackHeaderIcon;
+  }
   if (typeof icon !== "string") {
     return undefined;
   }
@@ -403,7 +408,7 @@ function NativeHeaderToolbarRoot(props: {
 function NativeHeaderToolbarButton(_props: {
   readonly accessibilityLabel?: string;
   readonly disabled?: boolean;
-  readonly icon?: string;
+  readonly icon?: NativeHeaderIcon;
   readonly label?: string;
   readonly onPress?: () => void;
   readonly separateBackground?: boolean;
@@ -417,7 +422,7 @@ function NativeHeaderToolbarMenu(_props: {
   readonly accessibilityLabel?: string;
   readonly children?: ReactNode;
   readonly disabled?: boolean;
-  readonly icon?: string;
+  readonly icon?: NativeHeaderIcon;
   readonly inline?: boolean;
   readonly separateBackground?: boolean;
   readonly tintColor?: ColorValue;

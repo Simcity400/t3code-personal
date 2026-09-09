@@ -849,7 +849,7 @@ function ThreadRouteContent(
     }
     actions.push({
       accessibilityLabel: "Open agents",
-      icon: "point.3.connected.trianglepath.dotted",
+      icon: { glyph: "bot" },
       onPress: handleOpenAgents,
     });
     if (props.onReturnToThread) {

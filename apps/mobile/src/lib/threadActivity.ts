@@ -199,13 +199,14 @@ export type ThreadFeedEntry =
       readonly createdAt: string;
       readonly turnId: TurnId | null;
       readonly activity: ThreadFeedActivity;
-      readonly expanded: boolean;
       readonly summary: AgentSpawnSummary;
     };
 
 export interface AgentSpawnSummary {
   /** "Locate UNO hand rendering code" for one agent, "3 subagents" for a batch. */
   readonly title: string;
+  /** Web's CTA wording: "Kicked off 3 subagents" while live, "Ran 3 subagents" after. */
+  readonly lead: string;
   /** Latest member activity while working, else the batch outcome. */
   readonly status: string;
   readonly tone: "working" | "completed" | "failed" | "stopped";
@@ -1102,6 +1103,8 @@ export function agentSpawnSummary(
       : members.length === 1
         ? members[0]!.title
         : `${members.length} subagents`;
+  const count = Math.max(members.length, 1);
+  const lead = `${tone === "working" ? "Kicked off" : "Ran"} ${count} subagent${count === 1 ? "" : "s"}`;
   if (tone === "working") {
     const working = members.filter((member) => member.tone === "working");
     const latest = working
@@ -1114,7 +1117,7 @@ export function agentSpawnSummary(
     const status =
       latest?.detail ??
       (members.length > 1 ? `${working.length} of ${members.length} working` : "Working");
-    return { title, status, tone, members };
+    return { title, lead, status, tone, members };
   }
   // The batch tone covers a coordinator that failed or stopped on its own.
   const failed = members.filter((member) => member.tone === "failed").length;
@@ -1125,7 +1128,7 @@ export function agentSpawnSummary(
       : tone === "stopped" || stopped > 0
         ? `${members.length > 1 && stopped > 0 ? `${stopped} ` : ""}stopped`
         : "completed";
-  return { title, status: outcome, tone, members };
+  return { title, lead, status: outcome, tone, members };
 }
 
 function agentSpawnExpandedBody(spawn: NonNullable<WorkLogEntry["agentSpawn"]>): string | null {
@@ -1838,9 +1841,7 @@ function appendPresentedFeedEntry(
     cached.isWorking !== isWorking ||
     cached.activeTail !== activeTail ||
     cached.rows.some(
-      (row) =>
-        (row.type === "work-toggle" && expandedWorkGroupIds.has(row.groupId) !== row.expanded) ||
-        (row.type === "agent-spawn" && expandedWorkGroupIds.has(row.id) !== row.expanded),
+      (row) => row.type === "work-toggle" && expandedWorkGroupIds.has(row.groupId) !== row.expanded,
     )
   ) {
     const rows: ThreadFeedEntry[] = [];
@@ -1912,7 +1913,6 @@ function appendActivityGroupRows(
         createdAt: activity.createdAt,
         turnId: activity.turnId,
         activity,
-        expanded: expandedWorkGroupIds.has(groupId),
         summary: agentSpawnSummary(spawn, activity.lifecycleStatus),
       });
       continue;

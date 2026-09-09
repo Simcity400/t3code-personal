@@ -12,6 +12,7 @@ import {
 } from "@t3tools/client-runtime/state/vcs";
 import { useNavigation } from "@react-navigation/native";
 import { NativeHeaderToolbar } from "../../native/StackHeader";
+import { BOT_HEADER_ICON } from "../../components/BotIcon";
 import { useCallback, useMemo } from "react";
 import { Alert } from "react-native";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
@@ -300,7 +301,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       },
       agents: {
         accessibilityLabel: "Open agents",
-        icon: { name: "point.3.connected.trianglepath.dotted", type: "sfSymbol" },
+        icon: BOT_HEADER_ICON,
         identifier: "thread-right-agents",
         label: "Agents",
         onPress: props.onOpenAgents,
@@ -522,7 +523,7 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
       ) : null}
       <NativeHeaderToolbar.Button
         accessibilityLabel="Open agents"
-        icon="point.3.connected.trianglepath.dotted"
+        icon={BOT_HEADER_ICON}
         onPress={props.onOpenAgents}
       />
       {showActionControls && props.auxiliaryPaneControl ? (

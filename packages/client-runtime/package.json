@@ -207,6 +207,10 @@
       "types": "./src/state/subagentRuntime.ts",
       "default": "./src/state/subagentRuntime.ts"
     },
+    "./state/subagentPresentation": {
+      "types": "./src/state/subagentPresentation.ts",
+      "default": "./src/state/subagentPresentation.ts"
+    },
     "./state/thread-sort": {
       "types": "./src/state/threadSort.ts",
       "default": "./src/state/threadSort.ts"

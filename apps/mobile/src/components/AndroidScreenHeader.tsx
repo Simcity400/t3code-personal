@@ -4,21 +4,26 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SymbolView, type AppSymbolName } from "./AppSymbol";
 import { AppText as Text } from "./AppText";
+import { BotIcon } from "./BotIcon";
 import { cn } from "../lib/cn";
+
+/** A symbol, or the shared agents glyph that has no SF Symbol counterpart. */
+export type AndroidHeaderIcon = AppSymbolName | { readonly glyph: "bot" };
 
 export interface AndroidHeaderAction {
   readonly accessibilityLabel: string;
-  readonly icon: AppSymbolName;
+  readonly icon: AndroidHeaderIcon;
   readonly onPress: () => void;
   readonly disabled?: boolean;
 }
 
 export function AndroidHeaderIconButton(props: {
   readonly accessibilityLabel: string;
-  readonly icon: AppSymbolName;
+  readonly icon: AndroidHeaderIcon;
   readonly onPress?: () => void;
   readonly disabled?: boolean;
 }) {
+  const tintClassName = props.disabled ? "accent-icon-subtle" : "accent-foreground";
   return (
     <Pressable
       accessibilityLabel={props.accessibilityLabel}
@@ -31,12 +36,16 @@ export function AndroidHeaderIconButton(props: {
         props.disabled && "opacity-55",
       )}
     >
-      <SymbolView
-        name={props.icon}
-        size={20}
-        tintColorClassName={props.disabled ? "accent-icon-subtle" : "accent-foreground"}
-        type="monochrome"
-      />
+      {typeof props.icon === "object" && "glyph" in props.icon ? (
+        <BotIcon size={20} colorClassName={tintClassName} />
+      ) : (
+        <SymbolView
+          name={props.icon}
+          size={20}
+          tintColorClassName={tintClassName}
+          type="monochrome"
+        />
+      )}
     </Pressable>
   );
 }

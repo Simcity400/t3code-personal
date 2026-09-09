@@ -1338,6 +1338,7 @@ function renderFeedEntry(
     readonly terminalAssistantMessageIds: ReadonlySet<string>;
     readonly unsettledTurnId: TurnId | null;
     readonly onCopyWorkRow: (rowId: string, value: string) => void;
+    readonly onOpenAgents: () => void;
     readonly onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
     readonly onToggleWorkRow: (rowId: string, anchorKey: string) => void;
     readonly onToggleTurnFold: (turnId: TurnId) => void;
@@ -1397,10 +1398,9 @@ function renderFeedEntry(
     return (
       <ThreadAgentSpawnCard
         summary={entry.summary}
-        expanded={entry.expanded}
         iconSubtleColor={iconSubtleColor}
         rowSizing={props.workRowSizing}
-        onToggle={() => props.onToggleWorkGroup(entry.id, entry.id)}
+        onOpen={props.onOpenAgents}
         onCopy={() => props.onCopyWorkRow(entry.activity.id, entry.activity.getCopyText())}
       />
     );
@@ -1942,6 +1942,13 @@ function ThreadFeedPlaceholder(props: {
 
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
+  // Same destination as the desktop CTA row: the Agents surface, not an inline list.
+  const onOpenAgents = useCallback(() => {
+    navigation.navigate("ThreadAgents", {
+      environmentId: props.environmentId,
+      threadId: props.threadId,
+    });
+  }, [navigation, props.environmentId, props.threadId]);
   const { themeAppearance } = useAppearancePreferences();
   const historyRequest = useRef<{ key: string | null; size: number }>({ key: null, size: 0 });
   // Parent-history pages may contain no new rows for the selected agent.
@@ -2721,6 +2728,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             terminalAssistantMessageIds,
             unsettledTurnId,
             onCopyWorkRow,
+            onOpenAgents,
             onToggleWorkGroup,
             onToggleWorkRow,
             onToggleTurnFold,
@@ -2764,6 +2772,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       userBubbleMaxWidth,
       markdownContentWidth,
       onCopyWorkRow,
+      onOpenAgents,
       markdownLinkHandlers,
       onPressPreview,
       onPressVideo,

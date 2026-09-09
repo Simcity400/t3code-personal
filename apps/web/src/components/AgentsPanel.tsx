@@ -42,6 +42,11 @@ import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
 
 import {
+  formatSubagentElapsed,
+  subagentActivityText,
+  subagentStatusLabel,
+} from "@t3tools/client-runtime/state/subagentPresentation";
+import {
   filterWorkflowForPanelSection,
   idleAgentsOpenAtom,
   formatSubagentTitle,
@@ -56,48 +61,30 @@ const AgentTranscriptNavigation = createContext<((agent: RuntimeSubagent) => voi
  * stalled/waiting/queued subagent is still the fleet doing its job, not a
  * user problem). Only settled states differentiate.
  */
-const STATUS_VISUALS: Record<RuntimeSubagent["status"], { dotClass: string; label: string }> = {
-  pending: { dotClass: "bg-info", label: "Working" },
-  running: { dotClass: "bg-info", label: "Working" },
-  waiting: { dotClass: "bg-info", label: "Working" },
-  // Idle reads as settled (muted, not sky): a resting Codex child looks done
-  // unless resumed — live-test: sky idle dots read as stuck in-progress.
-  idle: { dotClass: "bg-muted-foreground/50", label: "Idle · resumable" },
-  completed: { dotClass: "bg-success", label: "Completed" },
-  failed: { dotClass: "bg-destructive", label: "Failed" },
-  cancelled: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
-  interrupted: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
+/**
+ * Dot colors per status; labels come from the shared presentation module so
+ * mobile reads the same words. Live states all present as Working; only
+ * settled states differentiate, and idle reads as settled (muted, not sky).
+ */
+const STATUS_DOT_CLASS: Record<RuntimeSubagent["status"], string> = {
+  pending: "bg-info",
+  running: "bg-info",
+  waiting: "bg-info",
+  idle: "bg-muted-foreground/50",
+  completed: "bg-success",
+  failed: "bg-destructive",
+  cancelled: "bg-muted-foreground/60",
+  interrupted: "bg-muted-foreground/60",
 };
 
 function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
   return (
-    <span
-      aria-hidden
-      className={cn("size-1.5 shrink-0 rounded-full", STATUS_VISUALS[status].dotClass)}
-    />
+    <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT_CLASS[status])} />
   );
 }
 
-function formatElapsedSeconds(totalSeconds: number): string {
-  const seconds = Math.max(0, Math.floor(totalSeconds));
-  const minutes = Math.floor(seconds / 60);
-  if (minutes === 0) {
-    return `${seconds}s`;
-  }
-  const hours = Math.floor(minutes / 60);
-  if (hours === 0) {
-    return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
-  }
-  return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
-}
-
 function elapsedBetween(startedAt: string, endIso: string | null): string {
-  const start = Date.parse(startedAt);
-  const end = endIso ? Date.parse(endIso) : Date.now();
-  if (Number.isNaN(start) || Number.isNaN(end)) {
-    return "";
-  }
-  return formatElapsedSeconds((end - start) / 1000);
+  return formatSubagentElapsed(startedAt, endIso, Date.now());
 }
 
 /**
@@ -133,37 +120,11 @@ function AgentElapsed({ agent }: { agent: RuntimeSubagent }) {
   );
 }
 
-/**
- * Status-dependent activity line. Live rows lead with what is happening now;
- * settled rows lead with the outcome. Errors are the only inline previews on
- * failed rows because they explain a red row at a glance.
- */
-function agentActivityText(agent: RuntimeSubagent): string | null {
-  const live =
-    agent.status === "running" || agent.status === "pending" || agent.status === "waiting";
-  if (live) {
-    return (
-      agent.progress ??
-      (agent.lastToolName ? `▸ ${agent.lastToolName}` : null) ??
-      agent.result ??
-      agent.error
-    );
-  }
-  return (
-    agent.error ??
-    agent.result ??
-    agent.progress ??
-    (agent.lastToolName ? `▸ ${agent.lastToolName}` : null)
-  );
-}
-
 /** Stable roster row; selection opens the stored transcript without changing the fold. */
 function AgentRow({ agent }: { agent: RuntimeSubagent }) {
   const openTranscript = use(AgentTranscriptNavigation);
-  const visuals = STATUS_VISUALS[agent.status];
-  const statusLabel =
-    agent.kind === "subagent_batch" && agent.status === "idle" ? "Idle" : visuals.label;
-  const activity = agentActivityText(agent);
+  const statusLabel = subagentStatusLabel(agent);
+  const activity = subagentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const title = formatSubagentTitle(agent.title);
   const metadata = [
