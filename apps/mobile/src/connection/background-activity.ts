@@ -25,11 +25,13 @@ import {
   retainedMobileBackgroundScopes,
 } from "./background-activity-scopes";
 import {
+  describePersonalExpoPushTokenError,
   isPersonalExpoPushRegistrationAccepted,
   onPersonalExpoPushRegistrationRefresh,
   readPersonalExpoPushRegistration,
   resolvePersonalExpoPushRegistrationStatus,
   setPersonalExpoPushRegistrationStatus,
+  setPersonalExpoPushTokenError,
   shouldReassertPersonalExpoPushRegistration,
 } from "../features/agent-awareness/expoPushRegistration";
 
@@ -139,7 +141,13 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
           // reassertions) behind it. A timed-out read leaves the slot empty —
           // the next pass retries it.
           Effect.timeout("5 seconds"),
-          Effect.tapError(() => Effect.sync(() => setPersonalExpoPushRegistrationStatus("failed"))),
+          Effect.tap(() => Effect.sync(() => setPersonalExpoPushTokenError(null))),
+          Effect.tapError((cause) =>
+            Effect.sync(() => {
+              setPersonalExpoPushTokenError(describePersonalExpoPushTokenError(cause));
+              setPersonalExpoPushRegistrationStatus("failed");
+            }),
+          ),
           Effect.orElseSucceed(() => undefined),
         );
         // A refresh that landed while this read was in flight (a rotated push

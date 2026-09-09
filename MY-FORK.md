@@ -50,8 +50,11 @@ Personal signing uses a different Apple bundle and team from the official app.
 The preview app registers with connected environments, which send agent alerts
 through Expo using the preview project's push credentials. Enable notifications
 in the app's Settings, then open the app and connect to each updated environment.
-Settings shows whether those environments accepted the registration. Live Activities
-remain unavailable in the personal preview because they require a separate APNs relay.
+Settings shows whether those environments accepted the registration, names the error
+when the build cannot obtain a push token, and offers **Send Test Alert**, which asks
+every connected environment to push once and reports Expo's answer per environment.
+Live Activities remain unavailable in the personal preview because they require a
+separate APNs relay.
 
 ## Upstream sync and checks
 

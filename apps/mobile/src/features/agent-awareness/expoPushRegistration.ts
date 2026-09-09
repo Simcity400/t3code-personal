@@ -17,11 +17,41 @@ export type PersonalExpoPushRegistrationStatus =
   | "failed";
 
 let status: PersonalExpoPushRegistrationStatus = "unknown";
+// Why the device has no push token, when that is the reason nothing registers.
+// A failed token read used to collapse into the same "failed" as an environment
+// rejecting the device, which hid the one error the user could act on.
+let tokenError: string | null = null;
 const statusListeners = new Set<() => void>();
 const refreshListeners = new Set<() => void>();
 
 export function getPersonalExpoPushRegistrationStatus(): PersonalExpoPushRegistrationStatus {
   return status;
+}
+
+export function getPersonalExpoPushTokenError(): string | null {
+  return tokenError;
+}
+
+export function setPersonalExpoPushTokenError(next: string | null): void {
+  if (tokenError === next) return;
+  tokenError = next;
+  statusListeners.forEach((listener) => listener());
+}
+
+/** One line for Settings; Expo's errors are long and prefixed with an error code. */
+export function describePersonalExpoPushTokenError(cause: unknown): string {
+  const raw =
+    cause instanceof Error
+      ? cause.message
+      : typeof cause === "string"
+        ? cause
+        : cause !== null && typeof cause === "object" && "_tag" in cause
+          ? String((cause as { readonly _tag: unknown })._tag)
+          : String(cause);
+  const message = raw.replace(/\s+/g, " ").trim();
+  if (message.length === 0) return "Unknown error";
+  if (/TimeoutError|timed out/i.test(message)) return "Expo did not answer within 5 seconds";
+  return message.length > 160 ? `${message.slice(0, 159)}…` : message;
 }
 
 export function subscribePersonalExpoPushRegistrationStatus(listener: () => void): () => void {
@@ -106,6 +136,7 @@ export async function readPersonalExpoPushRegistration(): Promise<
 
 export function __resetPersonalExpoPushRegistrationForTest(): void {
   status = "unknown";
+  tokenError = null;
   statusListeners.clear();
   refreshListeners.clear();
 }

@@ -2100,6 +2100,10 @@ const makeWsRpcLayer = (
             expoPushAlerts.register(input).pipe(Effect.map((registered) => ({ registered }))),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverSendExpoPushTest]: (input) =>
+          observeRpcEffect(WS_METHODS.serverSendExpoPushTest, expoPushAlerts.sendTest(input), {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverReportHostPowerState]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReportHostPowerState,

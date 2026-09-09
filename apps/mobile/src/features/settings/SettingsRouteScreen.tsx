@@ -27,9 +27,14 @@ import {
 } from "../agent-awareness/capabilities";
 import {
   getPersonalExpoPushRegistrationStatus,
+  getPersonalExpoPushTokenError,
   requestPersonalExpoPushRegistrationRefresh,
   subscribePersonalExpoPushRegistrationStatus,
 } from "../agent-awareness/expoPushRegistration";
+import {
+  sendPersonalExpoPushTest,
+  summarizePersonalExpoPushTest,
+} from "../agent-awareness/expoPushTest";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import {
@@ -176,6 +181,37 @@ function ConfiguredSettingsRouteScreen() {
     getPersonalExpoPushRegistrationStatus,
     getPersonalExpoPushRegistrationStatus,
   );
+  const pushTokenError = useSyncExternalStore(
+    subscribePersonalExpoPushRegistrationStatus,
+    getPersonalExpoPushTokenError,
+    getPersonalExpoPushTokenError,
+  );
+  const runPushTest = useAtomCommand(sendPersonalExpoPushTest, { reportFailure: false });
+  const [pushTestRunning, setPushTestRunning] = useState(false);
+  // The row disables itself while a run is in flight, so no re-entrancy guard here.
+  const handleSendPushTest = async () => {
+    setPushTestRunning(true);
+    try {
+      const result = await runPushTest(undefined);
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          Alert.alert(
+            "Test alert not sent",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        return;
+      }
+      const summary = summarizePersonalExpoPushTest(
+        result.value,
+        (environmentId) => savedConnectionsById[environmentId]?.environmentLabel ?? environmentId,
+      );
+      Alert.alert(summary.title, summary.body);
+    } finally {
+      setPushTestRunning(false);
+    }
+  };
   const hasLoadedLiveActivitiesPreference = AsyncResult.isSuccess(preferencesResult);
   const liveActivitiesPreferenceEnabled = hasLoadedLiveActivitiesPreference
     ? preferencesResult.value.liveActivitiesEnabled !== false
@@ -536,6 +572,7 @@ function ConfiguredSettingsRouteScreen() {
               platformSubtitle: agentAwarenessPlatform.subtitle,
               permissionStatus: notificationStatus,
               registrationStatus: pushRegistrationStatus,
+              tokenError: pushTokenError,
             })}
             // iOS permission is the durable user setting. Registration is an
             // operational state that retries in the background and must not
@@ -546,6 +583,15 @@ function ConfiguredSettingsRouteScreen() {
             })}
             onValueChange={handleDeviceNotificationsChange}
           />
+          {personalExpoPushAlerts && notificationStatus === "enabled" ? (
+            <SettingsRow
+              icon="arrow.up.right.circle"
+              label="Send Test Alert"
+              value={pushTestRunning ? "Sending…" : undefined}
+              disabled={pushTestRunning}
+              onPress={() => void handleSendPushTest()}
+            />
+          ) : null}
           <SettingsSwitchRow
             disabled={
               !remoteLiveActivitiesAvailable ||

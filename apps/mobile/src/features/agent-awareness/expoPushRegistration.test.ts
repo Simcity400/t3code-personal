@@ -4,6 +4,7 @@ import * as Notifications from "expo-notifications";
 import {
   __resetPersonalExpoPushRegistrationForTest,
   getPersonalExpoPushRegistrationStatus,
+  describePersonalExpoPushTokenError,
   isPersonalExpoPushRegistrationAccepted,
   readPersonalExpoPushRegistration,
   requestPersonalExpoPushRegistrationRefresh,
@@ -50,6 +51,17 @@ describe("personal Expo push registration", () => {
     expect(Notifications.getExpoPushTokenAsync).toHaveBeenCalledWith({
       projectId: "personal-project",
     });
+  });
+
+  it("turns token read failures into one actionable line", () => {
+    expect(
+      describePersonalExpoPushTokenError(new Error("  No 'aps-environment'  entitlement ")),
+    ).toBe("No 'aps-environment' entitlement");
+    expect(describePersonalExpoPushTokenError({ _tag: "TimeoutError" })).toBe(
+      "Expo did not answer within 5 seconds",
+    );
+    expect(describePersonalExpoPushTokenError("")).toBe("Unknown error");
+    expect(describePersonalExpoPushTokenError("x".repeat(200))).toHaveLength(160);
   });
 
   it("returns an explicit disabled registration when permission is off", async () => {

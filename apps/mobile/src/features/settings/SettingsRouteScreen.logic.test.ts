@@ -59,6 +59,19 @@ describe("resolveNotificationRowSubtitle", () => {
     permissionStatus: "enabled",
   } as const;
 
+  it("names the push token error ahead of any registration state", () => {
+    expect(
+      resolveNotificationRowSubtitle({
+        ...base,
+        registrationStatus: "failed",
+        tokenError: "No APNs entitlement",
+      }),
+    ).toBe("This build could not get a push token: No APNs entitlement");
+    expect(
+      resolveNotificationRowSubtitle({ ...base, registrationStatus: "failed", tokenError: null }),
+    ).toBe("No connected environment accepted this device yet; retrying.");
+  });
+
   it("reports the push registration state the permission switch cannot show", () => {
     expect(resolveNotificationRowSubtitle({ ...base, registrationStatus: "registered" })).toBe(
       "Registered with every connected T3 Code environment.",

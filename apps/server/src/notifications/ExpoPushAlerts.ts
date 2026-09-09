@@ -1,4 +1,9 @@
-import type { ExpoPushNotificationRegistrationInput, ThreadId } from "@t3tools/contracts";
+import type {
+  ExpoPushNotificationRegistrationInput,
+  ExpoPushTestInput,
+  ExpoPushTestResult,
+  ThreadId,
+} from "@t3tools/contracts";
 import { RelayAgentAwarenessPhase, type RelayAgentActivityState } from "@t3tools/contracts/relay";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -135,6 +140,12 @@ export class ExpoPushAlerts extends Context.Service<
       readonly threadId: ThreadId;
       readonly state: RelayAgentActivityState | null;
     }) => Effect.Effect<ExpoPublishOutcome>;
+    /**
+     * Pushes one test alert to the client's own registration so a phone can
+     * confirm the whole route (token, Expo credentials, this environment)
+     * without waiting for an agent to finish. Never touches observations.
+     */
+    readonly sendTest: (input: ExpoPushTestInput) => Effect.Effect<ExpoPushTestResult>;
   }
 >()("t3/notifications/ExpoPushAlerts") {}
 
@@ -164,6 +175,11 @@ export const make = Effect.gen(function* () {
     observations: new Map(
       initial.observations.map((observation) => [observation.threadId as ThreadId, observation]),
     ),
+  });
+  // The only place the desktop side states how many phones it can reach.
+  yield* Effect.logInfo("personal Expo push state loaded", {
+    registrationCount: initial.registrations.length,
+    observationCount: initial.observations.length,
   });
 
   const refreshState = readPersistedState.pipe(
@@ -233,6 +249,13 @@ export const make = Effect.gen(function* () {
       }
       return { ...current, registrations };
     }).pipe(
+      Effect.tap((state) =>
+        Effect.logInfo("personal Expo push registration received", {
+          clientId: input.clientId,
+          enabled: input.registration.enabled,
+          registrationCount: state.registrations.size,
+        }),
+      ),
       Effect.map((state) => state.registrations.has(input.clientId)),
       Effect.tap((registered) =>
         registered
@@ -428,11 +451,62 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  const sendTest: ExpoPushAlerts["Service"]["sendTest"] = (input) =>
+    Effect.gen(function* () {
+      const token = yield* persistenceMutex
+        .withPermits(1)(refreshState)
+        .pipe(Effect.map((state) => state.registrations.get(input.clientId)));
+      if (token === undefined) {
+        yield* Effect.logWarning("personal Expo push test skipped; client is not registered", {
+          clientId: input.clientId,
+        });
+        return { outcome: "unregistered", rejections: [] } as const;
+      }
+      const response = yield* HttpClientRequest.post(EXPO_PUSH_ENDPOINT).pipe(
+        HttpClientRequest.bodyJson([
+          {
+            to: token,
+            title: "T3 Code",
+            subtitle: "Test alert",
+            body: "Notifications from this environment reach this phone.",
+            sound: "default",
+            priority: "high",
+            data: { test: true },
+          },
+        ]),
+        Effect.flatMap(httpClient.execute),
+        Effect.flatMap(HttpClientResponse.filterStatusOk),
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(ExpoPushResponse)),
+        Effect.timeout("10 seconds"),
+      );
+      const rejections = summarizeRejectedTickets(response.data);
+      const accepted = response.data.some((ticket) => ticket.status === "ok");
+      yield* Effect.logInfo("personal Expo push test submitted", {
+        clientId: input.clientId,
+        accepted,
+        rejections,
+      });
+      return { outcome: accepted ? "sent" : "rejected", rejections } as const;
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("personal Expo push test failed", {
+          clientId: input.clientId,
+          cause: String(cause),
+        }).pipe(
+          Effect.as({
+            outcome: "rejected",
+            rejections: [{ error: null, message: String(cause) }],
+          } as const),
+        ),
+      ),
+    );
+
   return ExpoPushAlerts.of({
     register,
     hasRegistrations,
     registrationChanges: SubscriptionRef.changes(registrationRevision),
     publish,
+    sendTest,
   });
 });
 

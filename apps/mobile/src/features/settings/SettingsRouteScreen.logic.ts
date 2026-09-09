@@ -25,12 +25,17 @@ export function resolveNotificationRowSubtitle(input: {
   readonly platformSubtitle: string | undefined;
   readonly permissionStatus: "checking" | "enabled" | "disabled" | "unsupported";
   readonly registrationStatus: PersonalExpoPushRegistrationStatus;
+  /** Why this phone has no push token; the one failure the user can act on. */
+  readonly tokenError?: string | null;
 }): string | undefined {
   if (!input.personalExpoPushAlerts) return input.platformSubtitle;
   if (input.platformSubtitle !== undefined) return input.platformSubtitle;
   if (input.permissionStatus === "checking") return "Checking notification permission.";
   if (input.permissionStatus !== "enabled") {
     return "Turn on to allow alerts from connected environments.";
+  }
+  if (input.tokenError) {
+    return `This build could not get a push token: ${input.tokenError}`;
   }
   switch (input.registrationStatus) {
     case "registered":

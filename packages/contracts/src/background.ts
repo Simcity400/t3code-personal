@@ -89,6 +89,22 @@ export const ExpoPushNotificationRegistrationResult = Schema.Struct({
 export type ExpoPushNotificationRegistrationResult =
   typeof ExpoPushNotificationRegistrationResult.Type;
 
+/** Asks an environment to push one test alert to this device's registration. */
+export const ExpoPushTestInput = Schema.Struct({
+  clientId: ClientActivityClientId,
+});
+export type ExpoPushTestInput = typeof ExpoPushTestInput.Type;
+
+export const ExpoPushTestResult = Schema.Struct({
+  /** "unregistered" means this environment holds no token for the client. */
+  outcome: Schema.Literals(["sent", "rejected", "unregistered"]),
+  /** Expo's reasons when it accepted the request but rejected the ticket. */
+  rejections: Schema.Array(
+    Schema.Struct({ error: Schema.NullOr(Schema.String), message: Schema.String }),
+  ),
+});
+export type ExpoPushTestResult = typeof ExpoPushTestResult.Type;
+
 export const ClientActivityReportInput = Schema.Struct({
   environmentId: Schema.optionalKey(EnvironmentId),
   clientId: ClientActivityClientId,

@@ -347,6 +347,70 @@ describe.sequential("ExpoPushAlerts", () => {
   });
 });
 
+describe.sequential("ExpoPushAlerts.sendTest", () => {
+  it.effect(
+    "reports Expo's verdict for the client's own token and skips unregistered clients",
+    () => {
+      const requests: unknown[] = [];
+      let ticket: unknown = { status: "ok", id: "ticket-test" };
+      const httpLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.gen(function* () {
+            if (request.body._tag === "Uint8Array") {
+              requests.push(
+                yield* decodeUnknownJson(new TextDecoder().decode(request.body.body)).pipe(
+                  Effect.orDie,
+                ),
+              );
+            }
+            return HttpClientResponse.fromWeb(request, Response.json({ data: [ticket] }));
+          }),
+        ),
+      );
+      const secretLayer = Layer.succeed(
+        ServerSecretStore.ServerSecretStore,
+        makeMemorySecretStore(),
+      );
+
+      return Effect.gen(function* () {
+        const alerts = yield* ExpoPushAlerts.ExpoPushAlerts;
+        expect(yield* alerts.sendTest({ clientId: "mobile-unknown" })).toEqual({
+          outcome: "unregistered",
+          rejections: [],
+        });
+        expect(requests).toHaveLength(0);
+
+        yield* alerts.register({
+          clientId: "mobile-device",
+          registration: { enabled: true, token: "ExponentPushToken[test]" },
+        });
+        expect(yield* alerts.sendTest({ clientId: "mobile-device" })).toEqual({
+          outcome: "sent",
+          rejections: [],
+        });
+        expect(requests[0]).toEqual([
+          expect.objectContaining({ to: "ExponentPushToken[test]", data: { test: true } }),
+        ]);
+
+        ticket = {
+          status: "error",
+          message: "no push key",
+          details: { error: "InvalidCredentials" },
+        };
+        expect(yield* alerts.sendTest({ clientId: "mobile-device" })).toEqual({
+          outcome: "rejected",
+          rejections: [{ error: "InvalidCredentials", message: "no push key" }],
+        });
+      }).pipe(
+        Effect.provide(
+          ExpoPushAlerts.layer.pipe(Layer.provide(Layer.merge(secretLayer, httpLayer))),
+        ),
+      );
+    },
+  );
+});
+
 describe("summarizeRejectedTickets", () => {
   it("keeps only rejected tickets with their reason", () => {
     expect(

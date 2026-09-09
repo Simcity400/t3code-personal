@@ -23,6 +23,8 @@ import {
   ClientActivityReportInput,
   ExpoPushNotificationRegistrationInput,
   ExpoPushNotificationRegistrationResult,
+  ExpoPushTestInput,
+  ExpoPushTestResult,
   HostPowerSnapshot,
 } from "./background.ts";
 import {
@@ -344,6 +346,7 @@ export const WS_METHODS = {
   serverSignalProcess: "server.signalProcess",
   serverReportClientActivity: "server.reportClientActivity",
   serverRegisterExpoPushNotifications: "server.registerExpoPushNotifications",
+  serverSendExpoPushTest: "server.sendExpoPushTest",
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
   serverGetUsageSummary: "server.getUsageSummary",
@@ -629,6 +632,12 @@ export const WsServerRegisterExpoPushNotificationsRpc = Rpc.make(
     error: EnvironmentAuthorizationError,
   },
 );
+
+export const WsServerSendExpoPushTestRpc = Rpc.make(WS_METHODS.serverSendExpoPushTest, {
+  payload: ExpoPushTestInput,
+  success: ExpoPushTestResult,
+  error: EnvironmentAuthorizationError,
+});
 
 const WsServerReportHostPowerStateRpc = Rpc.make(WS_METHODS.serverReportHostPowerState, {
   payload: HostPowerSnapshot,
@@ -1249,6 +1258,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerSignalProcessRpc,
   WsServerReportClientActivityRpc,
   WsServerRegisterExpoPushNotificationsRpc,
+  WsServerSendExpoPushTestRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,
   WsCloudGetRelayClientStatusRpc,
