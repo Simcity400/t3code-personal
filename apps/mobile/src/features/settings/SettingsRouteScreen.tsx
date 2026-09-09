@@ -2,6 +2,7 @@ import { useAuth, useUser } from "@clerk/expo";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
+import * as Updates from "expo-updates";
 import { useNavigation } from "@react-navigation/native";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { SymbolView } from "../../components/AppSymbol";
@@ -839,7 +840,12 @@ function AppSettingsSection() {
   // missing variant never mislabels a production build as development.
   const variant = (Constants.expoConfig?.extra?.appVariant as string | undefined) ?? "production";
   const variantLabel = variant === "production" ? "" : capitalize(variant);
-  const versionLabel = variantLabel ? `${version} · ${variantLabel}` : version;
+  // The over-the-air update id tells support which JavaScript is actually
+  // running; the version alone is shared by every update of a native build.
+  const updateLabel = Updates.updateId ? Updates.updateId.slice(0, 8) : null;
+  const versionLabel = [version, variantLabel || null, updateLabel]
+    .filter((part): part is string => part !== null && part.length > 0)
+    .join(" · ");
   const updateCheckAvailable = isAppUpdateCheckAvailable();
   const busy =
     updateState === "checking" || updateState === "downloading" || updateState === "restarting";

@@ -84,9 +84,7 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
     const requestReport = () => Queue.offerUnsafe(reportRequests, undefined);
     let appState = AppState.currentState;
     let expoPushRegistration: ExpoPushNotificationRegistration | undefined;
-    // Bumped by every refresh so an in-flight token read that a refresh has
-    // already superseded cannot commit its stale result.
-    let expoPushRegistrationGeneration = 0;
+    let lastDevicePushToken: string | null = null;
     const expoPushRegistrationByEnvironment = new Map<
       EnvironmentId,
       { readonly identity: string; readonly assertedAtMs: number }
@@ -103,7 +101,6 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
     };
     const refreshExpoPushRegistration = () => {
       expoPushRegistration = undefined;
-      expoPushRegistrationGeneration += 1;
       reassertExpoPushRegistrations();
     };
 
@@ -146,7 +143,6 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
         { concurrency: "unbounded", discard: true },
       );
       if (expoPushRegistration === undefined) {
-        const generation = expoPushRegistrationGeneration;
         setPersonalExpoPushRegistrationStatus(entries.size > 0 ? "pending" : "unknown");
         const read = yield* Effect.tryPromise({
           try: readPersonalExpoPushRegistration,
@@ -166,13 +162,13 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
           ),
           Effect.orElseSucceed(() => undefined),
         );
-        // A refresh that landed while this read was in flight (a rotated push
-        // token, say) already cleared the cache and queued a fresh pass.
-        // Committing this now-stale token would swallow that refresh, so leave
-        // the slot empty and let the queued pass re-read it.
-        if (generation === expoPushRegistrationGeneration) {
-          expoPushRegistration = read;
-        }
+        // Commit the read even if a refresh landed meanwhile: the refresh has
+        // queued its own pass, which re-reads and overwrites this value. The
+        // previous "discard when superseded" rule never let a pass reach the
+        // registration step, because requesting the token makes iOS deliver
+        // the device token, which fired the push-token listener, which
+        // refreshed and superseded the very read that triggered it.
+        expoPushRegistration = read;
       }
       // Pin the value for the rest of this pass. A foreground, push-token, or
       // Settings refresh can null the shared variable while the per-environment
@@ -296,9 +292,15 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
         const removeRegistrationRefreshListener = onPersonalExpoPushRegistrationRefresh(
           refreshExpoPushRegistration,
         );
-        const pushTokenSubscription = Notifications.addPushTokenListener(
-          refreshExpoPushRegistration,
-        );
+        // iOS re-delivers the device token every time the app asks for it, and
+        // every pass asks. Only a token that actually changed warrants a
+        // re-read; the rest would re-run the pass in a loop.
+        const pushTokenSubscription = Notifications.addPushTokenListener((token) => {
+          const value = String(token.data);
+          if (value === lastDevicePushToken) return;
+          lastDevicePushToken = value;
+          refreshExpoPushRegistration();
+        });
         const subscription = AppState.addEventListener("change", (nextState) => {
           appState = nextState;
           // Permission may have changed in iOS Settings while we were away.

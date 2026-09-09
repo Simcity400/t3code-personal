@@ -4856,7 +4856,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const thinking = thinkingSupported
         ? getModelSelectionBooleanOptionValue(modelSelection, "thinking")
         : undefined;
-      const ultracode = isClaudeCatalogUltracodeEffort(effort);
+      // A side chat answers questions; ultracode's multi-agent orchestration
+      // is exactly what the user does not want from it.
+      const ultracode = isClaudeCatalogUltracodeEffort(effort) && input.sideChat !== true;
       const effectiveEffort = getEffectiveClaudeAgentEffort(
         modelCatalog,
         effort,

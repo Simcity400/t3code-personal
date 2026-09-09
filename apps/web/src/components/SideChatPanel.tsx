@@ -24,7 +24,7 @@ import type {
 } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { truncate } from "@t3tools/shared/String";
-import { ArrowUpRight, ChevronDown, Maximize2, MessagesSquare, Square, Trash2 } from "lucide-react";
+import { ArrowUpRight, ChevronDown, Maximize2, MessagesSquare, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
@@ -336,11 +336,6 @@ export function SideChatPanel(props: {
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{title}</span>
         {statusLabel ? (
           <span className="shrink-0 text-[.65rem] text-muted-foreground">{statusLabel}</span>
-        ) : null}
-        {isWorking && !isGone ? (
-          <HeaderAction label="Stop" onClick={() => void stop()}>
-            <Square className="size-3 fill-current" />
-          </HeaderAction>
         ) : null}
         <HeaderAction label="Open full view" onClick={onOpenFullView}>
           <Maximize2 className="size-3.5" />

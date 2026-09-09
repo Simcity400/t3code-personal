@@ -873,6 +873,10 @@ describe("ProviderCommandReactor", () => {
         forkFromThreadId: ThreadId.make("thread-1"),
         sideChat: true,
       });
+      // The first side chat turn carries the boundary; the stored message does not.
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        input: expect.stringMatching(/^Side conversation boundary\.[\s\S]*what does this do\?$/),
+      });
 
       // The framing is fixed at session start, so promotion is not applied to
       // the live session; the next turn restarts it as an ordinary thread.
@@ -913,6 +917,7 @@ describe("ProviderCommandReactor", () => {
       expect(harness.startSession.mock.calls.length).toBe(2);
       expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("sideChat");
       expect(harness.startSession.mock.calls[1]?.[1]).toHaveProperty("resumeCursor");
+      expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({ input: "what does this do?" });
     }),
   );
 

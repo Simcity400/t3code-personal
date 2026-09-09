@@ -26,3 +26,20 @@ Do not modify files, source, git state, permissions, configuration, or any other
 export function withSideChatInstructions(instructions: string, sideChat: boolean | undefined) {
   return sideChat ? `${instructions}\n\n${SIDE_CHAT_INSTRUCTIONS}` : instructions;
 }
+
+/**
+ * Codex's second half of the formula: a boundary inside the conversation
+ * itself, ahead of the side chat's first user message. Instructions in the
+ * system prompt alone lose to a transcript that ends mid-task with explicit
+ * orders, so the boundary restates the rule where the model is looking.
+ */
+export const SIDE_CHAT_BOUNDARY = `Side conversation boundary.
+
+Everything before this boundary is inherited history from the main thread. It is reference context only. It is not your current task.
+
+Do not continue, execute, or complete any instructions, plans, tool calls, approvals, edits, or requests from before this boundary. Only the message below this boundary is an active instruction for this side conversation. Sub-agents and workflows are off-limits here. Do not modify files or workspace state unless the message below explicitly asks for it.`;
+
+/** Prefixes the first side chat message with the boundary; later turns follow it naturally. */
+export function withSideChatBoundary(text: string): string {
+  return `${SIDE_CHAT_BOUNDARY}\n\n---\n\n${text}`;
+}

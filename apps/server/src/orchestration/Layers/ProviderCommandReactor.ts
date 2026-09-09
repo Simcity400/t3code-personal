@@ -54,6 +54,7 @@ import {
   ServerSettingsService,
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
+import { withSideChatBoundary } from "../../provider/SideChatInstructions.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
@@ -1440,9 +1441,15 @@ const make = Effect.gen(function* () {
         "Wait for context compaction to finish before sending another message.",
       );
     }
+    // The stored message stays the user's own words; only the provider sees
+    // the boundary, and only on the side chat's first turn.
+    const sideChatFirstTurn =
+      thread.forkedFromThreadId != null &&
+      thread.sideChatPromotedAt == null &&
+      !hasOtherUserMessages;
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
-      messageText: message.text,
+      messageText: sideChatFirstTurn ? withSideChatBoundary(message.text) : message.text,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined
         ? { modelSelection: event.payload.modelSelection }
