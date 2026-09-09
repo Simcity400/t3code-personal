@@ -91,12 +91,8 @@ function CodexGoalEditorForm(props: {
     <View className="flex-1 items-center justify-center bg-backdrop px-6">
       <View className="w-full rounded-[24px] bg-card px-5 pb-4 pt-5">
         <Text className="text-lg font-t3-medium">{isEditing ? "Edit goal" : "Set a goal"}</Text>
-        <Text className="mt-1 text-sm text-foreground-secondary">
-          Codex keeps working across turns until it can verify the objective is done, and stops to
-          ask you when it is stuck.
-        </Text>
         <ScrollView
-          className="mt-4 max-h-80"
+          className="mt-3 max-h-80"
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
@@ -122,9 +118,6 @@ function CodexGoalEditorForm(props: {
             placeholder="No limit"
             className="min-h-[48px] rounded-2xl border border-input-border bg-input px-3.5 py-3 font-sans text-base text-foreground"
           />
-          <Text className="mt-1 text-xs text-foreground-muted">
-            Codex stops the goal once it has used this many tokens.
-          </Text>
           {validationError === null ? null : (
             <Text className="mt-2 text-sm text-danger-foreground">{validationError}</Text>
           )}

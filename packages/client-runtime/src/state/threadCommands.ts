@@ -96,6 +96,22 @@ export function formatCodexGoalDescription(goal: CodexGoal): string {
   return `${goal.objective} - ${formatCodexGoalUsage(goal)}`;
 }
 
+function formatCompactTokenCount(tokens: number): string {
+  if (tokens < 1_000) return String(tokens);
+  // Round before picking the unit so 9,960 reads "10k" and 999,600 reads "1M".
+  const thousands = tokens / 1_000;
+  if (Number(thousands.toFixed(1)) < 10) return `${thousands.toFixed(1).replace(/\.0$/, "")}k`;
+  const roundedThousands = Math.round(thousands);
+  if (roundedThousands < 1_000) return `${roundedThousands}k`;
+  return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+/** One-line usage for the goal row above the composer: "12k / 100k tokens · 1m". */
+export function formatCodexGoalUsageCompact(goal: CodexGoal): string {
+  const budget = goal.tokenBudget == null ? "" : ` / ${formatCompactTokenCount(goal.tokenBudget)}`;
+  return `${formatCompactTokenCount(goal.tokensUsed)}${budget} tokens · ${formatCodexGoalDuration(goal.timeUsedSeconds)}`;
+}
+
 // Codex's own wording: its terminal shows a blocked goal as "stalled".
 const CODEX_GOAL_STATUS_LABELS: Record<CodexGoalStatus, string> = {
   active: "active",
@@ -121,36 +137,6 @@ export function codexGoalSessionActivity(
   }
   // A starting session is about to work, not resting between goal turns.
   return session.status === "running" || session.status === "starting" ? "running" : "idle";
-}
-
-/**
- * Plain-language account of what Codex is doing with the goal, so a status
- * word alone never has to carry the explanation.
- */
-export function describeCodexGoalStatus(
-  goal: CodexGoal,
-  activity: CodexGoalSessionActivity,
-): string {
-  switch (goal.status) {
-    case "active":
-      if (activity === "running") return "Codex is working toward this goal now.";
-      if (activity === "idle") {
-        return "Codex starts the next goal turn on its own while the thread is idle.";
-      }
-      return "The thread is stopped. Continue to let Codex pick the goal back up.";
-    case "paused":
-      return "Codex will not start goal turns until you resume.";
-    case "blocked":
-      return "Codex hit the same blocker three turns in a row and needs your input or an outside change. Its last message says what it needs.";
-    case "usageLimited":
-      return "Your usage limit stopped this goal. Resume once the limit resets.";
-    case "budgetLimited":
-      return goal.tokenBudget == null
-        ? "The token budget is used up. Raise it to continue."
-        : `The ${goal.tokenBudget.toLocaleString()} token budget is used up. Raise it to continue.`;
-    case "complete":
-      return "Codex verified the objective and marked the goal complete.";
-  }
 }
 
 /**

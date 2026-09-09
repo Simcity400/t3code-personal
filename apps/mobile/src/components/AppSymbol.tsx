@@ -67,6 +67,7 @@ import IconMoon from "@tabler/icons-react-native/IconMoon";
 import IconNetwork from "@tabler/icons-react-native/IconNetwork";
 import IconPalette from "@tabler/icons-react-native/IconPalette";
 import IconPhoto from "@tabler/icons-react-native/IconPhoto";
+import IconPlayerPause from "@tabler/icons-react-native/IconPlayerPause";
 import IconPin from "@tabler/icons-react-native/IconPin";
 import IconPinnedOff from "@tabler/icons-react-native/IconPinnedOff";
 import IconPlayerPlay from "@tabler/icons-react-native/IconPlayerPlay";
@@ -79,6 +80,7 @@ import IconServer from "@tabler/icons-react-native/IconServer";
 import IconSettings from "@tabler/icons-react-native/IconSettings";
 import IconSparkles from "@tabler/icons-react-native/IconSparkles";
 import IconSun from "@tabler/icons-react-native/IconSun";
+import IconTarget from "@tabler/icons-react-native/IconTarget";
 import IconTerminal2 from "@tabler/icons-react-native/IconTerminal2";
 import IconTextDecrease from "@tabler/icons-react-native/IconTextDecrease";
 import IconTextIncrease from "@tabler/icons-react-native/IconTextIncrease";
@@ -153,6 +155,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   magnifyingglass: IconSearch,
   paintbrush: IconPalette,
   "person.crop.circle": IconUserCircle,
+  pause: IconPlayerPause,
   photo: IconPhoto,
   pin: IconPin,
   "pin.slash": IconPinnedOff,
@@ -171,6 +174,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "square.split.2x1": IconLayoutColumns,
   "sun.max": IconSun,
   "stop.fill": IconPlayerStopFilled,
+  target: IconTarget,
   terminal: IconTerminal2,
   "text.bubble": IconMessage,
   "text.word.spacing": IconLetterSpacing,

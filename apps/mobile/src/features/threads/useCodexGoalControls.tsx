@@ -1,15 +1,15 @@
+import type { MenuAction } from "@react-native-menu/menu";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { Alert, Platform, View } from "react-native";
+import { Alert, Platform, Pressable } from "react-native";
 import * as Option from "effect/Option";
-import type { CodexGoalSetInput } from "@t3tools/contracts";
+import type { CodexGoalSetInput, OrchestrationThreadGoal } from "@t3tools/contracts";
 import {
   codexGoalSessionActivity,
   codexGoalStatusAction,
-  describeCodexGoalStatus,
   formatCodexGoalDescription,
   formatCodexGoalError,
   formatCodexGoalStatus,
-  formatCodexGoalUsage,
+  formatCodexGoalUsageCompact,
   parseCodexGoalCommand,
   toCodexGoalSetInput,
 } from "@t3tools/client-runtime/state/threads";
@@ -17,9 +17,11 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
-import { ControlPill } from "../../components/ControlPill";
+import { ControlPillMenu } from "../../components/ControlPill";
 import { showConfirmDialog } from "../../components/ConfirmDialogHost";
+import { cn } from "../../lib/cn";
 import { threadEnvironment, useEnvironmentThread } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { scopedThreadKey } from "../../lib/scopedEntities";
@@ -221,50 +223,26 @@ export function useCodexGoalControls(
       runCodexGoalMutation,
     ],
   );
+  const codexGoalStatusActionValue =
+    codexGoal === null ? null : codexGoalStatusAction(codexGoal, codexGoalActivity);
+  const handleCodexGoalMenuAction = (event: string) => {
+    if (event === "edit") setCodexGoalEditorOpen(true);
+    else if (event === "clear") handleCodexGoalClear();
+    else if (event === "pause" || event === "resume" || event === "continue") {
+      handleCodexGoalStatusAction(event);
+    }
+  };
   return {
     handleGoalCommand,
     controls: (
       <>
         {codexGoal !== null ? (
-          <View className="mx-3 mb-2 rounded-xl border border-blue-500/20 bg-blue-500/10 px-3 py-2">
-            <Text className="text-xs font-t3-bold text-foreground">
-              Goal {formatCodexGoalStatus(codexGoal.status)}
-            </Text>
-            <Text className="text-xs text-foreground-muted" numberOfLines={2}>
-              {codexGoal.objective}
-            </Text>
-            <Text className="text-xs text-foreground-muted">
-              {describeCodexGoalStatus(codexGoal, codexGoalActivity)}{" "}
-              {formatCodexGoalUsage(codexGoal)}
-            </Text>
-            <View className="mt-2 flex-row gap-2">
-              {(() => {
-                const action = codexGoalStatusAction(codexGoal, codexGoalActivity);
-                return action === null ? null : (
-                  <ControlPill
-                    label={
-                      action === "pause" ? "Pause" : action === "resume" ? "Resume" : "Continue"
-                    }
-                    variant="primary"
-                    disabled={codexGoalBusy}
-                    onPress={() => handleCodexGoalStatusAction(action)}
-                  />
-                );
-              })()}
-              <ControlPill
-                label="Edit"
-                variant="pill"
-                disabled={codexGoalBusy}
-                onPress={() => setCodexGoalEditorOpen(true)}
-              />
-              <ControlPill
-                label="Clear"
-                variant="pill"
-                disabled={codexGoalBusy}
-                onPress={handleCodexGoalClear}
-              />
-            </View>
-          </View>
+          <CodexGoalRow
+            goal={codexGoal}
+            statusAction={codexGoalStatusActionValue}
+            busy={codexGoalBusy}
+            onAction={handleCodexGoalMenuAction}
+          />
         ) : null}
         <CodexGoalEditorModal
           visible={codexGoalEditorOpen}
@@ -276,4 +254,98 @@ export function useCodexGoalControls(
       </>
     ),
   };
+}
+
+type CodexGoalStatusAction = "pause" | "resume" | "continue";
+
+const STATUS_ACTION_MENU: Record<CodexGoalStatusAction, MenuAction> = {
+  pause: { id: "pause", title: "Pause", image: "pause" },
+  resume: { id: "resume", title: "Resume", image: "play" },
+  continue: { id: "continue", title: "Continue", image: "play" },
+};
+const GOAL_MENU_TAIL: readonly MenuAction[] = [
+  { id: "edit", title: "Edit goal", image: "square.and.pencil" },
+  { id: "clear", title: "Clear goal", image: "trash", attributes: { destructive: true } },
+];
+// One stable array per status action, so the native menu's props do not
+// change on every feed re-render.
+const GOAL_MENU_ACTIONS: Record<CodexGoalStatusAction | "none", MenuAction[]> = {
+  pause: [STATUS_ACTION_MENU.pause, ...GOAL_MENU_TAIL],
+  resume: [STATUS_ACTION_MENU.resume, ...GOAL_MENU_TAIL],
+  continue: [STATUS_ACTION_MENU.continue, ...GOAL_MENU_TAIL],
+  none: [...GOAL_MENU_TAIL],
+};
+
+function codexGoalStatusClassName(status: OrchestrationThreadGoal["status"]): string {
+  switch (status) {
+    case "blocked":
+    case "usageLimited":
+    case "budgetLimited":
+      return "text-adaptive-amber-700-300";
+    case "complete":
+      return "text-adaptive-emerald-600-400";
+    case "paused":
+      return "text-foreground-muted";
+    case "active":
+      return "text-foreground";
+  }
+}
+
+/**
+ * One-line goal row above the composer, in the composer's own pill language:
+ * status word, objective, usage. Tapping it opens the native menu with the
+ * one status control plus edit and clear, like the desktop banner's menu.
+ */
+function CodexGoalRow(props: {
+  readonly goal: OrchestrationThreadGoal;
+  readonly statusAction: CodexGoalStatusAction | null;
+  readonly busy: boolean;
+  readonly onAction: (event: string) => void;
+}) {
+  const { goal } = props;
+  const actions = GOAL_MENU_ACTIONS[props.statusAction ?? "none"];
+  const row = (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Goal ${formatCodexGoalStatus(goal.status)}: ${goal.objective}`}
+      accessibilityHint="Opens goal actions"
+      disabled={props.busy}
+      className={cn(
+        "mx-4 mb-2 min-h-10 flex-row items-center gap-2 rounded-full border-continuous bg-card px-3.5 active:opacity-70",
+        props.busy && "opacity-50",
+      )}
+    >
+      <SymbolView
+        name="target"
+        size={14}
+        weight="medium"
+        tintColorClassName="accent-icon"
+        type="monochrome"
+      />
+      <Text className={cn("text-xs font-t3-bold", codexGoalStatusClassName(goal.status))}>
+        Goal {formatCodexGoalStatus(goal.status)}
+      </Text>
+      <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={1}>
+        {goal.objective}
+      </Text>
+      <Text className="shrink-0 font-mono text-2xs tabular-nums text-foreground-muted">
+        {formatCodexGoalUsageCompact(goal)}
+      </Text>
+      <SymbolView
+        name="ellipsis"
+        size={12}
+        tintColorClassName="accent-icon-muted"
+        type="monochrome"
+      />
+    </Pressable>
+  );
+  if (props.busy) return row;
+  return (
+    <ControlPillMenu
+      actions={actions}
+      onPressAction={({ nativeEvent }) => props.onAction(nativeEvent.event)}
+    >
+      {row}
+    </ControlPillMenu>
+  );
 }

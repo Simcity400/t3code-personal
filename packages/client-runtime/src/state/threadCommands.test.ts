@@ -5,13 +5,13 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   codexGoalSessionActivity,
   codexGoalStatusAction,
-  describeCodexGoalStatus,
   findCodexGoalReportMessage,
   formatCodexGoalDescription,
   formatCodexGoalDuration,
   formatCodexGoalError,
   formatCodexGoalStatus,
   formatCodexGoalUsage,
+  formatCodexGoalUsageCompact,
   parseCodexGoalCommand,
   toCodexGoalSetInput,
 } from "./threadCommands.ts";
@@ -75,6 +75,22 @@ describe("goal formatting", () => {
     );
   });
 
+  it("compacts usage for the one-line goal row", () => {
+    expect(formatCodexGoalUsageCompact(goal("Ship it"))).toBe("12k / 100k tokens · 1m");
+    expect(formatCodexGoalUsageCompact({ ...goal("Ship it"), tokenBudget: null })).toBe(
+      "12k tokens · 1m",
+    );
+    expect(
+      formatCodexGoalUsageCompact({ ...goal("Ship it"), tokensUsed: 950, tokenBudget: 2_500 }),
+    ).toBe("950 / 2.5k tokens · 1m");
+    expect(
+      formatCodexGoalUsageCompact({ ...goal("Ship it"), tokensUsed: 1_250_000, tokenBudget: null }),
+    ).toBe("1.3M tokens · 1m");
+    expect(
+      formatCodexGoalUsageCompact({ ...goal("Ship it"), tokensUsed: 9_960, tokenBudget: 999_600 }),
+    ).toBe("10k / 1M tokens · 1m");
+  });
+
   it("formats elapsed time at the coarsest useful unit", () => {
     expect(formatCodexGoalDuration(28_458)).toBe("7h 54m");
     expect(formatCodexGoalDuration(125)).toBe("2m");
@@ -118,16 +134,6 @@ describe("goal status controls", () => {
       expect(codexGoalStatusAction(goal("x", status), "stopped")).toBe("resume");
     }
     expect(codexGoalStatusAction(goal("x", "complete"), "stopped")).toBeNull();
-  });
-
-  it("explains every status in plain language", () => {
-    expect(describeCodexGoalStatus(goal("x"), "running")).toContain("working toward this goal");
-    expect(describeCodexGoalStatus(goal("x"), "idle")).toContain("on its own");
-    expect(describeCodexGoalStatus(goal("x"), "stopped")).toContain("Continue");
-    expect(describeCodexGoalStatus(goal("x", "blocked"), "stopped")).toContain(
-      "three turns in a row",
-    );
-    expect(describeCodexGoalStatus(goal("x", "budgetLimited"), "stopped")).toContain("100,000");
   });
 });
 

@@ -1,12 +1,11 @@
 import {
   codexGoalStatusAction,
-  describeCodexGoalStatus,
   formatCodexGoalStatus,
-  formatCodexGoalUsage,
+  formatCodexGoalUsageCompact,
   type CodexGoalSessionActivity,
 } from "@t3tools/client-runtime/state/threads";
 import { CODEX_GOAL_OBJECTIVE_MAX_CHARS, type OrchestrationThreadGoal } from "@t3tools/contracts";
-import { TargetIcon } from "lucide-react";
+import { EllipsisIcon, TargetIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { Button } from "../ui/button";
@@ -21,7 +20,6 @@ import {
 } from "../ui/alert-dialog";
 import {
   Dialog,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogPanel,
@@ -30,9 +28,11 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import { composerFloatingLayerProps } from "./composerEventScope";
 
 export type CodexGoalStatusAction = NonNullable<ReturnType<typeof codexGoalStatusAction>>;
 
@@ -53,9 +53,9 @@ export interface CodexGoalBannerInput {
 }
 
 /**
- * The goal notice above the composer: Codex's own status wording, the
- * objective, what Codex is doing about it, and every control the native
- * client offers (pause or resume, edit, clear).
+ * The goal row above the composer, one line like the other composer notices:
+ * Codex's own status word, the objective, usage, the one status control, and
+ * a menu for edit and clear.
  */
 export function buildCodexGoalBannerItem(input: CodexGoalBannerInput): ComposerBannerStackItem {
   const { goal, activity, busy } = input;
@@ -75,16 +75,11 @@ export function buildCodexGoalBannerItem(input: CodexGoalBannerInput): ComposerB
         </TooltipPopup>
       </Tooltip>
     ),
-    children: (
-      <div className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
-        <span>
-          {describeCodexGoalStatus(goal, activity)}{" "}
-          <span className="tabular-nums">{formatCodexGoalUsage(goal)}</span>
-        </span>
-      </div>
-    ),
     actions: (
       <span className="flex items-center gap-1">
+        <span className="px-1 text-xs tabular-nums text-muted-foreground">
+          {formatCodexGoalUsageCompact(goal)}
+        </span>
         {statusAction !== null ? (
           <Button
             type="button"
@@ -96,12 +91,18 @@ export function buildCodexGoalBannerItem(input: CodexGoalBannerInput): ComposerB
             {STATUS_ACTION_LABELS[statusAction]}
           </Button>
         ) : null}
-        <Button type="button" size="xs" variant="ghost" disabled={busy} onClick={input.onEdit}>
-          Edit
-        </Button>
-        <Button type="button" size="xs" variant="ghost" disabled={busy} onClick={input.onClear}>
-          Clear
-        </Button>
+        <Menu>
+          <MenuTrigger
+            disabled={busy}
+            render={<Button size="icon-xs" variant="ghost" aria-label="Goal options" />}
+          >
+            <EllipsisIcon className="size-3.5" />
+          </MenuTrigger>
+          <MenuPopup align="end" {...composerFloatingLayerProps}>
+            <MenuItem onClick={input.onEdit}>Edit goal</MenuItem>
+            <MenuItem onClick={input.onClear}>Clear goal</MenuItem>
+          </MenuPopup>
+        </Menu>
       </span>
     ),
   };
@@ -139,10 +140,6 @@ export function CodexGoalEditorDialog(props: {
       <DialogPopup>
         <DialogHeader>
           <DialogTitle>{isEditing ? "Edit goal" : "Set a goal"}</DialogTitle>
-          <DialogDescription>
-            Codex keeps working across turns until it can verify the objective is done, and stops to
-            ask you when it is stuck.
-          </DialogDescription>
         </DialogHeader>
         {/* Seed on open or goal replacement; progress updates must not reset edits. */}
         {props.open ? (
@@ -221,9 +218,6 @@ function CodexGoalEditorForm(props: {
               value={tokenBudget}
               onChange={(event) => setTokenBudget(event.target.value)}
             />
-            <p className="text-xs text-muted-foreground">
-              Codex stops the goal once it has used this many tokens.
-            </p>
           </div>
           {validationError ? <p className="text-sm text-destructive">{validationError}</p> : null}
         </form>
