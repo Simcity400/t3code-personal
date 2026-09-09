@@ -52,6 +52,10 @@ export function resolveNotificationRowSubtitle(input: {
       return `No connected environment accepted this device yet; retrying.${detail}`;
     case "disabled":
       return "Alerts are off until iOS notification permission is granted.";
+    // Distinct from "pending" on purpose: this is the reporter never having
+    // completed a pass, which points at the app, not at the environments.
+    case "unknown":
+      return "Registration has not run yet. Reopen the app with an environment connected.";
     // "pending" also covers "token in hand, but nothing is connected yet",
     // which is a resting state rather than work in progress.
     default:

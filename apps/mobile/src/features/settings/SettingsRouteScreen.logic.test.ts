@@ -59,6 +59,15 @@ describe("resolveNotificationRowSubtitle", () => {
     permissionStatus: "enabled",
   } as const;
 
+  it("tells a never-run reporter apart from an unanswered registration", () => {
+    expect(resolveNotificationRowSubtitle({ ...base, registrationStatus: "unknown" })).toBe(
+      "Registration has not run yet. Reopen the app with an environment connected.",
+    );
+    expect(resolveNotificationRowSubtitle({ ...base, registrationStatus: "pending" })).toBe(
+      "Waiting to register with a connected environment.",
+    );
+  });
+
   it("says per environment why registration is still waiting", () => {
     expect(
       resolveNotificationRowSubtitle({
@@ -116,7 +125,7 @@ describe("resolveNotificationRowSubtitle", () => {
       "Waiting to register with a connected environment.",
     );
     expect(resolveNotificationRowSubtitle({ ...base, registrationStatus: "unknown" })).toBe(
-      "Waiting to register with a connected environment.",
+      "Registration has not run yet. Reopen the app with an environment connected.",
     );
   });
 

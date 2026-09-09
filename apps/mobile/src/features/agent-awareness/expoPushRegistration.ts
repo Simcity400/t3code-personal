@@ -162,7 +162,9 @@ export async function readPersonalExpoPushRegistration(): Promise<
 
   const token = await Notifications.getExpoPushTokenAsync({ projectId: projectId.trim() });
   const value = token.data.trim();
-  return value.length > 0 ? { enabled: true, token: value } : undefined;
+  // Surfaced as a token error rather than a silent "nothing to register".
+  if (value.length === 0) throw new Error("Expo returned an empty push token");
+  return { enabled: true, token: value };
 }
 
 export function __resetPersonalExpoPushRegistrationForTest(): void {

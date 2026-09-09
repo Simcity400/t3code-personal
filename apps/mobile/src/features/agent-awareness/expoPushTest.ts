@@ -64,12 +64,21 @@ export const sendPersonalExpoPushTest = createRuntimeCommand(connectionAtomRunti
               detail: null,
             }),
           ),
-          // Failures only: an interrupted run must not read as an answer.
+          // Failures and defects both become a per-environment line (an
+          // environment on an older server answers "unknown request tag" as a
+          // defect); an interrupted run must not read as an answer.
           Effect.catch((cause) =>
             Effect.succeed<PersonalExpoPushTestEnvironmentResult>({
               environmentId,
               outcome: "failed",
               detail: cause instanceof Error ? cause.message : String(cause),
+            }),
+          ),
+          Effect.catchDefect((defect) =>
+            Effect.succeed<PersonalExpoPushTestEnvironmentResult>({
+              environmentId,
+              outcome: "failed",
+              detail: defect instanceof Error ? defect.message : String(defect),
             }),
           ),
         ),
