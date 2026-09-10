@@ -244,7 +244,7 @@ const WorkGroupViewCtx = createContext<{
   state: WorkGroupViewState;
   onToggleEntry: (collapsed: boolean) => void;
 } | null>(null);
-const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
+const TIMELINE_LIST_HEADER = <div className="h-2" />;
 const TIMELINE_LIST_FADE_HEADER = (
   <div className="h-[var(--workspace-titlebar-scroll-fade-height)]" />
 );
@@ -253,7 +253,7 @@ function TimelineListFooter({ composerInset }: { readonly composerInset: number 
   return (
     <div aria-hidden>
       <div style={{ height: composerInset }} />
-      <div className="h-3 sm:h-4" />
+      <div className="h-2" />
     </div>
   );
 }
@@ -262,10 +262,9 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END = {
   animated: false,
   on: {
     dataChange: true,
-    // Composer inset changes must not move already-visible messages. New
-    // rows and row growth still keep live-follow pinned through the other
-    // triggers below.
-    footerLayout: false,
+    // The footer tracks the composer overlay exactly, so a draft growing at
+    // the live edge shifts the list up rather than covering the last rows.
+    footerLayout: true,
     itemLayout: true,
     layout: true,
   },
@@ -864,7 +863,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             onStartReachedThreshold={0.25}
             onItemSizeChanged={reportContentOverflow}
             className={cn(
-              "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
+              "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [--workspace-titlebar-scroll-fade-height:1rem] [overflow-anchor:none] sm:px-5",
               topFadeEnabled && "topbar-scroll-fade",
             )}
             ListHeaderComponent={topFadeEnabled ? TIMELINE_LIST_FADE_HEADER : TIMELINE_LIST_HEADER}
