@@ -105,6 +105,29 @@ export const ensureForkColumns = Effect.fn("ensureForkColumns")(function* () {
       ) {
         yield* sql`ALTER TABLE projection_threads ADD COLUMN goal_json TEXT`;
       }
+      // Agent-scoped detail reads filter on this side table instead of the
+      // activity payloads, which run to megabytes per row. Backfilling reads
+      // every payload once; adding a column would rewrite every row instead.
+      const activityColumns = yield* sql<{
+        name: string;
+      }>`PRAGMA table_info(projection_thread_activities)`;
+      const agentTables =
+        yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'projection_thread_activity_agents'`;
+      if (activityColumns.length > 0 && agentTables.length === 0) {
+        yield* sql`CREATE TABLE projection_thread_activity_agents (
+          activity_id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          sequence INTEGER
+        )`;
+        yield* sql`CREATE INDEX idx_projection_thread_activity_agents_thread_agent_sequence
+          ON projection_thread_activity_agents (thread_id, agent_id, sequence)`;
+        yield* sql`INSERT INTO projection_thread_activity_agents (activity_id, thread_id, agent_id, sequence)
+          SELECT activity_id, thread_id, json_extract(payload_json, '$.agentId'), sequence
+          FROM projection_thread_activities
+          WHERE json_type(payload_json, '$.agentId') = 'text'
+            AND length(trim(json_extract(payload_json, '$.agentId'))) > 0`;
+      }
     }),
   );
 });

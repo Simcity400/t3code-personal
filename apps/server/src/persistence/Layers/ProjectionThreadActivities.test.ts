@@ -13,6 +13,43 @@ const layer = it.layer(
 );
 
 layer("ProjectionThreadActivityRepository", (it) => {
+  it.effect("mirrors agent attribution into the side table and clears it with the thread", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadActivityRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-agent-attribution");
+      const base = {
+        threadId,
+        turnId: null,
+        tone: "tool" as const,
+        kind: "tool.completed",
+        summary: "ran",
+        createdAt: "2026-03-01T00:00:00.000Z",
+      };
+      yield* repository.upsert({
+        ...base,
+        activityId: EventId.make("root-tool"),
+        payload: { itemType: "command_execution" },
+        sequence: 1,
+      });
+      yield* repository.upsert({
+        ...base,
+        activityId: EventId.make("agent-tool"),
+        payload: { itemType: "command_execution", agentId: "worker" },
+        sequence: 2,
+      });
+      assert.deepEqual(
+        yield* sql`SELECT activity_id, agent_id, sequence FROM projection_thread_activity_agents WHERE thread_id = ${threadId}`,
+        [{ activity_id: "agent-tool", agent_id: "worker", sequence: 2 }],
+      );
+      yield* repository.deleteByThreadId({ threadId });
+      assert.deepEqual(
+        yield* sql`SELECT activity_id FROM projection_thread_activity_agents WHERE thread_id = ${threadId}`,
+        [],
+      );
+    }),
+  );
+
   it.effect("reads only the latest matching task activity", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadActivityRepository;

@@ -1,4 +1,8 @@
-import type { OrchestrationThreadDetailSnapshot, ThreadId } from "@t3tools/contracts";
+import type {
+  OrchestrationThreadDetailSnapshot,
+  ThreadDetailAgentScope,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -31,6 +35,8 @@ const DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS = 6_000;
 export interface ThreadSnapshotWindow {
   readonly turnLimit: number;
   readonly beforeCursor?: string;
+  /** Only sent to servers that advertise `threadAgentScoping`. */
+  readonly agentScope?: ThreadDetailAgentScope;
 }
 
 export const fetchEnvironmentThreadSnapshot = Effect.fn(
@@ -56,6 +62,9 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
           ...(input.window !== undefined ? { turnLimit: input.window.turnLimit } : {}),
           ...(input.window?.beforeCursor !== undefined
             ? { beforeCursor: input.window.beforeCursor }
+            : {}),
+          ...(input.window?.agentScope !== undefined
+            ? { agentScope: input.window.agentScope }
             : {}),
         },
         headers,

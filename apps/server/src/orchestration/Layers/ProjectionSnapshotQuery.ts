@@ -13,6 +13,8 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
+  ThreadDetailAgentScope,
+  threadDetailScopeAgentId,
   ProjectScript,
   ProjectIconOverride,
   TurnId,
@@ -68,6 +70,10 @@ import {
   encodeThreadDetailPageCursor,
 } from "../threadDetailCursor.ts";
 import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
+import {
+  AGENT_DETAIL_ACTIVITY_KINDS,
+  activityMatchesThreadDetailScope,
+} from "../threadDetailScope.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
@@ -202,6 +208,10 @@ const ProjectionImportedAgentSessionSourcesRowSchema = Schema.Struct({
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
 });
+const ThreadScopedLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  agentScope: Schema.optional(ThreadDetailAgentScope),
+});
 const TurnStartMessageLookupInput = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
@@ -242,6 +252,10 @@ const ThreadTurnRangeLookupInput = Schema.Struct({
   minTurnKey: Schema.String,
   beforeAnchorAt: Schema.String,
   beforeTurnKey: Schema.String,
+});
+const ThreadTurnRangeScopedLookupInput = Schema.Struct({
+  ...ThreadTurnRangeLookupInput.fields,
+  agentScope: Schema.optional(ThreadDetailAgentScope),
 });
 const ProjectionProjectLookupRowSchema = ProjectionProjectDbRowSchema;
 const ProjectionThreadIdLookupRowSchema = Schema.Struct({
@@ -1308,10 +1322,38 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     `,
   });
 
+  // Agent scoping never touches activity payloads: attribution comes from
+  // the projection_thread_activity_agents side table (see ForkCompatibility),
+  // and the root condition only reads `kind` before excluding a row.
+  const messageScopeCondition = (scope: ThreadDetailAgentScope | undefined) => {
+    if (scope === undefined) return sql`1 = 1`;
+    const agentId = threadDetailScopeAgentId(scope);
+    return agentId === null ? sql`agent_id IS NULL` : sql`agent_id = ${agentId}`;
+  };
+  const activityScopeCondition = (threadId: string, scope: ThreadDetailAgentScope | undefined) => {
+    if (scope === undefined) return sql`1 = 1`;
+    const agentId = threadDetailScopeAgentId(scope);
+    // The agent branch drives from the side table's (thread, agent) index so
+    // one transcript costs its own rows, not a scan of the thread's history.
+    return agentId === null
+      ? sql`(
+            NOT ${sql.in("kind", [...AGENT_DETAIL_ACTIVITY_KINDS])}
+            OR NOT EXISTS (
+              SELECT 1 FROM projection_thread_activity_agents AS agents
+              WHERE agents.activity_id = projection_thread_activities.activity_id
+            )
+          )`
+      : sql`activity_id IN (
+            SELECT agents.activity_id FROM projection_thread_activity_agents AS agents
+            WHERE agents.thread_id = ${threadId}
+              AND agents.agent_id = ${agentId}
+          )`;
+  };
+
   const listThreadMessageRowsByThread = SqlSchema.findAll({
-    Request: ThreadIdLookupInput,
+    Request: ThreadScopedLookupInput,
     Result: ProjectionThreadMessageDbRowSchema,
-    execute: ({ threadId }) =>
+    execute: ({ threadId, agentScope }) =>
       sql`
         SELECT
           message_id AS "messageId",
@@ -1326,6 +1368,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt"
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
+          AND ${messageScopeCondition(agentScope)}
         ORDER BY created_at ASC, message_id ASC
       `,
   });
@@ -1447,13 +1490,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     );
 
   const listThreadActivityIdsByThread = SqlSchema.findAll({
-    Request: ThreadIdLookupInput,
+    Request: ThreadScopedLookupInput,
     Result: ProjectionThreadActivityIdRowSchema,
-    execute: ({ threadId }) =>
+    execute: ({ threadId, agentScope }) =>
       sql`
         SELECT activity_id AS "activityId"
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
+          AND ${activityScopeCondition(threadId, agentScope)}
         ORDER BY
           sequence DESC,
           created_at DESC,
@@ -1689,9 +1733,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   // turns around them. Proposed plans and checkpoints stay unwindowed: they
   // are metadata-scale.
   const listThreadMessageRowsByThreadWindow = SqlSchema.findAll({
-    Request: ThreadTurnRangeLookupInput,
+    Request: ThreadTurnRangeScopedLookupInput,
     Result: ProjectionThreadMessageDbRowSchema,
-    execute: ({ threadId, minAnchorAt, minTurnKey, beforeAnchorAt, beforeTurnKey }) =>
+    execute: ({ threadId, minAnchorAt, minTurnKey, beforeAnchorAt, beforeTurnKey, agentScope }) =>
       sql`
         SELECT
           message_id AS "messageId",
@@ -1706,6 +1750,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt"
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
+          AND ${messageScopeCondition(agentScope)}
           AND (
             turn_id IN (
               SELECT turn_id FROM projection_turns
@@ -1908,13 +1953,14 @@ pending_approval_requests AS (
   });
 
   const listThreadActivityIdsByThreadWindow = SqlSchema.findAll({
-    Request: ThreadTurnRangeLookupInput,
+    Request: ThreadTurnRangeScopedLookupInput,
     Result: ProjectionThreadActivityIdRowSchema,
-    execute: ({ threadId, minAnchorAt, minTurnKey, beforeAnchorAt, beforeTurnKey }) =>
+    execute: ({ threadId, minAnchorAt, minTurnKey, beforeAnchorAt, beforeTurnKey, agentScope }) =>
       sql`
         SELECT activity_id AS "activityId"
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
+          AND ${activityScopeCondition(threadId, agentScope)}
           AND (
             turn_id IN (
               SELECT turn_id FROM projection_turns
@@ -3268,11 +3314,15 @@ pending_approval_requests AS (
 
   const listProjectedThreadActivities = Effect.fn(
     "ProjectionSnapshotQuery.listProjectedThreadActivities",
-  )(function* (threadId: ThreadId, bounds: ThreadDetailBounds | undefined) {
+  )(function* (
+    threadId: ThreadId,
+    bounds: ThreadDetailBounds | undefined,
+    agentScope: ThreadDetailAgentScope | undefined,
+  ) {
     const [activityIdRows, pinnedActivityIdRows] = yield* Effect.all([
       (bounds === undefined
-        ? listThreadActivityIdsByThread({ threadId })
-        : listThreadActivityIdsByThreadWindow({ threadId, ...bounds })
+        ? listThreadActivityIdsByThread({ threadId, agentScope })
+        : listThreadActivityIdsByThreadWindow({ threadId, ...bounds, agentScope })
       ).pipe(
         Effect.mapError(
           toPersistenceSqlOrDecodeError(
@@ -3313,7 +3363,10 @@ pending_approval_requests AS (
         ),
       );
       for (const row of batchRows) {
-        activities.push(projectActivityPayload(mapThreadActivityRow(row)));
+        const activity = mapThreadActivityRow(row);
+        // Pinned requests join the page unscoped; keep only the scope's own.
+        if (!activityMatchesThreadDetailScope(activity, agentScope)) continue;
+        activities.push(projectActivityPayload(activity));
       }
     }
 
@@ -3329,11 +3382,12 @@ pending_approval_requests AS (
     threadId: ThreadId,
     bounds: ThreadDetailBounds | undefined,
     activityRead: ThreadDetailActivityRead = { mode: "raw" },
+    agentScope?: ThreadDetailAgentScope,
   ) =>
     Effect.gen(function* () {
       const activitiesEffect =
         activityRead.mode === "client"
-          ? listProjectedThreadActivities(threadId, bounds)
+          ? listProjectedThreadActivities(threadId, bounds, agentScope)
           : Effect.all([
               (activityRead.query?.activityKinds === undefined
                 ? bounds === undefined
@@ -3401,8 +3455,8 @@ pending_approval_requests AS (
           ),
         ),
         (bounds === undefined
-          ? listThreadMessageRowsByThread({ threadId })
-          : listThreadMessageRowsByThreadWindow({ threadId, ...bounds })
+          ? listThreadMessageRowsByThread({ threadId, agentScope })
+          : listThreadMessageRowsByThreadWindow({ threadId, ...bounds, agentScope })
         ).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
@@ -3556,6 +3610,7 @@ pending_approval_requests AS (
   const getThreadDetailSnapshot: ProjectionSnapshotQueryShape["getThreadDetailSnapshot"] = (
     threadId,
     window,
+    agentScope,
   ) =>
     // Read the thread detail and the snapshot sequence within a single
     // transaction so the sequence is consistent with the returned state; a
@@ -3567,9 +3622,12 @@ pending_approval_requests AS (
       .withTransaction(
         Effect.gen(function* () {
           if (window?.turnLimit === undefined) {
-            const thread = yield* getThreadDetailByIdBounded(threadId, undefined, {
-              mode: "client",
-            });
+            const thread = yield* getThreadDetailByIdBounded(
+              threadId,
+              undefined,
+              { mode: "client" },
+              agentScope,
+            );
             if (Option.isNone(thread)) {
               return Option.none<OrchestrationThreadDetailSnapshot>();
             }
@@ -3640,9 +3698,12 @@ pending_approval_requests AS (
               ? { minAnchorAt: "", minTurnKey: "", beforeAnchorAt: "", beforeTurnKey: "" }
               : undefined;
 
-          const thread = yield* getThreadDetailByIdBounded(threadId, emptyBounds ?? bounds, {
-            mode: "client",
-          });
+          const thread = yield* getThreadDetailByIdBounded(
+            threadId,
+            emptyBounds ?? bounds,
+            { mode: "client" },
+            agentScope,
+          );
           if (Option.isNone(thread)) {
             return Option.none<OrchestrationThreadDetailSnapshot>();
           }

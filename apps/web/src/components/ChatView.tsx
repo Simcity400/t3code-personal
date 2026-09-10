@@ -331,7 +331,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { useCodexGoalControls } from "./chat/useCodexGoalControls";
-import { AgentTranscript } from "./chat/AgentTranscript";
+import { ScopedAgentTranscript } from "./chat/AgentTranscript";
 import { isAgentMessage } from "@t3tools/client-runtime/state/agent-transcripts";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
@@ -8281,18 +8281,17 @@ export default function ChatView(props: ChatViewProps) {
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
         renderTranscript={(agent) => (
-          <AgentTranscript
+          <ScopedAgentTranscript
             key={agent.id}
             agent={agent}
-            messages={activeThread.messages}
-            activities={activeThread.activities}
+            environmentId={environmentId}
+            threadId={activeThread.id}
             routeThreadKey={routeThreadKey}
             activeThreadEnvironmentId={environmentId}
             markdownCwd={gitCwd ?? undefined}
             resolvedTheme={resolvedTheme}
             timestampFormat={timestampFormat}
             workspaceRoot={activeWorkspaceRoot ?? undefined}
-            loadEarlier={loadEarlierTurns}
             onUseArtifactTemplate={useArtifactTemplate}
             skills={
               activeProviderStatus

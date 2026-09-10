@@ -90,6 +90,7 @@ import {
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
 import { makeThreadLiveEventCoalescer } from "./orchestration/ThreadLiveEventCoalescer.ts";
+import { eventMatchesThreadDetailScope } from "./orchestration/threadDetailScope.ts";
 import { makeLiveStreamBudget, type RetainedLiveItem } from "./orchestration/LiveStreamBudget.ts";
 import {
   cleanupFailedUploadedAttachments,
@@ -1322,6 +1323,7 @@ const makeWsRpcLayer = (
                 }),
             threadResumeCompletionMarker: true,
             threadSnapshotPagination: true,
+            threadAgentScoping: true,
           };
         });
 
@@ -1641,7 +1643,8 @@ const makeWsRpcLayer = (
               const isThisThreadDetailEvent = (event: OrchestrationEvent) =>
                 event.aggregateKind === "thread" &&
                 event.aggregateId === input.threadId &&
-                isThreadDetailEvent(event);
+                isThreadDetailEvent(event) &&
+                eventMatchesThreadDetailScope(event, input.agentScope);
 
               const liveStream = orchestrationEngine.streamDomainEvents.pipe(
                 Stream.filter(isThisThreadDetailEvent),
@@ -1753,6 +1756,7 @@ const makeWsRpcLayer = (
                   // pre-pagination clients) get the full thread, since they
                   // have no way to load older pages.
                   input.turnLimit === undefined ? undefined : { turnLimit: input.turnLimit },
+                  input.agentScope,
                 )
                 .pipe(
                   Effect.mapError(

@@ -23,6 +23,7 @@ import type {
   OrchestrationThreadActivity,
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadDetailWindow,
+  ThreadDetailAgentScope,
   OrchestrationThreadShell,
   ProjectId,
   ThreadId,
@@ -255,6 +256,7 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDetailSnapshot: (
     threadId: ThreadId,
     window?: OrchestrationThreadDetailWindow,
+    agentScope?: ThreadDetailAgentScope,
   ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, ProjectionRepositoryError>;
 }
 

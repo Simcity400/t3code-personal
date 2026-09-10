@@ -3396,3 +3396,141 @@ it.effect("omits foreign-host PRs from legacy snapshots while preserving native 
     }
   }).pipe(Effect.provide(layer));
 });
+
+projectionSnapshotLayer("ProjectionSnapshotQuery agent scoping", (it) => {
+  const threadS = ThreadId.make("thread-s");
+  // One turn with a root reply, two subagents, and their attribution rows.
+  const seedScopedThread = Effect.fnUntraced(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DELETE FROM projection_projects`;
+    yield* sql`DELETE FROM projection_threads`;
+    yield* sql`DELETE FROM projection_turns`;
+    yield* sql`DELETE FROM projection_thread_messages`;
+    yield* sql`DELETE FROM projection_thread_activities`;
+    yield* sql`DELETE FROM projection_thread_activity_agents`;
+    yield* sql`DELETE FROM projection_state`;
+    yield* sql`
+      INSERT INTO projection_projects (
+        project_id, title, workspace_root, scripts_json, created_at, updated_at, deleted_at
+      )
+      VALUES ('project-s', 'Scoped', '/tmp/project-s', '[]',
+        '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z', NULL)
+    `;
+    yield* sql`
+      INSERT INTO projection_threads (
+        thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+        latest_turn_id, pending_approval_count, pending_user_input_count,
+        has_actionable_proposed_plan, created_at, updated_at, deleted_at
+      )
+      VALUES ('thread-s', 'project-s', 'Scoped thread',
+        '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+        'turn-1', 0, 0, 0, '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:10.000Z', NULL)
+    `;
+    yield* sql`
+      INSERT INTO projection_turns (
+        thread_id, turn_id, pending_message_id, state, requested_at, started_at, completed_at,
+        checkpoint_files_json
+      )
+      VALUES ('thread-s', 'turn-1', 'user-msg-1', 'completed', '2026-03-01T00:00:00.000Z',
+        '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:09.000Z', '[]')
+    `;
+    const messages = [
+      ["user-msg-1", null, "user", null],
+      ["root-reply", "turn-1", "assistant", null],
+      ["worker-reply", "turn-1", "assistant", "worker"],
+      ["other-reply", "turn-1", "assistant", "other"],
+    ] as const;
+    for (const [id, turn, role, agentId] of messages) {
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, agent_id, is_streaming, created_at, updated_at
+        )
+        VALUES (${id}, 'thread-s', ${turn}, ${role}, ${"text of " + id}, ${agentId}, 0,
+          '2026-03-01T00:00:01.000Z', '2026-03-01T00:00:01.000Z')
+      `;
+    }
+    const activities = [
+      ["root-tool", "tool.completed", null, 1],
+      ["worker-tool-started", "tool.started", "worker", 2],
+      ["worker-tool", "tool.completed", "worker", 3],
+      ["worker-task", "task.updated", "worker", 4],
+      ["other-tool", "tool.completed", "other", 5],
+    ] as const;
+    for (const [id, kind, agentId, sequence] of activities) {
+      const payload =
+        agentId === null
+          ? '{"itemType":"command_execution"}'
+          : `{"itemType":"command_execution","agentId":"${agentId}"}`;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        )
+        VALUES (${id}, 'thread-s', 'turn-1', 'tool', ${kind}, ${kind}, ${payload}, ${sequence},
+          '2026-03-01T00:00:02.000Z')
+      `;
+      if (agentId !== null) {
+        yield* sql`
+          INSERT INTO projection_thread_activity_agents (activity_id, thread_id, agent_id, sequence)
+          VALUES (${id}, 'thread-s', ${agentId}, ${sequence})
+        `;
+      }
+    }
+    for (const projector of Object.values(ORCHESTRATION_PROJECTOR_NAMES)) {
+      yield* sql`
+        INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        VALUES (${projector}, 7, '2026-03-01T00:00:10.000Z')
+      `;
+    }
+  });
+  const ids = (rows: ReadonlyArray<{ id: string }>) => rows.map((row) => row.id).toSorted();
+
+  for (const window of [undefined, { turnLimit: 1 }]) {
+    const label = window === undefined ? "full" : "windowed";
+    it.effect(`${label} root scope keeps agent lifecycle rows but drops agent transcripts`, () =>
+      Effect.gen(function* () {
+        yield* seedScopedThread();
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(threadS, window, "root");
+        assert.equal(snapshot._tag, "Some");
+        if (snapshot._tag === "Some") {
+          assert.deepEqual(ids(snapshot.value.thread.messages), ["root-reply", "user-msg-1"]);
+          assert.deepEqual(ids(snapshot.value.thread.activities), ["root-tool", "worker-task"]);
+        }
+      }),
+    );
+
+    it.effect(`${label} agent scope returns only that agent's transcript`, () =>
+      Effect.gen(function* () {
+        yield* seedScopedThread();
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(
+          threadS,
+          window,
+          "agent:worker",
+        );
+        assert.equal(snapshot._tag, "Some");
+        if (snapshot._tag === "Some") {
+          assert.deepEqual(ids(snapshot.value.thread.messages), ["worker-reply"]);
+          assert.deepEqual(ids(snapshot.value.thread.activities), [
+            "worker-task",
+            "worker-tool",
+            "worker-tool-started",
+          ]);
+        }
+      }),
+    );
+  }
+
+  it.effect("no scope keeps the pre-scoping full read", () =>
+    Effect.gen(function* () {
+      yield* seedScopedThread();
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(threadS);
+      assert.equal(snapshot._tag, "Some");
+      if (snapshot._tag === "Some") {
+        assert.equal(snapshot.value.thread.messages.length, 4);
+        assert.equal(snapshot.value.thread.activities.length, 5);
+      }
+    }),
+  );
+});

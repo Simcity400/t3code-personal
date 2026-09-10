@@ -9180,6 +9180,114 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("subscribeThread scopes the snapshot and drops attributed live events", () =>
+    Effect.gen(function* () {
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      let requestedScope: string | undefined;
+      const agentEvent = makeLiveToolActivityEvent(2, "tool.completed", {
+        toolCallId: "call-agent",
+      });
+      const attributed: OrchestrationEvent = {
+        ...agentEvent,
+        payload: {
+          threadId: defaultThreadId,
+          activity: {
+            ...agentEvent.payload.activity,
+            payload: {
+              ...(agentEvent.payload.activity.payload as Record<string, unknown>),
+              agentId: "worker",
+            },
+          },
+        },
+      };
+      const rootEvent = makeLiveToolActivityEvent(3, "tool.completed", { toolCallId: "call-root" });
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.concat(Stream.make(attributed, rootEvent), Stream.never),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: (_threadId, _window, agentScope) => {
+              requestedScope = agentScope;
+              return Effect.succeed(Option.some({ snapshotSequence: 1, thread }));
+            },
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            agentScope: "root",
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+      );
+      assert.equal(requestedScope, "root");
+      assert.deepEqual(
+        items.map((item) => (item.kind === "event" ? item.event.sequence : item.kind)),
+        ["snapshot", 3, "synchronized"],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("subscribeThread applies the agent scope to catch-up replay", () =>
+    Effect.gen(function* () {
+      const agentEvent = makeLiveToolActivityEvent(2, "tool.completed", {
+        toolCallId: "call-agent",
+      });
+      const attributed: OrchestrationEvent = {
+        ...agentEvent,
+        payload: {
+          threadId: defaultThreadId,
+          activity: {
+            ...agentEvent.payload.activity,
+            payload: {
+              ...(agentEvent.payload.activity.payload as Record<string, unknown>),
+              agentId: "worker",
+            },
+          },
+        },
+      };
+      const rootEvent = makeLiveToolActivityEvent(3, "tool.completed", { toolCallId: "call-root" });
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(3),
+            getThreadReplayStats: () =>
+              Effect.succeed({ eventCount: 2, payloadBytes: 1_000, hasCreateEvent: false }),
+            readThreadEvents: () => Stream.make(attributed, rootEvent),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () => Effect.die("catch-up must not load a snapshot"),
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 1,
+            agentScope: "root",
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+      );
+      assert.deepEqual(
+        items.map((item) => (item.kind === "event" ? item.event.sequence : item.kind)),
+        [3, "synchronized"],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   for (const { createBeforeDelete, oversized } of [
     { createBeforeDelete: false, oversized: false },
     { createBeforeDelete: true, oversized: false },

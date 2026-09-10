@@ -32,10 +32,11 @@ const EMPTY_THREAD_STATE_ATOM = Atom.make(AsyncResult.success(EMPTY_ENVIRONMENT_
 export function useEnvironmentThread(
   environmentId: EnvironmentId | null,
   threadId: ThreadId | null,
+  agentId?: string,
 ): EnvironmentThreadState {
   const result = useAtomValue(
     environmentId !== null && threadId !== null
-      ? environmentThreads.stateAtom(environmentId, threadId)
+      ? environmentThreads.stateAtom(environmentId, threadId, agentId)
       : EMPTY_THREAD_STATE_ATOM,
   );
   return Option.getOrElse(

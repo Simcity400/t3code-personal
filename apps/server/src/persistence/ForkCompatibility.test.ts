@@ -102,4 +102,21 @@ it.layer(NodeSqliteClient.layerMemory())("upstream database compatibility", (it)
       );
     }),
   );
+
+  it.effect("backfills activity attribution for agent-scoped reads", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+      yield* sql`DROP TABLE projection_thread_activity_agents`;
+      yield* sql`INSERT INTO projection_thread_activities (activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at)
+        VALUES ('root-tool', 'thread-a', 'tool', 'tool.completed', 'root', '{"itemType":"command_execution"}', 1, '2026-01-01T00:00:00.000Z'),
+          ('agent-tool', 'thread-a', 'tool', 'tool.completed', 'agent', '{"itemType":"command_execution","agentId":"worker"}', 2, '2026-01-01T00:00:00.000Z'),
+          ('blank-agent', 'thread-a', 'tool', 'tool.completed', 'blank', '{"agentId":" "}', 3, '2026-01-01T00:00:00.000Z')`;
+      assert.deepEqual(yield* runMigrations(), []);
+      assert.deepEqual(
+        yield* sql`SELECT activity_id, agent_id, sequence FROM projection_thread_activity_agents ORDER BY sequence`,
+        [{ activity_id: "agent-tool", agent_id: "worker", sequence: 2 }],
+      );
+    }),
+  );
 });

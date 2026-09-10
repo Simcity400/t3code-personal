@@ -1,6 +1,6 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import { NonNegativeInt } from "@t3tools/contracts";
+import { NonNegativeInt, threadActivityAgentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -189,6 +189,26 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  // Attribution side table for agent-scoped reads; see ForkCompatibility.
+  const upsertProjectionThreadActivityAgentRow = SqlSchema.void({
+    Request: ProjectionThreadActivity,
+    execute: (row) =>
+      sql`
+        INSERT INTO projection_thread_activity_agents (activity_id, thread_id, agent_id, sequence)
+        VALUES (
+          ${row.activityId},
+          ${row.threadId},
+          ${threadActivityAgentId(row.payload) ?? ""},
+          ${row.sequence ?? null}
+        )
+        ON CONFLICT (activity_id)
+        DO UPDATE SET
+          thread_id = excluded.thread_id,
+          agent_id = excluded.agent_id,
+          sequence = excluded.sequence
+      `,
+  });
+
   const deleteProjectionThreadActivityRows = SqlSchema.void({
     Request: DeleteProjectionThreadActivitiesInput,
     execute: ({ threadId }) =>
@@ -198,8 +218,22 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const deleteProjectionThreadActivityAgentRows = SqlSchema.void({
+    Request: DeleteProjectionThreadActivitiesInput,
+    execute: ({ threadId }) =>
+      sql`
+        DELETE FROM projection_thread_activity_agents
+        WHERE thread_id = ${threadId}
+      `,
+  });
+
   const upsert: ProjectionThreadActivityRepositoryShape["upsert"] = (row) =>
     upsertProjectionThreadActivityRow(row).pipe(
+      Effect.andThen(
+        threadActivityAgentId(row.payload) === null
+          ? Effect.void
+          : upsertProjectionThreadActivityAgentRow(row),
+      ),
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
           "ProjectionThreadActivityRepository.upsert:query",
@@ -246,6 +280,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
 
   const deleteByThreadId: ProjectionThreadActivityRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadActivityRows(input).pipe(
+      Effect.andThen(deleteProjectionThreadActivityAgentRows(input)),
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadActivityRepository.deleteByThreadId:query"),
       ),

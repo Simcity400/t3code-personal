@@ -36,6 +36,7 @@ source alone does not explain. Most code changes do not need an internal documen
 - [Architecture overview](./internals/overview.md)
 - [Glossary](./internals/glossary.md)
 - [Connection runtime](./internals/connection-runtime.md)
+- [Thread detail agent scoping](./internals/thread-detail-scoping.md)
 - [Providers](./internals/providers.md)
 - [Model classification](./internals/model-manifest.md)
 - [Remote environments](./internals/remote.md)

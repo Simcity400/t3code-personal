@@ -37,6 +37,7 @@ import {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
+  ThreadDetailAgentScope,
 } from "./orchestration.ts";
 import {
   PullRequestDiffInput,
@@ -502,6 +503,7 @@ const EnvironmentOrchestrationThreadSnapshotQuery = {
     Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
   ),
   beforeCursor: Schema.optional(TrimmedNonEmptyString),
+  agentScope: Schema.optional(ThreadDetailAgentScope),
 };
 
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")

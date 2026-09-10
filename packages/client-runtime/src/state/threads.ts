@@ -6,6 +6,8 @@ import {
   type OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadStreamItem,
   type ThreadId as ThreadIdType,
+  agentThreadDetailScope,
+  type ThreadDetailAgentScope,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -115,8 +117,45 @@ class ThreadOlderTurnRequests extends Context.Reference<ThreadOlderTurnRequestRe
 export function requestOlderThreadTurns(
   environmentId: EnvironmentIdType,
   threadId: ThreadIdType,
+  agentId?: string,
 ): boolean {
-  return defaultOlderTurnRequestRegistry.request(threadKey({ environmentId, threadId }));
+  return defaultOlderTurnRequestRegistry.request(
+    threadStateKey(environmentId, threadId, agentScopeForAgent(agentId)),
+  );
+}
+
+/** The main transcript reads the root scope; an agent transcript reads its own. */
+function agentScopeForAgent(agentId: string | undefined): ThreadDetailAgentScope {
+  return agentId === undefined ? "root" : agentThreadDetailScope(agentId);
+}
+
+/**
+ * Registry and atom key. Root and unscoped state share the plain thread key:
+ * both describe the main transcript, and callers created before scoping
+ * (tests, older code paths) keep resolving the same machine. Agent scopes get
+ * their own key so each open transcript is its own state machine.
+ */
+function threadStateKey(
+  environmentId: EnvironmentIdType,
+  threadId: ThreadIdType,
+  agentScope: ThreadDetailAgentScope | undefined,
+): string {
+  const key = threadKey({ environmentId, threadId });
+  return agentScope === undefined || agentScope === "root" ? key : `${key}\u0000${agentScope}`;
+}
+
+function parseThreadStateKey(key: string): {
+  readonly environmentId: EnvironmentIdType;
+  readonly threadId: ThreadIdType;
+  readonly agentScope: ThreadDetailAgentScope | undefined;
+} {
+  const first = key.indexOf("\u0000");
+  const second = first < 0 ? -1 : key.indexOf("\u0000", first + 1);
+  const ref = parseThreadKey(second < 0 ? key : key.slice(0, second));
+  return {
+    ...ref,
+    agentScope: second < 0 ? "root" : (key.slice(second + 1) as ThreadDetailAgentScope),
+  };
 }
 
 function formatThreadError(cause: Cause.Cause<unknown>): string {
@@ -178,7 +217,11 @@ function cachedThreadState(value: EnvironmentThreadState): EnvironmentThreadStat
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
   threadId: ThreadIdType,
   resumeCache?: ThreadResumeCache,
+  // Undefined keeps the pre-scoping full read. Agent transcripts are never
+  // cached: they are opened on demand and the root cache stays the thread's.
+  agentScope?: ThreadDetailAgentScope,
 ) {
+  const cacheable = agentScope === undefined || agentScope === "root";
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
   const snapshotLoader = yield* ThreadSnapshotLoader;
@@ -188,7 +231,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const owner = {};
   if (resumeCache) resumeCache.owner = owner;
   const cached =
-    retained === undefined
+    retained === undefined && cacheable
       ? yield* cache.loadThread(environmentId, threadId).pipe(
           Effect.catch((error) =>
             Effect.logWarning("Could not load cached thread.").pipe(
@@ -258,6 +301,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   // from the session config. Gates loadOlderTurns so a reconnect to a
   // pre-pagination server never sends unsupported window parameters.
   const paginationSupported = yield* Ref.make(false);
+  // The scope actually negotiated with the connected server, if any.
+  const requestedScope = yield* Ref.make<ThreadDetailAgentScope | undefined>(undefined);
   // An older page whose thread watermark is ahead of the live state, parked
   // until the subscription catches up (see mergeOlderPage's caller). At most
   // one can exist because loadOlderTurns no-ops while loadingOlder is true.
@@ -336,6 +381,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     // window parameters to a server that may not accept them (review
     // finding). makeSubscribeInput re-sets it from the next session's config.
     yield* Ref.set(paginationSupported, false);
+    yield* Ref.set(requestedScope, undefined);
     yield* SubscriptionRef.update(state, (current) => ({
       ...current,
       status: current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
@@ -374,7 +420,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     // Active threads can update many times per second and retain large tool
     // payloads. The server remains the source of truth while a turn is active;
     // persist once it settles so cache encoding stays off the streaming path.
-    if (shouldPersistThread(thread)) {
+    if (cacheable && shouldPersistThread(thread)) {
       const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
       const currentPage = yield* SubscriptionRef.get(state).pipe(Effect.map((value) => value.page));
       yield* Queue.offer(persistence, {
@@ -559,7 +605,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     // Persist the widened window under the *loaded* watermark: the merged
     // content is only known consistent with the state it merged into, not
     // with the page's own (possibly newer) sequence.
-    if (merged !== null && shouldPersistThread(merged)) {
+    if (merged !== null && cacheable && shouldPersistThread(merged)) {
       const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
       yield* Queue.offer(persistence, {
         snapshotSequence,
@@ -590,9 +636,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       ...value,
       page: Option.map(value.page, (existing) => ({ ...existing, loadingOlder: true })),
     }));
+    const olderScope = yield* Ref.get(requestedScope);
     const window: ThreadSnapshotWindow = {
       turnLimit: OLDER_THREAD_PAGE_USER_TURN_LIMIT,
       beforeCursor: page.beforeCursor,
+      ...(olderScope !== undefined ? { agentScope: olderScope } : {}),
     };
     const response = yield* snapshotLoader.load(prepared, threadId, window);
     // Staleness check and merge run under the same lock as stream-item
@@ -686,6 +734,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
               ({}) as {
                 threadResumeCompletionMarker?: boolean;
                 threadSnapshotPagination?: boolean;
+                threadAgentScoping?: boolean;
               },
           ),
         );
@@ -695,6 +744,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         // such a server would silently hide history.
         const supportsPagination = config.threadSnapshotPagination === true;
         yield* Ref.set(paginationSupported, supportsPagination);
+        // Scoping shipped with pagination; a server without either gets the
+        // pre-scoping full read, which the views filter themselves.
+        const scope =
+          supportsPagination && config.threadAgentScoping === true ? agentScope : undefined;
+        yield* Ref.set(requestedScope, scope);
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* markSynchronizing;
         yield* Ref.set(resumingLive, false);
@@ -739,7 +793,12 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           const httpSnapshot = yield* snapshotLoader.load(
             prepared,
             threadId,
-            supportsPagination ? { turnLimit: INITIAL_THREAD_USER_TURN_LIMIT } : undefined,
+            supportsPagination
+              ? {
+                  turnLimit: INITIAL_THREAD_USER_TURN_LIMIT,
+                  ...(scope !== undefined ? { agentScope: scope } : {}),
+                }
+              : undefined,
           );
           if (Option.isSome(httpSnapshot)) {
             yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
@@ -765,6 +824,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           // the gap is too large) should be windowed the same as the HTTP
           // path; without this a resume failure re-downloads the full thread.
           ...(supportsPagination ? { turnLimit: INITIAL_THREAD_USER_TURN_LIMIT } : {}),
+          ...(scope !== undefined ? { agentScope: scope } : {}),
         };
       }),
       {
@@ -787,7 +847,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Effect.forkScoped,
   );
   const deregister = olderTurnRequestRegistry.register(
-    threadKey({ environmentId, threadId }),
+    threadStateKey(environmentId, threadId, agentScope),
     () => {
       Queue.offerUnsafe(olderTurnRequests, undefined);
     },
@@ -800,7 +860,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       return Option.match(current.data, {
         onNone: () => Effect.void,
         onSome: (thread) =>
-          shouldPersistThread(thread)
+          cacheable && shouldPersistThread(thread)
             ? persist({
                 snapshotSequence,
                 thread,
@@ -827,12 +887,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 function threadStateChanges(
   environmentId: EnvironmentIdType,
   threadId: ThreadIdType,
-  resumeCache?: ThreadResumeCache,
+  resumeCache: ThreadResumeCache | undefined,
+  agentScope: ThreadDetailAgentScope | undefined,
 ) {
   return followStreamInEnvironment(
     environmentId,
     Stream.unwrap(
-      makeEnvironmentThreadState(threadId, resumeCache).pipe(Effect.map(SubscriptionRef.changes)),
+      makeEnvironmentThreadState(threadId, resumeCache, agentScope).pipe(
+        Effect.map(SubscriptionRef.changes),
+      ),
     ),
   );
 }
@@ -855,14 +918,14 @@ export function createEnvironmentThreadStateAtoms<R, E>(
     ),
   );
   const family = Atom.family((key: string) => {
-    const { environmentId, threadId } = parseThreadKey(key);
+    const { environmentId, threadId, agentScope } = parseThreadStateKey(key);
     const resumeAtom = resumeFamily(key);
     return runtime
       .atom(
         (get) => {
           get.mount(resumeAtom);
           const resume = get.once(resumeAtom);
-          const live = threadStateChanges(environmentId, threadId, resume);
+          const live = threadStateChanges(environmentId, threadId, resume, agentScope);
           return resume.snapshot === undefined
             ? live
             : Stream.concat(Stream.succeed(cachedThreadState(resume.snapshot.state)), live);
@@ -875,8 +938,9 @@ export function createEnvironmentThreadStateAtoms<R, E>(
   });
 
   return {
-    stateAtom: (environmentId: EnvironmentIdType, threadId: ThreadIdType) =>
-      family(threadKey({ environmentId, threadId })),
+    /** Without an agent the atom is the main transcript (root scope on scoping servers). */
+    stateAtom: (environmentId: EnvironmentIdType, threadId: ThreadIdType, agentId?: string) =>
+      family(threadStateKey(environmentId, threadId, agentScopeForAgent(agentId))),
   };
 }
 

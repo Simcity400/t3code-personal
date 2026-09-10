@@ -76,6 +76,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
                       ? { beforeCursor: args.payload.beforeCursor }
                       : {}),
                   },
+              args.payload.agentScope,
             )
             .pipe(
               Effect.catch((cause) =>

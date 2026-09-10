@@ -920,8 +920,39 @@ export const OrchestrationSubscribeShellInput = Schema.Struct({
 });
 export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShellInput.Type;
 
+/**
+ * Scopes a thread detail read or subscription to one agent's transcript.
+ * `root` omits subagent messages and subagent tool calls while keeping task
+ * lifecycle rows, so agent rosters still fold; `agent:<id>` returns only that
+ * agent's messages and activities. Absent reads everything, preserving the
+ * behavior of clients from before scoping.
+ */
+export const ThreadDetailAgentScope = Schema.Union([
+  Schema.Literal("root"),
+  Schema.TemplateLiteral(["agent:", Schema.String]),
+]);
+export type ThreadDetailAgentScope = typeof ThreadDetailAgentScope.Type;
+
+export function agentThreadDetailScope(agentId: string): ThreadDetailAgentScope {
+  return `agent:${agentId}`;
+}
+
+/** The agent a scope selects, or null for the root transcript. */
+export function threadDetailScopeAgentId(scope: ThreadDetailAgentScope): string | null {
+  return scope === "root" ? null : scope.slice("agent:".length);
+}
+
+/** The subagent an activity payload is attributed to, or null for root activity. */
+export function threadActivityAgentId(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const agentId = (payload as { agentId?: unknown }).agentId;
+  return typeof agentId === "string" && agentId.trim().length > 0 ? agentId : null;
+}
+
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
+  /** Restricts the snapshot, catch-up replay, and live events to one agent scope. */
+  agentScope: Schema.optionalKey(ThreadDetailAgentScope),
   /**
    * When provided, the server skips the initial snapshot frame and instead
    * replays events after this sequence before streaming live events. Clients

@@ -38,7 +38,8 @@ import { buildThreadFeed } from "../../lib/threadActivity";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useRemoteEnvironmentRuntime } from "../../state/use-remote-environment-registry";
 import { useThreadDetail } from "../../state/use-thread-detail";
-import { useProject } from "../../state/entities";
+import { useEnvironmentThread } from "../../state/threads";
+import { useProject, useServerConfigs } from "../../state/entities";
 import { ThreadFeed } from "../threads/ThreadFeed";
 import { projectThreadContentPresentation } from "../threads/threadContentPresentation";
 
@@ -262,12 +263,32 @@ export function ThreadAgentsRouteScreen(props: StaticScreenProps<ThreadParams>) 
 export function ThreadAgentTranscriptRouteScreen(
   props: StaticScreenProps<ThreadParams & { readonly agentId: string }>,
 ) {
-  const { environmentId, threadId, thread, agents, presentation, loadEarlier, workspaceRoot } =
-    useAgentThread(props.route.params);
+  const { environmentId, threadId, agents, workspaceRoot } = useAgentThread(props.route.params);
   const agentId = props.route.params.agentId;
   const agent = agents.find((entry) => entry.id === agentId);
-  const messages = thread?.messages;
-  const activities = thread?.activities;
+  // The agent's own scope, opened on demand. A server without scoping already
+  // streams every agent on the root thread, so read it there instead of
+  // opening a second full subscription.
+  const scopedAgentId =
+    useServerConfigs().get(environmentId)?.threadAgentScoping === true ? agentId : undefined;
+  const scopedState = useEnvironmentThread(environmentId, threadId, scopedAgentId);
+  const scopedThread = Option.getOrNull(scopedState.data);
+  const runtime = useRemoteEnvironmentRuntime(environmentId);
+  const presentation = projectThreadContentPresentation({
+    hasDetail: scopedThread !== null,
+    detailError: Option.getOrNull(scopedState.error),
+    detailDeleted: scopedState.status === "deleted",
+    connectionState: runtime?.connectionState ?? "available",
+  });
+  const loadEarlier = threadHasOlderTurns(scopedState)
+    ? {
+        cursor: Option.getOrNull(scopedState.page)?.beforeCursor ?? null,
+        loading: Option.isSome(scopedState.page) && scopedState.page.value.loadingOlder,
+        onLoadEarlier: () => requestOlderThreadTurns(environmentId, threadId, scopedAgentId),
+      }
+    : null;
+  const messages = scopedThread?.messages;
+  const activities = scopedThread?.activities;
   const scoped = useMemo(
     () => selectAgentTranscript(messages ?? [], activities ?? [], agentId),
     [messages, activities, agentId],

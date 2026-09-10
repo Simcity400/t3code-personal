@@ -10,6 +10,7 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadStreamItem,
+  type ThreadDetailAgentScope,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -133,6 +134,8 @@ type LoaderResponse = Option.Option<OrchestrationThreadDetailSnapshot>;
 
 const makeHarness = Effect.fn("TestThreadPagination.makeHarness")(function* (options?: {
   readonly paginationCapability?: boolean;
+  readonly scopingCapability?: boolean;
+  readonly agentScope?: ThreadDetailAgentScope;
   readonly initialResponse?: LoaderResponse;
   /** Cached snapshot returned by the cache store (simulates a warm cache). */
   readonly cached?: OrchestrationThreadDetailSnapshot;
@@ -142,6 +145,7 @@ const makeHarness = Effect.fn("TestThreadPagination.makeHarness")(function* (opt
   const loaderWindows = yield* Ref.make<ReadonlyArray<ThreadSnapshotWindow | undefined>>([]);
   const lastSubscribeInput = yield* Ref.make<Record<string, unknown> | undefined>(undefined);
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationThreadDetailSnapshot>>([]);
+  const cacheLoads = yield* Ref.make(0);
   // Older-page responses resolve through deferreds so tests can interleave
   // live events with an in-flight page fetch.
   const pendingPageResponses = yield* Queue.unbounded<Deferred.Deferred<LoaderResponse>>();
@@ -156,6 +160,7 @@ const makeHarness = Effect.fn("TestThreadPagination.makeHarness")(function* (opt
     client,
     initialConfig: Effect.succeed({
       threadSnapshotPagination: options?.paginationCapability !== false,
+      threadAgentScoping: options?.scopingCapability === true,
     } as never),
     subscribeServerConfig: (input) => client.subscribeServerConfig(input),
     ready: Effect.void,
@@ -196,7 +201,9 @@ const makeHarness = Effect.fn("TestThreadPagination.makeHarness")(function* (opt
     loadShell: () => Effect.succeed(Option.none()),
     saveShell: () => Effect.void,
     loadThread: () =>
-      Effect.succeed(options?.cached !== undefined ? Option.some(options.cached) : Option.none()),
+      Ref.update(cacheLoads, (count) => count + 1).pipe(
+        Effect.as(options?.cached !== undefined ? Option.some(options.cached) : Option.none()),
+      ),
     saveThread: (_environmentId, thread) =>
       Ref.update(savedThreads, (current) => [...current, thread]),
     removeThread: () => Effect.void,
@@ -208,7 +215,11 @@ const makeHarness = Effect.fn("TestThreadPagination.makeHarness")(function* (opt
     clearVcsRefs: () => Effect.void,
     clear: () => Effect.void,
   });
-  const threadState = yield* makeEnvironmentThreadState(THREAD_ID).pipe(
+  const threadState = yield* makeEnvironmentThreadState(
+    THREAD_ID,
+    undefined,
+    options?.agentScope,
+  ).pipe(
     Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
     Effect.provideService(Persistence.EnvironmentCacheStore, cache),
     Effect.provideService(ThreadSnapshotLoader, snapshotLoader),
@@ -233,6 +244,7 @@ const makeHarness = Effect.fn("TestThreadPagination.makeHarness")(function* (opt
     loaderWindows,
     lastSubscribeInput,
     savedThreads,
+    cacheLoads,
     threadState,
   };
 });
@@ -315,6 +327,56 @@ describe("thread pagination state", () => {
       expect(windows[0]).toBeUndefined();
       const subscribeInput = yield* Ref.get(harness.lastSubscribeInput);
       expect(subscribeInput?.turnLimit).toBeUndefined();
+    }),
+  );
+
+  it.effect("requests the negotiated agent scope on the initial load and the subscription", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        scopingCapability: true,
+        agentScope: "root",
+        initialResponse: Option.some(WINDOWED_SNAPSHOT),
+      });
+      yield* harness.awaitState((value) => Option.isSome(value.page));
+      const windows = yield* Ref.get(harness.loaderWindows);
+      expect(windows[0]?.agentScope).toBe("root");
+      const subscribeInput = yield* Ref.get(harness.lastSubscribeInput);
+      expect(subscribeInput?.agentScope).toBe("root");
+    }),
+  );
+
+  it.effect("omits the agent scope for servers without the capability", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        agentScope: "root",
+        initialResponse: Option.some(WINDOWED_SNAPSHOT),
+      });
+      yield* harness.awaitState((value) => Option.isSome(value.page));
+      const windows = yield* Ref.get(harness.loaderWindows);
+      expect(windows[0]?.agentScope).toBeUndefined();
+      const subscribeInput = yield* Ref.get(harness.lastSubscribeInput);
+      expect(subscribeInput?.agentScope).toBeUndefined();
+    }),
+  );
+
+  it.effect("an agent transcript skips the thread cache and pages within its scope", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        scopingCapability: true,
+        agentScope: "agent:worker",
+        cached: { snapshotSequence: 5, thread: BASE_THREAD },
+        initialResponse: Option.some(WINDOWED_SNAPSHOT),
+      });
+      yield* harness.awaitState((value) => Option.isSome(value.page));
+      expect(yield* Ref.get(harness.cacheLoads)).toBe(0);
+      expect(requestOlderThreadTurns(TARGET.environmentId, THREAD_ID, "worker")).toBe(true);
+      yield* harness.awaitState(
+        (value) => Option.isSome(value.page) && value.page.value.loadingOlder,
+      );
+      const windows = yield* Ref.get(harness.loaderWindows);
+      expect(windows[1]?.agentScope).toBe("agent:worker");
+      expect(windows[1]?.beforeCursor).toBe("cursor-1");
+      yield* harness.resolveNextPage(Option.none());
     }),
   );
 
