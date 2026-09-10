@@ -144,3 +144,28 @@ export function formatSubagentTitle(title: string): string {
     })
     .join(" ");
 }
+
+/**
+ * Row order inside a panel section. Active rows keep spawn order so a newly
+ * launched agent joins at the bottom; idle rows lead with whichever agent
+ * settled most recently so the top of that section is always the latest result.
+ * Only first-write timestamps take part, so a visible row never reshuffles on
+ * progress events: a resumable idle agent has no completion time and orders by
+ * when it started instead.
+ */
+export function compareSubagentsInSection(
+  section: SubagentPanelSection,
+): (
+  a: Pick<RuntimeSubagent, "id" | "firstSeenAt" | "startedAt" | "completedAt">,
+  b: Pick<RuntimeSubagent, "id" | "firstSeenAt" | "startedAt" | "completedAt">,
+) => number {
+  if (section === "active") {
+    return (a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id);
+  }
+  const settledAt = (agent: Pick<RuntimeSubagent, "firstSeenAt" | "startedAt" | "completedAt">) =>
+    agent.completedAt ?? agent.startedAt ?? agent.firstSeenAt;
+  return (a, b) =>
+    settledAt(b).localeCompare(settledAt(a)) ||
+    b.firstSeenAt.localeCompare(a.firstSeenAt) ||
+    a.id.localeCompare(b.id);
+}
