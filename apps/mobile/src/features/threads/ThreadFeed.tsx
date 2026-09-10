@@ -1421,6 +1421,7 @@ function renderFeedEntry(
         hiddenCount={entry.hiddenCount}
         iconSubtleColor={iconSubtleColor}
         summary={entry.summary}
+        detail={entry.detail}
         summaryKind={entry.summaryKind}
         themeAppearance={props.themeAppearance}
         toolSurface={entry.toolSurface}
@@ -2695,9 +2696,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       switch (entry.type) {
         case "turn-fold":
           return TURN_FOLD_HEIGHT;
-        case "work-toggle":
         case "thinking":
           return WORK_GROUP_TOGGLE_HEIGHT;
+        case "work-toggle":
+          // A live toggle with a detail line is taller than the single-line
+          // height; LegendList skips measuring fixed rows, so let it measure.
+          return entry.detail === undefined ? WORK_GROUP_TOGGLE_HEIGHT : undefined;
         case "activity-group":
           if (isContextCompactionActivityGroup(entry)) {
             return undefined;

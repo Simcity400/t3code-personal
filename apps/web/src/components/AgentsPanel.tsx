@@ -42,9 +42,11 @@ import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
 
 import {
+  compareSubagentsInSection,
   formatSubagentElapsed,
   subagentActivityText,
   subagentStatusLabel,
+  type SubagentPanelSection,
 } from "@t3tools/client-runtime/state/subagentPresentation";
 import {
   filterWorkflowForPanelSection,
@@ -685,25 +687,32 @@ export function AgentsPanel({
     ),
   );
   const [previousWorkflows, setPreviousWorkflows] = useState(model.workflows);
-  const sections = useMemo(
-    () => ({
-      activeWorkflows: model.workflows.flatMap((group) => {
-        const slice = filterWorkflowForPanelSection(group, "active");
-        return slice ? [slice] : [];
-      }),
-      idleWorkflows: model.workflows.flatMap((group) => {
-        const slice = filterWorkflowForPanelSection(group, "idle");
-        return slice ? [slice] : [];
-      }),
-      activeDirectAgents: model.directAgents.filter(
-        (agent) => subagentPanelSection(agent.status) === "active",
-      ),
-      idleDirectAgents: model.directAgents.filter(
-        (agent) => subagentPanelSection(agent.status) === "idle",
-      ),
-    }),
-    [model],
-  );
+  const sections = useMemo(() => {
+    const workflowsIn = (section: SubagentPanelSection) => {
+      const compare = compareSubagentsInSection(section);
+      // A slice sorts by the row that leads it, so a mixed workflow's idle slice
+      // keys on its latest settled member rather than on the still-running root.
+      return model.workflows
+        .flatMap((group) => {
+          const slice = filterWorkflowForPanelSection(group, section);
+          if (!slice) return [];
+          const lead = [...workflowMembers(slice)].sort(compare)[0] ?? slice.workflow;
+          return [{ slice, lead }];
+        })
+        .sort((a, b) => compare(a.lead, b.lead))
+        .map((entry) => entry.slice);
+    };
+    const directAgentsIn = (section: SubagentPanelSection) =>
+      model.directAgents
+        .filter((agent) => subagentPanelSection(agent.status) === section)
+        .sort(compareSubagentsInSection(section));
+    return {
+      activeWorkflows: workflowsIn("active"),
+      idleWorkflows: workflowsIn("idle"),
+      activeDirectAgents: directAgentsIn("active"),
+      idleDirectAgents: directAgentsIn("idle"),
+    };
+  }, [model]);
   if (previousWorkflows !== model.workflows) {
     setPreviousWorkflows(model.workflows);
     setWorkflowOpenById((current) => {

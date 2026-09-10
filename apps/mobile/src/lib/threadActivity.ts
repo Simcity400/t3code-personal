@@ -165,6 +165,8 @@ export type ThreadFeedEntry =
       readonly hiddenCount: number;
       readonly expanded: boolean;
       readonly summary: string;
+      /** The live action under the tally, on its own line so neither truncates the other. */
+      readonly detail?: string;
       readonly summaryKind: ToolGroupSummaryKind;
       readonly toolSurface?: WorkLogEntry["toolSurface"];
       readonly toolIcon?: WorkLogEntry["toolIcon"];
@@ -1982,15 +1984,17 @@ function appendToolGroupRows(
   // an earlier run (a call whose end was never reported) stays in place.
   const shimmer = activeTail && (active || latestActivity.status === "success");
   const singleActivity = activities.length === 1 ? latestActivity : null;
-  const summary = live
-    ? liveToolGroupSummary(activities, latestActivity)
-    : singleActivity !== null &&
-        singleActivity.toolLike &&
-        toolGroupAction(singleActivity.workEntry) !== "edit"
-      ? singleToolCallLabel(singleActivity)
-      : singleActivity !== null && !singleActivity.toolLike
-        ? singleActivity.workEntry.label
-        : summarizeToolGroup(activities.map((activity) => activity.workEntry));
+  const liveSummary = live ? liveToolGroupSummary(activities, latestActivity) : null;
+  const summary =
+    liveSummary !== null
+      ? liveSummary.summary
+      : singleActivity !== null &&
+          singleActivity.toolLike &&
+          toolGroupAction(singleActivity.workEntry) !== "edit"
+        ? singleToolCallLabel(singleActivity)
+        : singleActivity !== null && !singleActivity.toolLike
+          ? singleActivity.workEntry.label
+          : summarizeToolGroup(activities.map((activity) => activity.workEntry));
   const primarySourceActivity = activities.find(
     (activity) => activity.workEntry.toolSource !== undefined,
   );
@@ -2030,6 +2034,7 @@ function appendToolGroupRows(
     hiddenCount: activities.length,
     expanded,
     summary,
+    ...(liveSummary?.detail === undefined ? {} : { detail: liveSummary.detail }),
     summaryKind: toolGroupSummaryKind(
       (live ? [latestActivity] : activities).map((activity) => activity.workEntry),
     ),
@@ -2060,17 +2065,20 @@ function appendToolGroupRows(
   });
 }
 
-/** Live group row: the tally of finished work in the group, then what is happening now. */
+/**
+ * Live group row: the tally of finished work in the group as the summary, and
+ * what is happening now as a detail line under it.
+ */
 function liveToolGroupSummary(
   activities: ReadonlyArray<ThreadFeedActivity>,
   latestActivity: ThreadFeedActivity,
-): string {
+): { summary: string; detail?: string } {
   const current = liveToolActivitySummary(latestActivity, true);
   const finishedEntries = activities
     .filter((activity) => activity.id !== latestActivity.id)
     .map((activity) => activity.workEntry);
-  if (finishedEntries.length === 0) return current;
-  return `${summarizeToolGroup(finishedEntries)} · ${current}`;
+  if (finishedEntries.length === 0) return { summary: current };
+  return { summary: summarizeToolGroup(finishedEntries), detail: current };
 }
 
 function liveToolActivitySummary(activity: ThreadFeedActivity, presentTense: boolean): string {

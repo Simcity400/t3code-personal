@@ -5,6 +5,7 @@ import {
   selectAgentTranscript,
 } from "@t3tools/client-runtime/state/agent-transcripts";
 import {
+  compareSubagentsInSection,
   formatSubagentElapsed,
   formatSubagentTitle,
   subagentActivityText,
@@ -179,7 +180,9 @@ type AgentListRow =
 function buildAgentListRows(agents: ReadonlyArray<RuntimeSubagent>): AgentListRow[] {
   const rows: AgentListRow[] = [];
   for (const section of ["active", "idle"] as const) {
-    const members = agents.filter((agent) => subagentPanelSection(agent.status) === section);
+    const members = agents
+      .filter((agent) => subagentPanelSection(agent.status) === section)
+      .sort(compareSubagentsInSection(section));
     if (members.length === 0) continue;
     rows.push({
       kind: "section",
