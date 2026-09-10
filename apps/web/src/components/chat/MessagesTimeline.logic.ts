@@ -90,6 +90,19 @@ export function liveWorkEntryLabel(
   return workEntryDisplayLabel(entry, workspaceRoot);
 }
 
+/** Live group row: the tally of finished work in the group, then what is happening now. */
+export function liveWorkGroupLabel(
+  entry: WorkLogEntry,
+  groupedEntries: ReadonlyArray<WorkLogEntry>,
+  workspaceRoot: string | undefined,
+  active: boolean,
+) {
+  const current = liveWorkEntryLabel(entry, workspaceRoot, active);
+  const finishedEntries = groupedEntries.filter((candidate) => candidate.id !== entry.id);
+  if (finishedEntries.length === 0) return current;
+  return `${summarizeToolGroup(finishedEntries)} · ${current}`;
+}
+
 export function workEntryIsVisibleInGroup(
   entry: WorkLogEntry,
   expandedToolGroupEntry = false,

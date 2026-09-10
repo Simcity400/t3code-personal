@@ -2192,7 +2192,7 @@ describe("buildThreadFeed", () => {
     ].flatMap((command) =>
       (
         [
-          { lifecycleStatus: "inProgress", summary: "Running pnpm", shimmer: true },
+          { lifecycleStatus: "inProgress", summary: "Ran 1 command · Running pnpm", shimmer: true },
           { lifecycleStatus: "completed", summary: "Running pnpm", shimmer: true },
           { lifecycleStatus: "failed", summary: "Failed pnpm", shimmer: false },
           { lifecycleStatus: "declined", summary: "Declined pnpm", shimmer: false },

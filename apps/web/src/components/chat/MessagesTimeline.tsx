@@ -135,7 +135,7 @@ import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRowsWithState,
   type MessagesTimelineRowsProjection,
-  liveWorkEntryLabel,
+  liveWorkGroupLabel,
   resolveAssistantMessageCopyState,
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
@@ -2104,7 +2104,7 @@ function LiveActivityContent({
 
 function LiveWorkEntryTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "work-live" }> }) {
   const ctx = use(TimelineRowCtx);
-  const label = liveWorkEntryLabel(row.entry, ctx.workspaceRoot, row.active);
+  const label = liveWorkGroupLabel(row.entry, row.groupedEntries, ctx.workspaceRoot, row.active);
   const failed = workEntryDisplayIndicatesToolFailure(row.entry);
 
   return (
@@ -3067,6 +3067,10 @@ function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
 }
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
+/** Expanded labels are selectable; a plain click on them still collapses the row. */
+const stopRowToggleWhenSelecting = (e: { stopPropagation: () => void }) => {
+  if (window.getSelection()?.toString()) e.stopPropagation();
+};
 
 /**
  * A1 spawn CTA: one anchored row per workflow run (or per-turn direct-spawn
@@ -3304,7 +3308,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
                     : "truncate",
                   headingClass,
                 )}
-                onClick={expanded ? stopRowToggle : undefined}
+                onClick={expanded ? stopRowToggleWhenSelecting : undefined}
                 onPointerDown={expanded ? stopRowToggle : undefined}
               >
                 {previewText}

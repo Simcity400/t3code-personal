@@ -1962,7 +1962,7 @@ function appendToolGroupRows(
   const shimmer = activeTail && (active || latestActivity.status === "success");
   const singleActivity = activities.length === 1 ? latestActivity : null;
   const summary = live
-    ? liveToolActivitySummary(latestActivity, live)
+    ? liveToolGroupSummary(activities, latestActivity)
     : singleActivity !== null &&
         singleActivity.toolLike &&
         toolGroupAction(singleActivity.workEntry) !== "edit"
@@ -2037,6 +2037,19 @@ function appendToolGroupRows(
         activity.turnId === unsettledTurnId,
     })),
   });
+}
+
+/** Live group row: the tally of finished work in the group, then what is happening now. */
+function liveToolGroupSummary(
+  activities: ReadonlyArray<ThreadFeedActivity>,
+  latestActivity: ThreadFeedActivity,
+): string {
+  const current = liveToolActivitySummary(latestActivity, true);
+  const finishedEntries = activities
+    .filter((activity) => activity.id !== latestActivity.id)
+    .map((activity) => activity.workEntry);
+  if (finishedEntries.length === 0) return current;
+  return `${summarizeToolGroup(finishedEntries)} · ${current}`;
 }
 
 function liveToolActivitySummary(activity: ThreadFeedActivity, presentTense: boolean): string {
