@@ -335,7 +335,7 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
   private var isReadOnly = false
   private var isApplyingControlledValue = false
   private var nativeEventCount = 0
-  private var lastContentSize = CGSize.zero
+  private var lastContentHeight: CGFloat = 0
   private var iconImages: [String: UIImage] = [:]
   private var pendingIconUris = Set<String>()
   private var tokensNeedRebuild = false
@@ -882,13 +882,20 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
   }
 
   private func emitContentSizeIfNeeded() {
-    let nextSize = textView.contentSize
-    guard abs(nextSize.width - lastContentSize.width) > 0.5 ||
-      abs(nextSize.height - lastContentSize.height) > 0.5 else {
-      return
-    }
-    lastContentSize = nextSize
-    onComposerContentSizeChange(["width": nextSize.width, "height": nextSize.height])
+    // contentSize is refreshed lazily by the text view's own layout pass, so
+    // reading it right after a programmatic document swap (dictation, template
+    // insert) returns the previous size and the composer never grows. Measure
+    // for the current width instead; sizeThatFits lays the text out now.
+    let width = textView.bounds.width
+    guard width > 0 else { return }
+    // sizeThatFits reports the used text width, which moves with every
+    // keystroke on the last line; JS reads only the height, so dedupe on it.
+    let nextHeight = textView.sizeThatFits(
+      CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+    ).height
+    guard abs(nextHeight - lastContentHeight) > 0.5 else { return }
+    lastContentHeight = nextHeight
+    onComposerContentSizeChange(["width": width, "height": nextHeight])
   }
 
   private func decode<T: Decodable>(_ type: T.Type, from json: String) -> T? {
