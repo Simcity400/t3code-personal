@@ -2194,7 +2194,12 @@ describe("buildThreadFeed", () => {
     ].flatMap((command) =>
       (
         [
-          { lifecycleStatus: "inProgress", summary: "Ran 1 command · Running pnpm", shimmer: true },
+          {
+            lifecycleStatus: "inProgress",
+            summary: "Ran 1 command",
+            detail: "Running pnpm",
+            shimmer: true,
+          },
           { lifecycleStatus: "completed", summary: "Running pnpm", shimmer: true },
           { lifecycleStatus: "failed", summary: "Failed pnpm", shimmer: false },
           { lifecycleStatus: "declined", summary: "Declined pnpm", shimmer: false },
@@ -2204,7 +2209,7 @@ describe("buildThreadFeed", () => {
     ),
   )(
     "keeps the command summary in sync with $lifecycleStatus: $command",
-    ({ command, lifecycleStatus, summary, shimmer }) => {
+    ({ command, lifecycleStatus, summary, shimmer, ...expected }) => {
       const turnId = TurnId.make("turn-live-tools");
       const activity = (
         id: string,
@@ -2296,6 +2301,9 @@ describe("buildThreadFeed", () => {
         live: true,
         shimmer,
       });
+      expect(rows[2]?.type === "work-toggle" ? rows[2].detail : undefined).toBe(
+        "detail" in expected ? expected.detail : undefined,
+      );
       expect(rows[0]).toMatchObject({ live: false, shimmer: false });
       // Exactly one live activity: the shimmering call, or "Thinking" once it fails.
       expect(rows.filter((entry) => entry.type === "thinking")).toHaveLength(shimmer ? 0 : 1);

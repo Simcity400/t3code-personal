@@ -23,7 +23,7 @@ import {
   deriveMessagesTimelineRows,
   deriveMessagesTimelineRowsWithState,
   liveWorkEntryLabel,
-  liveWorkGroupLabel,
+  liveWorkGroupLabels,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveWorkGroupScrollIndex,
@@ -747,7 +747,7 @@ describe("work entry labels", () => {
     expect(workEntryDisplayLabel(commandEntry, undefined)).toBe("vp test run");
   });
 
-  it("prefixes the live label with the tally of finished work in the group", () => {
+  it("puts the tally of finished work above the live action", () => {
     const ranEntry = {
       ...entry,
       id: "tool-0",
@@ -766,10 +766,13 @@ describe("work entry labels", () => {
       command: "vp test run",
       toolLifecycleStatus: "inProgress" as const,
     };
-    expect(liveWorkGroupLabel(runningEntry, [runningEntry], undefined, true)).toBe("Running vp");
+    expect(liveWorkGroupLabels(runningEntry, [runningEntry], undefined, true)).toEqual({
+      label: "Running vp",
+      detail: null,
+    });
     expect(
-      liveWorkGroupLabel(runningEntry, [ranEntry, editEntry, runningEntry], undefined, true),
-    ).toBe("Ran 1 command and changed 1 file · Running vp");
+      liveWorkGroupLabels(runningEntry, [ranEntry, editEntry, runningEntry], undefined, true),
+    ).toEqual({ label: "Ran 1 command and changed 1 file", detail: "Running vp" });
   });
 
   it("summarizes the program inside a shell wrapper while preserving the expanded command", () => {

@@ -137,7 +137,7 @@ import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRowsWithState,
   type MessagesTimelineRowsProjection,
-  liveWorkGroupLabel,
+  liveWorkGroupLabels,
   resolveAssistantMessageCopyState,
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
@@ -2095,6 +2095,7 @@ function toolIconAcceptsTint(
 
 function LiveActivityRow({
   label,
+  detail = null,
   iconName,
   toolIcon,
   failed = false,
@@ -2102,6 +2103,7 @@ function LiveActivityRow({
   shimmer = false,
 }: {
   label: string;
+  detail?: string | null;
   iconName?: WorkEntryIconName;
   toolIcon?: ToolActivityIcon | undefined;
   failed?: boolean;
@@ -2117,6 +2119,7 @@ function LiveActivityRow({
     >
       <LiveActivityContent
         label={label}
+        detail={detail}
         iconName={iconName}
         toolIcon={toolIcon}
         failed={failed}
@@ -2125,7 +2128,13 @@ function LiveActivityRow({
       />
       {showShimmer ? (
         <ActivityShimmerOverlay>
-          <LiveActivityContent label={label} iconName={iconName} toolIcon={toolIcon} highlighted />
+          <LiveActivityContent
+            label={label}
+            detail={detail}
+            iconName={iconName}
+            toolIcon={toolIcon}
+            highlighted
+          />
         </ActivityShimmerOverlay>
       ) : null}
     </div>
@@ -2134,6 +2143,7 @@ function LiveActivityRow({
 
 function LiveActivityContent({
   label,
+  detail = null,
   iconName,
   toolIcon,
   failed = false,
@@ -2142,6 +2152,8 @@ function LiveActivityContent({
   highlighted = false,
 }: {
   label: string;
+  /** The current action, on its own line under the group tally. */
+  detail?: string | null;
   iconName: WorkEntryIconName | undefined;
   toolIcon?: ToolActivityIcon | undefined;
   failed?: boolean;
@@ -2155,7 +2167,8 @@ function LiveActivityContent({
   return (
     <span
       className={cn(
-        "flex min-h-6 min-w-0 items-center gap-1.5 py-0.5",
+        "flex min-h-6 min-w-0 gap-1.5 py-0.5",
+        detail === null ? "items-center" : "items-start",
         iconName ? "px-0.5" : "px-1",
         highlighted ? "text-foreground" : "text-secondary-label",
       )}
@@ -2177,7 +2190,12 @@ function LiveActivityContent({
           />
         </span>
       ) : null}
-      <span className={cn("min-w-0 flex-1 truncate", active && "live-tool-shine")}>{label}</span>
+      <span className={cn("flex min-w-0 flex-1 flex-col", active && "live-tool-shine")}>
+        <span className="min-w-0 truncate">{label}</span>
+        {detail === null ? null : (
+          <span className="min-w-0 truncate text-xs leading-5">{detail}</span>
+        )}
+      </span>
       {showTrailingFailureMark ? (
         <XIcon aria-hidden className={cn("size-3 shrink-0", failedToolIconClassName)} />
       ) : null}
@@ -2187,19 +2205,26 @@ function LiveActivityContent({
 
 function LiveWorkEntryTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "work-live" }> }) {
   const ctx = use(TimelineRowCtx);
-  const label = liveWorkGroupLabel(row.entry, row.groupedEntries, ctx.workspaceRoot, row.active);
+  const { label, detail } = liveWorkGroupLabels(
+    row.entry,
+    row.groupedEntries,
+    ctx.workspaceRoot,
+    row.active,
+  );
   const failed = workEntryDisplayIndicatesToolFailure(row.entry);
+  const spokenLabel = detail === null ? label : `${label}, ${detail}`;
 
   return (
     <button
       type="button"
       className="group/live-work flex min-h-6 w-full max-w-full cursor-pointer items-center rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
-      aria-label={failed ? `${label}, tool call failed` : undefined}
+      aria-label={failed ? `${spokenLabel}, tool call failed` : undefined}
       aria-expanded={row.expanded}
       onClick={() => ctx.onToggleWorkGroup(row.groupId, row.id)}
     >
       <LiveActivityRow
         label={label}
+        detail={detail}
         iconName={workEntryIconName(row.entry)}
         toolIcon={row.entry.toolIcon ?? row.entry.toolSource?.icon}
         failed={failed}

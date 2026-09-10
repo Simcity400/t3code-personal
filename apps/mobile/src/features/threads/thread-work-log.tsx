@@ -899,6 +899,8 @@ export function ThreadWorkGroupToggle(props: {
   readonly hiddenCount: number;
   readonly iconSubtleColor: import("react-native").ColorValue;
   readonly summary: string;
+  /** The live action, rendered on its own line under the tally. */
+  readonly detail?: string;
   readonly summaryKind: ToolGroupSummaryKind;
   readonly summaryToolIcon?: "browser" | "t3-code" | "pull-request";
   readonly themeAppearance: "light" | "dark";
@@ -908,9 +910,11 @@ export function ThreadWorkGroupToggle(props: {
   readonly shimmer: boolean;
   readonly onToggle: () => void;
 }) {
+  const spokenSummary =
+    props.detail === undefined ? props.summary : `${props.summary}, ${props.detail}`;
   const accessibilityLabel = props.hasFailure
-    ? `${props.summary}, tool call failed`
-    : props.summary;
+    ? `${spokenSummary}, tool call failed`
+    : spokenSummary;
   const icon =
     props.summaryToolIcon ??
     (props.toolSurface
@@ -932,37 +936,60 @@ export function ThreadWorkGroupToggle(props: {
         className="min-h-8 flex-row items-center gap-1.5 rounded-md px-0.5 py-0 active:bg-subtle"
         style={{ minHeight: props.rowSizing.estimatedRowHeight }}
       >
-        {props.shimmer ? (
-          <ShimmeringWorkContent
-            key={props.rowSizing.textSizeKey}
-            environmentId={props.environmentId}
-            icon={icon}
-            iconSubtleColor={props.iconSubtleColor}
-            label={props.summary}
-            showIcon
-            themeAppearance={props.themeAppearance}
-            toolIcon={props.toolIcon}
-          />
-        ) : (
-          <>
-            <View className="h-6 w-6 items-center justify-center">
-              <ToolActivityIconView
+        <View className="min-w-0 flex-1">
+          <View className="flex-row items-center gap-1.5">
+            {props.shimmer ? (
+              <ShimmeringWorkContent
+                key={props.rowSizing.textSizeKey}
                 environmentId={props.environmentId}
-                icon={props.toolIcon}
-                fallback={icon}
-                fallbackColor={props.iconSubtleColor}
+                icon={icon}
+                iconSubtleColor={props.iconSubtleColor}
+                label={props.summary}
+                showIcon
                 themeAppearance={props.themeAppearance}
+                toolIcon={props.toolIcon}
               />
+            ) : (
+              <>
+                <View className="h-6 w-6 items-center justify-center">
+                  <ToolActivityIconView
+                    environmentId={props.environmentId}
+                    icon={props.toolIcon}
+                    fallback={icon}
+                    fallbackColor={props.iconSubtleColor}
+                    themeAppearance={props.themeAppearance}
+                  />
+                </View>
+                <Text
+                  key={props.rowSizing.textSizeKey}
+                  className="min-w-0 flex-1 text-sm text-foreground-muted"
+                  numberOfLines={1}
+                >
+                  {props.summary}
+                </Text>
+              </>
+            )}
+          </View>
+          {props.detail === undefined ? null : (
+            // Indented past the icon slot so the action reads under the tally.
+            <View className="ml-6 pb-1 pl-1.5">
+              {props.shimmer ? (
+                <ShimmeringWorkContent
+                  key={`${props.rowSizing.textSizeKey}-detail`}
+                  compact
+                  icon={icon}
+                  iconSubtleColor={props.iconSubtleColor}
+                  label={props.detail}
+                  showIcon={false}
+                />
+              ) : (
+                <Text className="min-w-0 text-xs text-foreground-muted" numberOfLines={1}>
+                  {props.detail}
+                </Text>
+              )}
             </View>
-            <Text
-              key={props.rowSizing.textSizeKey}
-              className="min-w-0 flex-1 text-sm text-foreground-muted"
-              numberOfLines={1}
-            >
-              {props.summary}
-            </Text>
-          </>
-        )}
+          )}
+        </View>
         <ThreadDisclosureChevron
           expanded={props.expanded}
           collapsedDirection="down"
