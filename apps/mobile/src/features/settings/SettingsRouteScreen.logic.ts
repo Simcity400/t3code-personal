@@ -4,9 +4,9 @@ export function resolveAgentAwarenessPlatformPresentation(platform: string): {
   readonly supported: boolean;
   readonly subtitle: string | undefined;
 } {
-  return platform === "ios"
+  return platform === "ios" || platform === "android"
     ? { supported: true, subtitle: undefined }
-    : { supported: false, subtitle: "iOS only" };
+    : { supported: false, subtitle: "Unavailable on this platform" };
 }
 
 export function resolveNotificationSwitchValue(input: {

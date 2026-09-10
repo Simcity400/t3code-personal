@@ -53,7 +53,7 @@ export type CodexGoalClearResult = typeof CodexGoalClearResult.Type;
 export const CodexGoalOperation = Schema.Literals(["set", "clear"]);
 export type CodexGoalOperation = typeof CodexGoalOperation.Type;
 
-export class CodexGoalOperationError extends Schema.TaggedErrorClass<CodexGoalOperationError>()(
+export class CodexGoalOperationError extends Schema.TaggedError<CodexGoalOperationError>()(
   "CodexGoalOperationError",
   {
     operation: CodexGoalOperation,
