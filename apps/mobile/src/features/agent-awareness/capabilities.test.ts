@@ -10,6 +10,9 @@ import {
 vi.mock("expo-constants", () => ({
   default: { expoConfig: { extra: {} } },
 }));
+// The capability probe reaches the expo package root, whose setup reads __DEV__.
+vi.mock("expo", () => ({ requireOptionalNativeModule: () => null }));
+vi.mock("react-native", () => ({ Platform: { OS: "ios" } }));
 
 beforeEach(() => {
   Constants.expoConfig!.extra = {};
