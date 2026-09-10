@@ -401,7 +401,7 @@ describe("ClientSettings sidebar", () => {
 });
 
 describe("ClientSettings context window meter", () => {
-  it("defaults off and preserves an explicit legacy opt-in", () => {
+  it("keeps decoding the retired key so older clients' settings still load", () => {
     expect(decodeClientSettings({}).contextWindowMeterEnabled).toBe(false);
     expect(
       decodeClientSettings({ contextWindowMeterEnabled: true }).contextWindowMeterEnabled,

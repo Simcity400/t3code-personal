@@ -48,10 +48,9 @@ Set **Auto-compact after** in the Claude provider settings to an integer between
 300,000 tokens. This changes when compaction happens, not the model's context
 window. Leave it empty for Claude Code's default.
 
-You can also send `/compact` in an existing conversation. Web and desktop offer
-**Compact context** from the context meter and may suggest it when you return to
-a large older thread. See [commands and skills](./composer.md#commands-and-skills)
-for using composer commands.
+You can also send `/compact` in an existing conversation. Web and desktop may
+suggest it when you return to a large older thread. See
+[commands and skills](./composer.md#commands-and-skills) for using composer commands.
 
 ## Usage limits
 
