@@ -1,5 +1,5 @@
 // Match the titlebar fade inset so draft promotion preserves the first row's position.
-export const CHAT_TIMELINE_ANCHOR_OFFSET = 24;
+export const CHAT_TIMELINE_ANCHOR_OFFSET = 16;
 
 export type TimelineScrollMode = "following-end" | "anchoring-new-turn" | "free-scrolling";
 

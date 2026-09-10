@@ -744,7 +744,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain('data-anchor-index="0"');
-    expect(markup).toContain('data-anchor-offset="24"');
+    expect(markup).toContain('data-anchor-offset="16"');
     expect(markup).not.toContain("data-anchor-max-size=");
     expect(markup).toContain('data-content-inset-end="144"');
     expect(markup).toContain("[overflow-anchor:none]");
@@ -1067,7 +1067,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-maintain-scroll-at-end="enabled"');
     expect(markup).toContain('data-maintain-scroll-at-end-animated="false"');
     expect(markup).toContain('data-maintain-scroll-at-end-data-change="true"');
-    expect(markup).toContain('data-maintain-scroll-at-end-footer-layout="false"');
+    expect(markup).toContain('data-maintain-scroll-at-end-footer-layout="true"');
     expect(markup).toContain('data-maintain-scroll-at-end-item-layout="true"');
     expect(markup).toContain('data-maintain-scroll-at-end-layout="true"');
     expect(markup).toContain('data-user-message-collapsed="true"');

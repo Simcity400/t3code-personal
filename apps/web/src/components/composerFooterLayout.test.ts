@@ -4,9 +4,7 @@ import { resolveContextStripLabelsCompact } from "./BranchToolbar.logic";
 import {
   COMPOSER_FOOTER_COMPACT_BREAKPOINT_PX,
   COMPOSER_FOOTER_WIDE_ACTIONS_COMPACT_BREAKPOINT_PX,
-  COMPOSER_RESTING_EXPANSION_MIN_PX,
   getRestingComposerImagePreviewCounts,
-  resolveComposerTimelineInset,
   resolveScrollToEndClearance,
   resolveRestingComposerControlsLayout,
   resolveRestingComposerControlsNaturalWidth,
@@ -74,26 +72,6 @@ describe("shouldUseCompactComposerPrimaryActions", () => {
         hasWideActions: true,
       }),
     ).toBe(false);
-  });
-});
-
-describe("resolveComposerTimelineInset", () => {
-  it("follows the expanded overlay height", () => {
-    expect(
-      resolveComposerTimelineInset({ currentInset: 160, overlayHeight: 140, isResting: false }),
-    ).toBe(140);
-  });
-
-  it("keeps a larger expanded reservation while resting", () => {
-    expect(
-      resolveComposerTimelineInset({ currentInset: 200, overlayHeight: 60, isResting: true }),
-    ).toBe(200);
-  });
-
-  it("reserves the empty expansion when no larger height is known", () => {
-    expect(
-      resolveComposerTimelineInset({ currentInset: 0, overlayHeight: 60, isResting: true }),
-    ).toBe(60 + COMPOSER_RESTING_EXPANSION_MIN_PX);
   });
 });
 

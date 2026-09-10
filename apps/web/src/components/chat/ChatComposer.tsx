@@ -1322,11 +1322,6 @@ export interface ChatComposerProps {
   /** Whether the timeline has more content than fits above the composer. */
   timelineOverflows: boolean;
   onComposerOverlayHeightChange: (height: number) => void;
-  /**
-   * Whether the desktop resting layout is active. Reported from a layout
-   * effect, so it is current before the chat view measures the overlay.
-   */
-  onRestingChange: (resting: boolean) => void;
 
   // Refs the parent needs kept in sync
   promptRef: React.RefObject<string>;
@@ -1437,7 +1432,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     getTimelineScrollableNode,
     isTimelineAtLogicalEnd,
     onComposerOverlayHeightChange,
-    onRestingChange,
     promptRef,
     composerRef,
     composerImagesRef,
@@ -3919,9 +3913,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   useLayoutEffect(() => {
     onRestingControlsVisibilityChange(composerControlsVisibleInStrip);
   }, [composerControlsVisibleInStrip, onRestingControlsVisibilityChange]);
-  useLayoutEffect(() => {
-    onRestingChange(isComposerResting);
-  }, [isComposerResting, onRestingChange]);
   const restingImagePreviewCounts = getRestingComposerImagePreviewCounts(
     standaloneComposerImages.length,
   );

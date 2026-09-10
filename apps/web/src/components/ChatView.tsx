@@ -335,7 +335,7 @@ import { ScopedAgentTranscript } from "./chat/AgentTranscript";
 import { isAgentMessage } from "@t3tools/client-runtime/state/agent-transcripts";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
-import { resolveComposerTimelineInset, resolveScrollToEndClearance } from "./composerFooterLayout";
+import { resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { expandedImageKey, type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
@@ -1683,12 +1683,6 @@ export default function ChatView(props: ChatViewProps) {
   const [composerOverlayElement, setComposerOverlayElement] = useState<HTMLDivElement | null>(null);
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const composerOverlayHeightRef = useRef(0);
-  // Space the timeline keeps clear above its end. Tracks the overlay while the
-  // composer is expanded and holds that height while it rests, so the resting
-  // composer never exposes rows that its expansion will cover.
-  const [composerTimelineInset, setComposerTimelineInset] = useState(0);
-  const composerTimelineInsetRef = useRef(0);
-  const composerRestingRef = useRef(false);
   const [scrollToEndClearance, setScrollToEndClearance] = useState(0);
   const isAtEndRef = useRef(true);
   const isTimelineAtLogicalEnd = useCallback(
@@ -4815,19 +4809,19 @@ export default function ChatView(props: ChatViewProps) {
       return getAnchoredTurnMetrics({
         state,
         anchorIndex,
-        composerOverlayHeight: composerTimelineInset,
+        composerOverlayHeight,
         anchorOffset: CHAT_TIMELINE_ANCHOR_OFFSET,
       });
     },
-    [composerTimelineInset],
+    [composerOverlayHeight],
   );
   const timelineRealContentOverflowsViewport = useCallback(
     (list?: LegendListRef | null) =>
       timelineContentOverflowsViewport((list ?? legendListRef.current)?.getState(), {
-        composerInset: composerTimelineInset,
+        composerInset: composerOverlayHeight,
         anchorOffset: CHAT_TIMELINE_ANCHOR_OFFSET,
       }),
-    [composerTimelineInset],
+    [composerOverlayHeight],
   );
   const pageScrollControllerRef = useRef<ReturnType<typeof createPageScrollController> | null>(
     null,
@@ -5358,15 +5352,6 @@ export default function ChatView(props: ChatViewProps) {
         composerOverlayHeightRef.current = nextHeight;
         setComposerOverlayHeight(nextHeight);
       }
-      const nextInset = resolveComposerTimelineInset({
-        currentInset: composerTimelineInsetRef.current,
-        overlayHeight: nextHeight,
-        isResting: composerRestingRef.current,
-      });
-      if (composerTimelineInsetRef.current !== nextInset) {
-        composerTimelineInsetRef.current = nextInset;
-        setComposerTimelineInset(nextInset);
-      }
       const mainSurface = composerOverlayElement?.querySelector<HTMLElement>(
         '[data-chat-composer-main-surface="true"]',
       );
@@ -5391,23 +5376,6 @@ export default function ChatView(props: ChatViewProps) {
     },
     [composerOverlayElement],
   );
-  // The composer reports its resting flag from a layout effect, which runs
-  // before this component's own layout effects and before any resize
-  // observation, so every measurement below sees the flag for its layout.
-  // Only the flag is stored here: the stored height still belongs to the
-  // previous layout, and the composer publishes the new layout's height
-  // itself once it has measured it.
-  const onComposerRestingChange = useCallback((resting: boolean) => {
-    composerRestingRef.current = resting;
-  }, []);
-  // A held reservation belongs to the previous thread's draft. Rebuild it from
-  // this thread's overlay so a tall draft elsewhere does not pad this one.
-  useLayoutEffect(() => {
-    if (!composerOverlayElement) return;
-    composerTimelineInsetRef.current = 0;
-    publishComposerOverlayHeight(composerOverlayElement.getBoundingClientRect().height);
-  }, [activeThreadKey, composerOverlayElement, publishComposerOverlayHeight]);
-
   useLayoutEffect(() => {
     if (!composerOverlayElement) return;
 
@@ -8495,7 +8463,7 @@ export default function ChatView(props: ChatViewProps) {
                 }
                 anchorMessageId={timelineAnchorMessageId}
                 onAnchorReady={onTimelineAnchorReady}
-                contentInsetEndAdjustment={composerTimelineInset}
+                contentInsetEndAdjustment={composerOverlayHeight}
                 liveFollowEnabled={timelineLiveFollowEnabled}
                 onIsAtEndChange={onIsAtEndChange}
                 onContentOverflowChange={setTimelineOverflows}
@@ -8537,7 +8505,7 @@ export default function ChatView(props: ChatViewProps) {
               className={
                 isDraftHeroState
                   ? "pointer-events-none absolute inset-0 z-20 flex items-center"
-                  : "pointer-events-none absolute inset-x-0 bottom-0 z-20 pt-1.5 sm:pt-2"
+                  : "pointer-events-none absolute inset-x-0 bottom-0 z-20 pt-1"
               }
             >
               <div
@@ -8658,7 +8626,6 @@ export default function ChatView(props: ChatViewProps) {
                             isTimelineAtLogicalEnd={isTimelineAtLogicalEnd}
                             timelineOverflows={timelineOverflows}
                             onComposerOverlayHeightChange={publishComposerOverlayHeight}
-                            onRestingChange={onComposerRestingChange}
                             promptRef={promptRef}
                             composerImagesRef={composerImagesRef}
                             composerFilesRef={composerFilesRef}
