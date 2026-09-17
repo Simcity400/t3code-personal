@@ -5,15 +5,20 @@ import {
   selectAgentTranscript,
 } from "@t3tools/client-runtime/state/agent-transcripts";
 import {
+  backgroundTaskTypeLabel,
+  buildAgentFamilies,
   compareSubagentsInSection,
+  familyPanelSection,
+  flattenAgentFamily,
   formatSubagentElapsed,
   formatSubagentTitle,
+  isSubagentSessionLive,
   subagentActivityText,
   subagentPanelSection,
   subagentStatusLabel,
 } from "@t3tools/client-runtime/state/subagentPresentation";
 import {
-  foldSubagentActivities,
+  foldThreadTasks,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
   type RuntimeSubagent,
@@ -55,12 +60,10 @@ function useAgentThread(params: ThreadParams) {
   const workspaceRoot = thread?.worktreePath ?? project?.workspaceRoot ?? null;
   const runtime = useRemoteEnvironmentRuntime(environmentId);
   const activities = thread?.activities;
-  const sessionLive =
-    thread?.session != null &&
-    thread?.session?.status !== "stopped" &&
-    thread?.session?.status !== "error";
-  const agents = useMemo(
-    () => foldSubagentActivities(activities ?? [], { sessionLive }),
+  // Shared with desktop so the same thread never reads live here and stopped there.
+  const sessionLive = isSubagentSessionLive(thread?.session);
+  const { agents, backgroundTasks } = useMemo(
+    () => foldThreadTasks(activities ?? [], { sessionLive }),
     [activities, sessionLive],
   );
   const presentation = projectThreadContentPresentation({
@@ -76,7 +79,16 @@ function useAgentThread(params: ThreadParams) {
         onLoadEarlier: () => requestOlderThreadTurns(environmentId, threadId),
       }
     : null;
-  return { environmentId, threadId, thread, agents, presentation, loadEarlier, workspaceRoot };
+  return {
+    environmentId,
+    threadId,
+    thread,
+    agents,
+    backgroundTasks,
+    presentation,
+    loadEarlier,
+    workspaceRoot,
+  };
 }
 
 const AGENT_STATUS_DOT_CLASS: Record<RuntimeSubagent["status"], string> = {
@@ -107,9 +119,13 @@ function AgentElapsed({ agent }: { readonly agent: RuntimeSubagent }) {
   );
 }
 
+/** Nested launches inset per level so a grandchild reads as a grandchild. */
+const NEST_INSET = 14;
+
 /** Mirrors the desktop roster row: dot, title, elapsed, activity, metadata. */
 const AgentRow = memo(function AgentRow(props: {
   readonly agent: RuntimeSubagent;
+  readonly depth: number;
   readonly onPress: (agent: RuntimeSubagent) => void;
 }) {
   const { agent } = props;
@@ -128,6 +144,7 @@ const AgentRow = memo(function AgentRow(props: {
       accessibilityRole="button"
       accessibilityLabel={`Open ${title} transcript, ${statusLabel}`}
       className="flex-row items-center gap-3 rounded-xl border border-border bg-card px-3 py-2.5 active:bg-subtle"
+      style={props.depth > 0 ? { marginLeft: props.depth * NEST_INSET } : undefined}
       onPress={() => props.onPress(agent)}
     >
       <View className="min-w-0 flex-1 gap-0.5">
@@ -167,6 +184,54 @@ const AgentRow = memo(function AgentRow(props: {
   );
 });
 
+/** Mirrors the desktop background task row: no transcript, task type as metadata. */
+const BackgroundTaskRow = memo(function BackgroundTaskRow(props: {
+  readonly task: RuntimeSubagent;
+  readonly depth: number;
+}) {
+  const { task } = props;
+  const statusLabel = subagentStatusLabel(task);
+  const activity = subagentActivityText(task);
+  const metadata = [backgroundTaskTypeLabel(task.taskType)];
+  return (
+    <View
+      accessibilityLabel={`${task.title}, ${statusLabel}`}
+      className="flex-row items-center gap-3 rounded-xl border border-border bg-card px-3 py-2.5"
+      style={props.depth > 0 ? { marginLeft: props.depth * NEST_INSET } : undefined}
+    >
+      <View className="min-w-0 flex-1 gap-0.5">
+        <View className="flex-row items-center gap-2">
+          <View
+            className={cn("h-1.5 w-1.5 shrink-0 rounded-full", AGENT_STATUS_DOT_CLASS[task.status])}
+          />
+          <Text className="min-w-0 flex-1 font-t3-medium text-sm text-foreground" numberOfLines={1}>
+            {task.title}
+          </Text>
+          <AgentElapsed agent={task} />
+          {task.status === "completed" ? (
+            <SymbolView name="checkmark" size={11} tintColorClassName="accent-icon" />
+          ) : null}
+        </View>
+        <Text
+          className={cn(
+            "pl-3.5 text-xs",
+            task.status === "failed" ? "text-adaptive-rose-600-400" : "text-foreground-muted",
+          )}
+          numberOfLines={1}
+        >
+          {activity ?? statusLabel}
+        </Text>
+        <Text
+          className="pl-3.5 font-mono text-2xs tabular-nums text-foreground-muted"
+          numberOfLines={1}
+        >
+          {metadata.join(" · ")}
+        </Text>
+      </View>
+    </View>
+  );
+});
+
 type AgentListRow =
   | {
       readonly kind: "section";
@@ -174,35 +239,81 @@ type AgentListRow =
       readonly title: string;
       readonly count: number;
     }
-  | { readonly kind: "agent"; readonly key: string; readonly agent: RuntimeSubagent };
+  | {
+      readonly kind: "agent";
+      readonly key: string;
+      readonly agent: RuntimeSubagent;
+      readonly depth: number;
+    }
+  | {
+      readonly kind: "task";
+      readonly key: string;
+      readonly task: RuntimeSubagent;
+      readonly depth: number;
+    };
 
-/** The desktop panel's Active and Idle sections, flattened for one list. */
-function buildAgentListRows(agents: ReadonlyArray<RuntimeSubagent>): AgentListRow[] {
+/**
+ * The desktop panel's sections, flattened for one list: Active and Idle
+ * agent families (each agent followed by what it launched, inset per level),
+ * then the thread's own live and finished background tasks.
+ */
+function buildAgentListRows(
+  agents: ReadonlyArray<RuntimeSubagent>,
+  backgroundTasks: ReadonlyArray<RuntimeSubagent>,
+): AgentListRow[] {
   const rows: AgentListRow[] = [];
+  const { roots, unownedTasks } = buildAgentFamilies(agents, backgroundTasks);
   for (const section of ["active", "idle"] as const) {
-    const members = agents
-      .filter((agent) => subagentPanelSection(agent.status) === section)
-      .sort(compareSubagentsInSection(section));
-    if (members.length === 0) continue;
+    const compare = compareSubagentsInSection(section);
+    const families = roots
+      .filter((node) => familyPanelSection(node) === section)
+      .sort((a, b) => compare(a.agent, b.agent));
+    const nodes = families.flatMap(flattenAgentFamily);
+    const agentCount = nodes.filter((node) => node.agent.kind !== "background_task").length;
+    if (agentCount === 0) continue;
     rows.push({
       kind: "section",
       key: `section:${section}`,
       title: section === "active" ? "Active" : "Idle",
-      count: members.length,
+      count: agentCount,
     });
-    for (const agent of members) rows.push({ kind: "agent", key: agent.id, agent });
+    for (const node of nodes) {
+      rows.push(
+        node.agent.kind === "background_task"
+          ? { kind: "task", key: `task:${node.agent.id}`, task: node.agent, depth: node.depth }
+          : { kind: "agent", key: node.agent.id, agent: node.agent, depth: node.depth },
+      );
+    }
+  }
+  for (const section of ["active", "idle"] as const) {
+    const tasks = unownedTasks
+      .filter((task) => subagentPanelSection(task.status) === section)
+      .sort(compareSubagentsInSection(section));
+    if (tasks.length === 0) continue;
+    rows.push({
+      kind: "section",
+      key: `section:tasks:${section}`,
+      title: section === "active" ? "Background tasks" : "Finished tasks",
+      count: tasks.length,
+    });
+    for (const task of tasks) {
+      rows.push({ kind: "task", key: `task:${task.id}`, task, depth: 0 });
+    }
   }
   return rows;
 }
 
 export function ThreadAgentsRouteScreen(props: StaticScreenProps<ThreadParams>) {
   const navigation = useNavigation();
-  const { environmentId, threadId, agents, presentation, loadEarlier } = useAgentThread(
-    props.route.params,
-  );
+  const { environmentId, threadId, agents, backgroundTasks, presentation, loadEarlier } =
+    useAgentThread(props.route.params);
   const insets = useSafeAreaInsets();
   const historyRequest = useRef<{ key: string | null; size: number }>({ key: null, size: 0 });
-  const rows = useMemo(() => buildAgentListRows(agents), [agents]);
+  const rows = useMemo(
+    () => buildAgentListRows(agents, backgroundTasks),
+    [agents, backgroundTasks],
+  );
+  const rosterSize = agents.length + backgroundTasks.length;
   const openTranscript = useCallback(
     (agent: RuntimeSubagent) =>
       navigation.navigate("ThreadAgentTranscript", { ...props.route.params, agentId: agent.id }),
@@ -211,13 +322,12 @@ export function ThreadAgentsRouteScreen(props: StaticScreenProps<ThreadParams>) 
 
   // Parent history pages may contain no agents, leaving the list too short to reach its edge again.
   useEffect(() => {
-    if (agents.length !== historyRequest.current.size || !loadEarlier || loadEarlier.loading)
-      return;
+    if (rosterSize !== historyRequest.current.size || !loadEarlier || loadEarlier.loading) return;
     const key = `${environmentId}:${threadId}:${loadEarlier.cursor}`;
     if (historyRequest.current.key === key) return;
-    historyRequest.current = { key, size: agents.length };
+    historyRequest.current = { key, size: rosterSize };
     loadEarlier.onLoadEarlier();
-  }, [agents.length, environmentId, threadId, loadEarlier]);
+  }, [rosterSize, environmentId, threadId, loadEarlier]);
 
   if (presentation.kind === "loading") return <LoadingScreen message="Loading agents…" />;
   if (presentation.kind === "unavailable") {
@@ -239,21 +349,23 @@ export function ThreadAgentsRouteScreen(props: StaticScreenProps<ThreadParams>) 
             </Text>
             <Text className="font-mono text-2xs text-foreground-muted">{item.count}</Text>
           </View>
+        ) : item.kind === "task" ? (
+          <BackgroundTaskRow task={item.task} depth={item.depth} />
         ) : (
-          <AgentRow agent={item.agent} onPress={openTranscript} />
+          <AgentRow agent={item.agent} depth={item.depth} onPress={openTranscript} />
         )
       }
       ListEmptyComponent={
         <EmptyState
           title="No agents yet"
-          detail="Subagents will appear here when the provider reports them."
+          detail="Subagents and background tasks will appear here when the provider reports them."
         />
       }
       onEndReached={() => {
         if (loadEarlier && !loadEarlier.loading) {
           historyRequest.current = {
             key: `${environmentId}:${threadId}:${loadEarlier.cursor}`,
-            size: agents.length,
+            size: rosterSize,
           };
           loadEarlier.onLoadEarlier();
         }
