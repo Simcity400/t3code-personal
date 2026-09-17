@@ -361,7 +361,19 @@ interface ClaudeTaskState {
  */
 interface ClaudeTaskAgentState {
   readonly taskId: string;
+  /** Tool use of the CURRENT activation (launch or latest SendMessage resume). */
   toolUseId: string | undefined;
+  /**
+   * Every tool use that launched or resumed this task. The CLI keeps tagging
+   * a resumed agent's stream traffic with the ORIGINAL launch tool use as
+   * parent_tool_use_id (wire-confirmed) while task_* frames carry the
+   * SendMessage tool use, so attribution must match any of them. In memory
+   * only: an agent launched before a server or session restart and resumed
+   * after it is known by its resume id alone, so its later traffic is not
+   * attributed (it is held as unowned child traffic, never shown as the
+   * parent's).
+   */
+  readonly toolUseIds: Set<string>;
   description: string | undefined;
   subagentType: string | undefined;
   taskType: string | undefined;
@@ -374,6 +386,8 @@ interface ClaudeTaskAgentState {
    * assistant snapshots (authoritative API model). */
   model: string | undefined;
   effort: string | undefined;
+  /** Sticky once true: a task never returns to the foreground. */
+  isBackgrounded: boolean | undefined;
 }
 
 /**
@@ -1346,7 +1360,7 @@ function agentIdForParentToolUse(
     return undefined;
   }
   for (const agent of agents.values()) {
-    if (agent.toolUseId === parentToolUseId) {
+    if (agent.toolUseIds.has(parentToolUseId)) {
       return agent.taskId;
     }
   }
@@ -1376,6 +1390,7 @@ function taskLinkageFor(
     ...(agent.toolUseId ? { toolUseId: agent.toolUseId } : {}),
     ...(agent.workflowName ? { workflowName: agent.workflowName } : {}),
     ...(agent.runHandles ? { runHandles: agent.runHandles } : {}),
+    ...(agent.isBackgrounded !== undefined ? { isBackgrounded: agent.isBackgrounded } : {}),
   };
 }
 
@@ -3223,15 +3238,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           context.taskAgents.set(workflowTaskId, {
             taskId: workflowTaskId,
             toolUseId: existing?.toolUseId ?? tool.itemId,
+            toolUseIds: new Set([...(existing?.toolUseIds ?? []), tool.itemId]),
             description: existing?.description,
             subagentType: existing?.subagentType,
             taskType: existing?.taskType ?? "local_workflow",
             workflowName: existing?.workflowName,
             skipTranscript: existing?.skipTranscript ?? false,
             runHandles,
-            owningAgentId: existing?.owningAgentId,
+            // This result can beat task_started, and the first registration
+            // decides ownership for good: take it from the launching tool.
+            owningAgentId: existing ? existing.owningAgentId : tool.agentId,
             model: existing?.model,
             effort: existing?.effort,
+            isBackgrounded: existing?.isBackgrounded,
           });
         }
       }
@@ -3632,7 +3651,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               (tool) => tool.itemId === message.tool_use_id,
             )
           : undefined;
-        const owningAgentId = launchingTool?.agentId;
+        // A resume is launched by whoever sent the message, which is not the
+        // agent's owner: the first launch decides ownership for good, so a
+        // resumed agent never moves to (or out from under) another agent.
+        const knownTask = context.taskAgents.get(message.task_id);
+        const owningAgentId = knownTask ? knownTask.owningAgentId : launchingTool?.agentId;
         if (
           context.turnState &&
           classifyTaskAgentKind({
@@ -3654,9 +3677,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         if (toolUseId) {
           context.pendingTaskModels.delete(toolUseId);
         }
+        // A SendMessage resume of a settled background agent re-emits
+        // task_started for the SAME task_id under the SendMessage tool use,
+        // whose input carries no model: keep the model the previous
+        // activation refined from its assistant snapshots.
+        const previous = context.taskAgents.get(message.task_id);
         const model =
           bufferedModel ??
           trimmedString(launchInput?.model) ??
+          previous?.model ??
           trimmedString(context.session.model ?? undefined);
         const rawLaunchEffort = launchInput?.effort;
         const effort =
@@ -3666,18 +3695,28 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             : context.currentEffort);
         // Remember the agent identity so every later task.* payload for this
         // taskId is self-describing (identity must survive activity retention).
+        // On a resume the entry is replaced so later rows attribute to the new
+        // activation's tool use, while run handles and the background flag
+        // carry over. is_backgrounded is false for a foreground shell that a
+        // later task_updated patch may still move to the background.
+        const isBackgrounded = previous?.isBackgrounded === true ? true : message.is_backgrounded;
         context.taskAgents.set(message.task_id, {
           taskId: message.task_id,
           toolUseId: message.tool_use_id,
+          toolUseIds: new Set([
+            ...(previous?.toolUseIds ?? []),
+            ...(message.tool_use_id ? [message.tool_use_id] : []),
+          ]),
           description: message.description,
           subagentType: message.subagent_type,
           taskType: message.task_type,
           workflowName: message.workflow_name,
           skipTranscript: message.skip_transcript === true,
-          runHandles: context.taskAgents.get(message.task_id)?.runHandles,
+          runHandles: previous?.runHandles,
           owningAgentId,
           model,
           effort,
+          isBackgrounded,
         });
         context.liveTaskIds.add(message.task_id);
         yield* offerRuntimeEvent({
@@ -3694,6 +3733,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(effort ? { effort } : {}),
             ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),
             ...(message.workflow_name ? { workflowName: message.workflow_name } : {}),
+            ...(isBackgrounded !== undefined ? { isBackgrounded } : {}),
           },
         });
         return;
@@ -3747,6 +3787,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           typeof patch.end_time === "number" && Number.isFinite(patch.end_time)
             ? DateTime.formatIso(DateTime.makeUnsafe(patch.end_time))
             : undefined;
+        // A foreground shell that gets backgrounded (Ctrl+B, auto-background)
+        // patches is_backgrounded=true; remember it so every later row for the
+        // task reads as background work.
+        const backgroundedAgent = context.taskAgents.get(message.task_id);
+        if (patch.is_backgrounded === true && backgroundedAgent) {
+          backgroundedAgent.isBackgrounded = true;
+        }
         yield* offerRuntimeEvent({
           ...base,
           type: "task.updated",
@@ -3756,10 +3803,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(patch.description ? { description: patch.description } : {}),
             ...(patch.error ? { error: patch.error } : {}),
             ...(endedAt ? { endedAt } : {}),
+            ...taskLinkageFor(context.taskAgents, message.task_id),
             ...(patch.is_backgrounded !== undefined
               ? { isBackgrounded: patch.is_backgrounded }
               : {}),
-            ...taskLinkageFor(context.taskAgents, message.task_id),
           },
         });
         return;
@@ -4169,18 +4216,42 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         transcript.messageId = message.message.id;
         transcript.blocks.clear();
       }
-      for (const [index, block] of message.message.content.entries()) {
+      // The CLI forwards a subagent's reply as ONE content block per
+      // snapshot, all under the same message id, so the array index is 0 for
+      // every block (wire-confirmed). Keying by it made the final text collide
+      // with the thinking block before it and get dropped as already
+      // completed, and made parallel tool calls overwrite each other. A
+      // snapshot block therefore finishes the streamed block of its kind when
+      // one is open, is skipped when it replays text already completed, and
+      // otherwise takes the next free slot in the message.
+      const snapshotBlockSlot = (text: string, reasoning: boolean): number | undefined => {
+        for (const [slot, known] of transcript.blocks) {
+          if (!known.completed && known.reasoning === reasoning) return slot;
+        }
+        for (const known of transcript.blocks.values()) {
+          if (known.completed && known.reasoning === reasoning && known.text === text) {
+            return undefined;
+          }
+        }
+        let slot = 0;
+        while (transcript.blocks.has(slot)) slot += 1;
+        return slot;
+      };
+      for (const block of message.message.content) {
         if (block.type === "text" || block.type === "thinking") {
-          yield* emitBlock(
-            index,
-            block.type === "text" ? block.text : block.thinking,
-            block.type === "thinking",
-            true,
-          );
+          const text = block.type === "text" ? block.text : block.thinking;
+          const slot = snapshotBlockSlot(text, block.type === "thinking");
+          if (slot !== undefined) {
+            yield* emitBlock(slot, text, block.type === "thinking", true);
+          }
         } else if (block.type === "tool_use") {
-          const key = `${parentToolUseId}:${index}`;
-          const existing = context.inFlightTools.get(key);
-          if (existing?.itemId === block.id) continue;
+          // Keyed by the tool use itself: parallel calls must each stay in
+          // flight until their own result arrives.
+          const key = `${parentToolUseId}:tool:${block.id}`;
+          const alreadyTracked = Array.from(context.inFlightTools.values()).some(
+            (tool) => tool.itemId === block.id,
+          );
+          if (alreadyTracked) continue;
           const input =
             typeof block.input === "object" && block.input !== null
               ? (block.input as Record<string, unknown>)

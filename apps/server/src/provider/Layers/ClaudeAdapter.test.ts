@@ -3838,6 +3838,113 @@ describe("ClaudeAdapterLive", () => {
     },
   );
 
+  it.effect(
+    "keeps every block of a child reply that arrives one snapshot per block under one message id",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "delegate", attachments: [] });
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "task.progress"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const emit = (message: Record<string, unknown>) =>
+          harness.query.emit({
+            uuid: "fixture-uuid",
+            session_id: "sdk-session",
+            ...message,
+          } as unknown as SDKMessage);
+        const snapshot = (messageId: string, block: Record<string, unknown>) =>
+          emit({
+            type: "assistant",
+            parent_tool_use_id: "launch-a",
+            message: { id: messageId, content: [block] },
+          });
+        emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "child-a",
+          tool_use_id: "launch-a",
+          task_type: "local_agent",
+          description: "a",
+        });
+        // Wire-confirmed shape: two parallel tool calls, each its own snapshot
+        // at content index 0 of the same message.
+        snapshot("tools", {
+          type: "tool_use",
+          id: "tool-1",
+          name: "Bash",
+          input: { command: "a" },
+        });
+        snapshot("tools", {
+          type: "tool_use",
+          id: "tool-2",
+          name: "Bash",
+          input: { command: "b" },
+        });
+        for (const tool of ["tool-1", "tool-2"])
+          emit({
+            type: "user",
+            parent_tool_use_id: "launch-a",
+            message: {
+              role: "user",
+              content: [{ type: "tool_result", tool_use_id: tool, content: tool }],
+            },
+          });
+        // The final reply: thinking then text, both index 0 of one message.
+        snapshot("final", { type: "thinking", thinking: "Wrapping up" });
+        snapshot("final", { type: "text", text: "Final report" });
+        // A replayed snapshot must not add a second copy.
+        snapshot("final", { type: "text", text: "Final report" });
+        emit({ type: "system", subtype: "task_progress", task_id: "child-a", description: "done" });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        const completed = events.filter((event) => event.type === "item.completed");
+        assert.deepEqual(
+          completed
+            .filter((event) => event.payload.itemType === "assistant_message")
+            .map((event) => [event.payload.agentId, event.payload.detail]),
+          [["child-a", "Final report"]],
+        );
+        assert.deepEqual(
+          completed
+            .filter((event) => event.payload.itemType === "reasoning")
+            .map((event) => event.payload.detail),
+          ["Wrapping up"],
+        );
+        // Both parallel tools settle; the second no longer evicts the first.
+        assert.deepEqual(
+          completed
+            .filter((event) => event.payload.itemType === "command_execution")
+            .map((event) => [event.itemId, event.payload.agentId]),
+          [
+            ["tool-1", "child-a"],
+            ["tool-2", "child-a"],
+          ],
+        );
+        // The text and the thinking block before it are distinct items.
+        const finalItemIds = completed
+          .filter(
+            (event) =>
+              event.payload.itemType === "assistant_message" ||
+              event.payload.itemType === "reasoning",
+          )
+          .map((event) => event.itemId);
+        assert.equal(new Set(finalItemIds).size, finalItemIds.length);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("task.started carries model/effort; subagent snapshots refine the model", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -3912,6 +4019,241 @@ describe("ClaudeAdapterLive", () => {
       if (progress?.type === "task.progress") {
         assert.equal(progress.payload.model, SYNTHETIC_SUBAGENT_MODEL);
         assert.equal(progress.payload.effort, "max");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "task_started carries is_backgrounded and a SendMessage resume restarts the same task id",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const taskEventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type.startsWith("task.") || event.type === "item.started"),
+          Stream.take(7),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "spawn a background agent",
+          attachments: [],
+        });
+
+        // run_in_background launches carry is_backgrounded=true on
+        // task_started; a resumed subagent is always registered in the
+        // background (sdk.d.ts).
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-bg",
+          description: "Background worker",
+          subagent_type: "general-purpose",
+          task_type: "local_agent",
+          tool_use_id: "toolu_launch",
+          is_backgrounded: true,
+          uuid: "task-bg-start-1",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "system",
+          subtype: "task_updated",
+          task_id: "task-bg",
+          patch: { status: "completed", end_time: 1789603415714 },
+          uuid: "task-bg-updated-1",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-bg",
+          tool_use_id: "toolu_launch",
+          status: "completed",
+          output_file: "",
+          summary: "First run done",
+          uuid: "task-bg-notif-1",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+        // SendMessage to the settled agent: the CLI re-emits task_started for
+        // the SAME task_id under the SendMessage tool_use_id.
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-bg",
+          description: "Background worker",
+          subagent_type: "general-purpose",
+          task_type: "local_agent",
+          tool_use_id: "toolu_send_message",
+          is_backgrounded: true,
+          uuid: "task-bg-start-2",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "system",
+          subtype: "task_progress",
+          task_id: "task-bg",
+          description: "Background worker",
+          usage: { total_tokens: 10, tool_uses: 1, duration_ms: 10 },
+          uuid: "task-bg-progress-2",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+        // The resumed agent's own traffic still arrives under the ORIGINAL
+        // launch tool use (wire-confirmed): it must keep attributing to the
+        // agent, and a task it launches must record it as the owner.
+        harness.query.emit({
+          type: "assistant",
+          parent_tool_use_id: "toolu_launch",
+          message: {
+            id: "resumed-agent-msg",
+            model: SYNTHETIC_SUBAGENT_MODEL,
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_inner_bash",
+                name: "Bash",
+                input: { command: "sleep 100", run_in_background: true },
+              },
+            ],
+          },
+          uuid: "resumed-agent-assistant",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: "inner-shell",
+          description: "sleep 100",
+          task_type: "local_bash",
+          tool_use_id: "toolu_inner_bash",
+          is_backgrounded: true,
+          uuid: "inner-shell-start",
+          session_id: "sdk-session",
+        } as unknown as SDKMessage);
+
+        const taskEvents = Array.from(yield* Fiber.join(taskEventsFiber));
+        assert.deepEqual(
+          taskEvents.map((event) => event.type),
+          [
+            "task.started",
+            "task.updated",
+            "task.completed",
+            "task.started",
+            "task.progress",
+            "item.started",
+            "task.started",
+          ],
+        );
+        const [firstStart, , completed, secondStart, progress, innerTool, innerStart] = taskEvents;
+        if (innerTool?.type === "item.started") {
+          assert.equal(innerTool.payload.agentId, "task-bg");
+        }
+        if (innerStart?.type === "task.started") {
+          assert.equal(innerStart.payload.agentId, "task-bg");
+          assert.equal(innerStart.payload.isBackgrounded, true);
+        }
+        if (firstStart?.type === "task.started") {
+          assert.equal(firstStart.payload.isBackgrounded, true);
+          assert.equal(firstStart.payload.toolUseId, "toolu_launch");
+        }
+        if (completed?.type === "task.completed") {
+          assert.equal(completed.payload.isBackgrounded, true);
+        }
+        if (secondStart?.type === "task.started") {
+          assert.equal(secondStart.payload.taskId, "task-bg");
+          assert.equal(secondStart.payload.toolUseId, "toolu_send_message");
+          assert.equal(secondStart.payload.isBackgrounded, true);
+        }
+        // Later rows attribute to the new activation's tool use.
+        if (progress?.type === "task.progress") {
+          assert.equal(progress.payload.toolUseId, "toolu_send_message");
+          assert.equal(progress.payload.isBackgrounded, true);
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("a foreground shell backgrounded by a patch reads as background from then on", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const taskEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type.startsWith("task.")),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "run the gates",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "shell-1",
+        description: "Run full gates",
+        task_type: "local_bash",
+        tool_use_id: "toolu_bash",
+        is_backgrounded: false,
+        uuid: "shell-1-start",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "shell-1",
+        patch: { is_backgrounded: true },
+        uuid: "shell-1-bg",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "shell-1",
+        tool_use_id: "toolu_bash",
+        status: "completed",
+        output_file: "",
+        summary: 'Background command "Run full gates" completed (exit code 0)',
+        uuid: "shell-1-notif",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      const taskEvents = Array.from(yield* Fiber.join(taskEventsFiber));
+      const [started, updated, completed] = taskEvents;
+      assert.equal(started?.type, "task.started");
+      if (started?.type === "task.started") {
+        assert.equal(started.payload.isBackgrounded, false);
+      }
+      assert.equal(updated?.type, "task.updated");
+      if (updated?.type === "task.updated") {
+        assert.equal(updated.payload.isBackgrounded, true);
+      }
+      assert.equal(completed?.type, "task.completed");
+      if (completed?.type === "task.completed") {
+        assert.equal(completed.payload.isBackgrounded, true);
+        assert.equal(completed.payload.taskType, "local_bash");
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

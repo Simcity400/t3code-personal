@@ -25,6 +25,10 @@ const EMPTY_DIFFS: ComponentProps<typeof MessagesTimeline>["turnDiffSummaries"] 
 
 type AgentTranscriptProps = Pick<
   ComponentProps<typeof MessagesTimeline>,
+  // The roster model resolves spawn CTA rows inside this transcript too: a
+  // subagent's own spawns otherwise read "Status unavailable".
+  | "agentPanelModel"
+  | "onOpenAgents"
   | "routeThreadKey"
   | "activeThreadEnvironmentId"
   | "markdownCwd"

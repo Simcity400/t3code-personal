@@ -32,10 +32,53 @@ const SUBAGENT_STATUS_LABEL: Record<RuntimeSubagentStatus, string> = {
   interrupted: "Stopped",
 };
 
+/** Background tasks are not a fleet: a live shell is simply running. */
+const BACKGROUND_TASK_STATUS_LABEL: Record<RuntimeSubagentStatus, string> = {
+  pending: "Running",
+  running: "Running",
+  waiting: "Running",
+  idle: "Paused",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Stopped",
+  interrupted: "Stopped",
+};
+
 export function subagentStatusLabel(agent: Pick<RuntimeSubagent, "kind" | "status">): string {
+  if (agent.kind === "background_task") return BACKGROUND_TASK_STATUS_LABEL[agent.status];
   return agent.kind === "subagent_batch" && agent.status === "idle"
     ? "Idle"
     : SUBAGENT_STATUS_LABEL[agent.status];
+}
+
+const BACKGROUND_TASK_TYPE_LABEL: Readonly<Record<string, string>> = {
+  local_bash: "Shell",
+  shell: "Shell",
+  monitor: "Monitor",
+  monitor_mcp: "Monitor",
+};
+
+/** Human label for a background task's provider type; unknown types pass through. */
+export function backgroundTaskTypeLabel(taskType: string | null): string {
+  if (taskType === null) return "Task";
+  return BACKGROUND_TASK_TYPE_LABEL[taskType] ?? formatSubagentTitle(taskType);
+}
+
+/**
+ * Whether the provider session can still finish background work. Shared by
+ * every client so the same thread never reads as running on one device and
+ * stopped on another: a missing, stopped, interrupted, or errored session
+ * has no process left to settle its tasks.
+ */
+export function isSubagentSessionLive(
+  session: { readonly status: string } | null | undefined,
+): boolean {
+  return (
+    session != null &&
+    session.status !== "stopped" &&
+    session.status !== "interrupted" &&
+    session.status !== "error"
+  );
 }
 
 /**
@@ -143,6 +186,104 @@ export function formatSubagentTitle(title: string): string {
       return index === 0 ? `${part.charAt(0).toUpperCase()}${part.slice(1)}` : part;
     })
     .join(" ");
+}
+
+export interface AgentFamilyNode {
+  /** An agent, or one of its background tasks (kind "background_task"). */
+  readonly agent: RuntimeSubagent;
+  readonly depth: number;
+  readonly children: ReadonlyArray<AgentFamilyNode>;
+}
+
+export interface AgentFamilies {
+  /** Agents nobody in the roster launched, each with its nested launches beneath it. */
+  readonly roots: ReadonlyArray<AgentFamilyNode>;
+  /** Background tasks whose owner is the thread itself or is not in the roster. */
+  readonly unownedTasks: ReadonlyArray<RuntimeSubagent>;
+}
+
+const FAMILY_DEPTH_LIMIT = 8;
+
+/**
+ * Nests every agent under the agent that launched it (owningAgentId) and
+ * files an agent's own background tasks beneath it, so the roster shows
+ * which subagent spawned which, and whose shells are still running. Owners
+ * missing from the roster (aged out, other provider) make their children
+ * roots and their tasks unowned rather than hiding anything. Children keep
+ * spawn order.
+ */
+export function buildAgentFamilies(
+  agents: ReadonlyArray<RuntimeSubagent>,
+  backgroundTasks: ReadonlyArray<RuntimeSubagent>,
+): AgentFamilies {
+  const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  const childAgents = new Map<string, RuntimeSubagent[]>();
+  const roots: RuntimeSubagent[] = [];
+  for (const agent of agents) {
+    // Claude names the launching agent in owningAgentId; Codex names a nested
+    // child's parent thread in parentAgentId. Either nests the agent when that
+    // parent is itself in this roster (a workflow coordinator is not: its
+    // members render in the workflow group instead).
+    const owner = agent.owningAgentId ?? agent.parentAgentId;
+    if (owner !== null && owner !== agent.id && byId.has(owner)) {
+      const list = childAgents.get(owner) ?? [];
+      list.push(agent);
+      childAgents.set(owner, list);
+    } else {
+      roots.push(agent);
+    }
+  }
+  const ownedTasks = new Map<string, RuntimeSubagent[]>();
+  const unownedTasks: RuntimeSubagent[] = [];
+  for (const task of backgroundTasks) {
+    const owner = task.owningAgentId;
+    if (owner !== null && byId.has(owner)) {
+      const list = ownedTasks.get(owner) ?? [];
+      list.push(task);
+      ownedTasks.set(owner, list);
+    } else {
+      unownedTasks.push(task);
+    }
+  }
+  const bySpawn = (a: RuntimeSubagent, b: RuntimeSubagent) =>
+    a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id);
+  // Visited guard: a malformed owner cycle must render as roots, never recurse.
+  const visited = new Set<string>();
+  const build = (agent: RuntimeSubagent, depth: number): AgentFamilyNode => {
+    visited.add(agent.id);
+    const children: AgentFamilyNode[] = [];
+    if (depth < FAMILY_DEPTH_LIMIT) {
+      for (const child of [...(childAgents.get(agent.id) ?? [])].sort(bySpawn)) {
+        if (!visited.has(child.id)) children.push(build(child, depth + 1));
+      }
+      for (const task of [...(ownedTasks.get(agent.id) ?? [])].sort(bySpawn)) {
+        children.push({ agent: task, depth: depth + 1, children: [] });
+      }
+      children.sort((a, b) => bySpawn(a.agent, b.agent));
+    }
+    return { agent, depth, children };
+  };
+  const rootNodes = roots.sort(bySpawn).map((agent) => build(agent, 0));
+  // An agent whose owner sits inside a cycle is reachable from no root.
+  for (const agent of agents) {
+    if (!visited.has(agent.id)) rootNodes.push(build(agent, 0));
+  }
+  return { roots: rootNodes, unownedTasks };
+}
+
+/**
+ * A family belongs to the Active section while any member still works: a
+ * parent that finished but whose child (or shell) is still running has not
+ * really settled from the user's point of view.
+ */
+export function familyPanelSection(node: AgentFamilyNode): SubagentPanelSection {
+  if (isActiveSubagentStatus(node.agent.status)) return "active";
+  return node.children.some((child) => familyPanelSection(child) === "active") ? "active" : "idle";
+}
+
+/** Depth-first flattening for list renderers (mobile FlatList, counts). */
+export function flattenAgentFamily(node: AgentFamilyNode): ReadonlyArray<AgentFamilyNode> {
+  return [node, ...node.children.flatMap(flattenAgentFamily)];
 }
 
 /**

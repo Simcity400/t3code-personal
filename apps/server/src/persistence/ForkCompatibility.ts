@@ -128,6 +128,15 @@ export const ensureForkColumns = Effect.fn("ensureForkColumns")(function* () {
           WHERE json_type(payload_json, '$.agentId') = 'text'
             AND length(trim(json_extract(payload_json, '$.agentId'))) > 0`;
       }
+      // Thread-detail reads pin the lifecycle rows of still-running tasks
+      // onto every page (ProjectionSnapshotQuery). Narrowing on kind keeps
+      // that scan to task rows; without it a large live thread pays a full
+      // per-thread activity scan on every read. Lives here, not in a numbered
+      // migration: upstream already owns the next ids on forked databases.
+      if (activityColumns.length > 0) {
+        yield* sql`CREATE INDEX IF NOT EXISTS idx_projection_thread_activities_thread_kind
+          ON projection_thread_activities (thread_id, kind)`;
+      }
     }),
   );
 });

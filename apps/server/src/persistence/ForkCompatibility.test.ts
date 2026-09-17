@@ -89,7 +89,14 @@ it.layer(NodeSqliteClient.layerMemory())("upstream database compatibility", (it)
       yield* sql`ALTER TABLE projection_threads DROP COLUMN goal_json`;
       yield* sql`ALTER TABLE projection_threads DROP COLUMN forked_from_thread_id`;
       yield* sql`ALTER TABLE projection_threads DROP COLUMN side_chat_promoted_at`;
+      yield* sql`DROP INDEX IF EXISTS idx_projection_thread_activities_thread_kind`;
       assert.deepEqual(yield* runMigrations(), []);
+      // The live-task pin's index rides outside the numbered ledger, so a
+      // database already past upstream's next ids still gets it.
+      assert.deepEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_projection_thread_activities_thread_kind'`,
+        [{ name: "idx_projection_thread_activities_thread_kind" }],
+      );
       const columns = yield* sql<{ name: string }>`PRAGMA table_info(projection_thread_messages)`;
       assert.isTrue(columns.some((column) => column.name === "agent_id"));
       const threadColumns = yield* sql<{ name: string }>`PRAGMA table_info(projection_threads)`;
