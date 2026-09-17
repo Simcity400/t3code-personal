@@ -211,8 +211,9 @@ import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import {
   deriveAgentPanelModel,
-  foldSubagentActivities,
+  foldThreadTasks,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import { isSubagentSessionLive } from "@t3tools/client-runtime/state/subagentPresentation";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -2671,13 +2672,12 @@ export default function ChatView(props: ChatViewProps) {
   // Native subagent fold: memoized by activity-list identity, shared by the
   // Agents surface, live strip, and workflow cards. v2Projection is null
   // until orchestration-v2 lands (source precedence lives in the derive).
-  // sessionLive derives interruption for agents orphaned by session death.
-  const agentSessionLive = phase !== "disconnected";
+  // sessionLive derives interruption for work orphaned by session death; the
+  // rule is shared with mobile so both clients agree on what is still live.
+  const agentSessionLive = isSubagentSessionLive(activeThread?.session);
   const agentPanelModel = useMemo(
     () =>
-      deriveAgentPanelModel({
-        agents: foldSubagentActivities(threadActivities, { sessionLive: agentSessionLive }),
-      }),
+      deriveAgentPanelModel(foldThreadTasks(threadActivities, { sessionLive: agentSessionLive })),
     [agentSessionLive, threadActivities],
   );
   const { approvals: pendingApprovals, userInputs: pendingUserInputs } = useMemo(
@@ -8248,12 +8248,15 @@ export default function ChatView(props: ChatViewProps) {
         model={agentPanelModel}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
-        renderTranscript={(agent) => (
+        loadEarlier={loadEarlierTurns}
+        renderTranscript={(agent, { openRoster }) => (
           <ScopedAgentTranscript
             key={agent.id}
             agent={agent}
             environmentId={environmentId}
             threadId={activeThread.id}
+            agentPanelModel={agentPanelModel}
+            onOpenAgents={openRoster}
             routeThreadKey={routeThreadKey}
             activeThreadEnvironmentId={environmentId}
             markdownCwd={gitCwd ?? undefined}

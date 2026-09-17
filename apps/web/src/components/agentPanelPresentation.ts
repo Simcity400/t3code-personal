@@ -19,6 +19,10 @@ export {
 export const idleAgentsOpenAtom = Atom.family((_threadKey: string | null) =>
   Atom.make(true).pipe(Atom.keepAlive),
 );
+// Finished background tasks are history: closed by default so live work stays in view.
+export const settledTasksOpenAtom = Atom.family((_threadKey: string | null) =>
+  Atom.make(false).pipe(Atom.keepAlive),
+);
 
 function workflowSliceStatus(
   members: ReadonlyArray<RuntimeSubagent>,

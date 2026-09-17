@@ -346,6 +346,7 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     "outputFile",
     "agentPath",
     "timelineBypass",
+    "isBackgrounded",
     "typedUsage",
     "status",
     "error",
@@ -665,9 +666,6 @@ export function runtimeEventToActivities(
               ? { detail: truncateDetail(event.payload.description) }
               : {}),
             ...(event.payload.endedAt ? { endedAt: event.payload.endedAt } : {}),
-            ...(event.payload.isBackgrounded !== undefined
-              ? { isBackgrounded: event.payload.isBackgrounded }
-              : {}),
             ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
           },
           turnId: toTurnId(event.turnId) ?? null,
