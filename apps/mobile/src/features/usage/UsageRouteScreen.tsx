@@ -15,6 +15,7 @@ import {
   formatHourShort,
   formatPercent,
   formatTokens,
+  formatUsageContractMismatch,
   formatUsd,
   makeWindow,
 } from "@t3tools/shared/usageFormat";
@@ -101,8 +102,8 @@ export function UsageRouteScreen() {
   );
   const isFocused = useIsFocused();
   const limits = useRefreshLimits(selectedEnvironmentIds, isFocused && tab === "limits");
-  const cursorAccessEnvironments = selectedEnvironments.filter((environment) =>
-    environment.summary?.sources.some((source) => source.action === "enableCursorKeychain"),
+  const cursorAccessEnvironments = selectedEnvironments.filter(
+    (environment) => environment.needsCursorKeychainAccess,
   );
   const refreshAfterCursorEnable = () => {
     void refresh();
@@ -753,7 +754,12 @@ function usageEnvironmentStatus(environment: EnvironmentUsageStatus): string {
     environment.summary &&
     !isCompatibleUsageContractVersion(environment.summary.contractVersion, USAGE_CONTRACT_VERSION)
   ) {
-    return "Older server · excluded from usage totals";
+    return formatUsageContractMismatch(environment.label, {
+      direction:
+        environment.summary.contractVersion < USAGE_CONTRACT_VERSION
+          ? "serverBehind"
+          : "clientBehind",
+    });
   }
   if (!environment.isConnected)
     return environment.summary ? "Disconnected · showing saved usage" : "Waiting for connection…";
