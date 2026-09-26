@@ -1968,6 +1968,24 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Working", pulse: true });
   });
 
+  it("shows monitoring only after the parent turn ends in both sidebar presentations", () => {
+    const running = { ...baseThread, backgroundLiveness: "monitoring" as const };
+    expect(resolveSidebarThreadStatus(running)).toBe("working");
+    expect(resolveThreadStatusPill({ thread: running })).toMatchObject({ label: "Working" });
+    const settled = {
+      ...running,
+      session: { ...running.session, status: "ready" as const, activeTurnId: null },
+    };
+    expect(resolveSidebarThreadStatus(settled)).toBe("monitoring");
+    expect(resolveThreadStatusPill({ thread: settled })).toMatchObject({
+      label: "Monitoring",
+      pulse: false,
+    });
+    const agentsWorking = { ...settled, backgroundLiveness: "working" as const };
+    expect(resolveSidebarThreadStatus(agentsWorking)).toBe("working");
+    expect(resolveThreadStatusPill({ thread: agentsWorking })).toMatchObject({ label: "Working" });
+  });
+
   it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {
     expect(
       resolveThreadStatusPill({

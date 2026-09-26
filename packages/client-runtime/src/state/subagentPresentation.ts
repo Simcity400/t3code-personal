@@ -322,6 +322,22 @@ export function partitionAgentFamilies(nodes: ReadonlyArray<AgentFamilyNode>) {
   return { active, idle };
 }
 
+/** Count agents by their own status, even when a live descendant keeps a settled ancestor visible. */
+export function countFamilyAgents(
+  families: ReadonlyArray<AgentFamilyNode>,
+  section: SubagentPanelSection,
+): number {
+  return families.reduce(
+    (count, node) =>
+      count +
+      (node.agent.kind !== "background_task" && subagentPanelSection(node.agent.status) === section
+        ? 1
+        : 0) +
+      countFamilyAgents(node.children, section),
+    0,
+  );
+}
+
 /** Depth-first flattening for list renderers (mobile FlatList, counts). */
 export function flattenAgentFamily(node: AgentFamilyNode): ReadonlyArray<AgentFamilyNode> {
   return [node, ...node.children.flatMap(flattenAgentFamily)];

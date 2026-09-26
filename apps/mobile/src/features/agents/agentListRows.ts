@@ -1,6 +1,7 @@
 import {
   buildAgentFamilies,
   compareSubagentsInSection,
+  countFamilyAgents,
   familyPanelSection,
   flattenAgentFamily,
   partitionAgentFamilies,
@@ -69,9 +70,8 @@ export function buildAgentListRows(
     const families = roots
       .filter((node) => familyPanelSection(node) === section)
       .sort((a, b) => compare(a.agent, b.agent));
-    const nodes = families.flatMap(flattenAgentFamily);
-    const agentCount = nodes.filter((node) => node.agent.kind !== "background_task").length;
-    if (agentCount === 0) continue;
+    const agentCount = countFamilyAgents(families, section);
+    if (families.length === 0) continue;
     const key = `section:${section}`;
     const expanded = section === "active" || expandedSections.has(key);
     rows.push({

@@ -77,6 +77,7 @@ describe("agent list disclosures", () => {
       "task:thread-shell",
     ]);
     const rows = buildAgentListRows(agents, tasks, new Set());
+    expect(rows.find((row) => row.key === "section:active")).toMatchObject({ count: 2 });
     expect(rows.find((row) => row.key === "section:children:parent")).toMatchObject({
       count: 2,
       depth: 1,
@@ -115,6 +116,15 @@ describe("agent list disclosures", () => {
       "task:thread-shell",
       "task:old-shell",
     ]);
+  });
+  it("keeps a live owned shell visible without counting its settled owner as active", () => {
+    const rows = buildAgentListRows(
+      [agent("owner", null, "completed")],
+      [task("shell", "owner")],
+      new Set(),
+    );
+    expect(rows.find((row) => row.key === "section:active")).toMatchObject({ count: 0 });
+    expect(rows.some((row) => row.key === "task:shell")).toBe(true);
   });
   it("moves a fully settled family into the collapsed idle section", () => {
     const settled = agents.map((entry) => ({ ...entry, status: "completed" as const }));

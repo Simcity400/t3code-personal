@@ -3,6 +3,7 @@ import {
   backgroundTaskTypeLabel,
   buildAgentFamilies,
   compareSubagentsInSection,
+  countFamilyAgents,
   familyPanelSection,
   flattenAgentFamily,
   formatSubagentElapsed,
@@ -152,6 +153,9 @@ describe("subagent presentation", () => {
     // The parent settled, but its family still works.
     expect(familyPanelSection(families.roots[0]!)).toBe("active");
     expect(familyPanelSection(families.roots[1]!)).toBe("active");
+    // The completed parent and live shell keep their places but are not working agents.
+    expect(countFamilyAgents(families.roots, "active")).toBe(3);
+    expect(countFamilyAgents(families.roots, "idle")).toBe(1);
     const settled = buildAgentFamilies(
       [
         agent("p", "2026-09-09T10:00:00.000Z", null, "completed"),
@@ -173,6 +177,8 @@ describe("subagent presentation", () => {
         { ...task("done-shell", "2026-09-09T10:05:00.000Z", "parent"), status: "completed" },
       ],
     );
+    expect(countFamilyAgents(mixed.roots, "active")).toBe(2);
+    expect(countFamilyAgents(mixed.roots, "idle")).toBe(2);
     const { active, idle } = partitionAgentFamilies(mixed.roots[0]!.children);
     expect(active.map((node) => node.agent.id)).toEqual(["resting", "live-shell"]);
     expect(idle.map((node) => node.agent.id)).toEqual(["done-shell", "finished"]);

@@ -50,6 +50,7 @@ import {
   backgroundTaskTypeLabel,
   buildAgentFamilies,
   compareSubagentsInSection,
+  countFamilyAgents,
   familyPanelSection,
   flattenAgentFamily,
   formatSubagentElapsed,
@@ -718,14 +719,10 @@ function workflowPhaseDisclosureKey(workflowId: string, phaseIndex: number): str
 function sectionAgentCount(
   workflows: ReadonlyArray<AgentPanelWorkflowGroup>,
   families: ReadonlyArray<AgentFamilyNode>,
+  section: SubagentPanelSection,
 ): number {
   return (
-    families.reduce(
-      (total, root) =>
-        total +
-        flattenAgentFamily(root).filter((node) => node.agent.kind !== "background_task").length,
-      0,
-    ) +
+    countFamilyAgents(families, section) +
     workflows.reduce((total, group) => {
       const memberCount = workflowMembers(group).length;
       return total + (memberCount > 0 ? memberCount : 1);
@@ -758,8 +755,9 @@ function AgentRosterSection({
   onWorkflowOpenChange: (workflowId: string, open: boolean) => void;
   onPhaseOpenChange: (workflowId: string, phaseIndex: number, open: boolean) => void;
 }) {
-  const count = sectionAgentCount(workflows, families);
-  if (count === 0) return null;
+  const count = sectionAgentCount(workflows, families, title === "Active" ? "active" : "idle");
+  // A settled owner can still contain a live shell even with zero active agents.
+  if (workflows.length === 0 && families.length === 0) return null;
 
   const heading = (
     <>

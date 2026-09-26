@@ -95,6 +95,36 @@ describe("ThreadBackgroundLiveness", () => {
     expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
   });
 
+  it.each(["progress", "updated"] as const)(
+    "keeps monitoring through sparse %s events until the monitor settles",
+    (kind) => {
+      const liveness = ThreadBackgroundLiveness.make();
+      const task = { threadId: "thread", taskId: "watch", taskType: "monitor" };
+      liveness.recordTaskLiveness({ ...task, status: "running", kind: "started" });
+      for (const status of [undefined, "running"]) {
+        liveness.recordTaskLiveness({ ...task, taskType: undefined, status, kind });
+        expect(liveness.getThreadBackgroundLiveness(task.threadId)).toBe("monitoring");
+      }
+      liveness.recordTaskLiveness({
+        ...task,
+        taskType: undefined,
+        status: "completed",
+        kind: "completed",
+      });
+      expect(liveness.getThreadBackgroundLiveness(task.threadId)).toBeNull();
+    },
+  );
+
+  it("still accepts an explicit reclassification after sparse monitor updates", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    const task = { threadId: "thread", taskId: "task", status: "running" };
+    liveness.recordTaskLiveness({ ...task, taskType: "local_bash", kind: "started" });
+    liveness.recordTaskLiveness({ ...task, taskType: undefined, kind: "updated" });
+    expect(liveness.getThreadBackgroundLiveness(task.threadId)).toBe("monitoring");
+    liveness.recordTaskLiveness({ ...task, taskType: "subagent", kind: "updated" });
+    expect(liveness.getThreadBackgroundLiveness(task.threadId)).toBe("working");
+  });
+
   it("terminal rows without a taskType still clear monitor entries", () => {
     const liveness = ThreadBackgroundLiveness.make();
     const threadId = "t-live-2";

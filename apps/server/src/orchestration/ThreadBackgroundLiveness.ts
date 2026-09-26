@@ -85,10 +85,8 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
     return created;
   };
 
-  // Classification is per-transition, not sticky: a task first seen without
-  // a taskType may later reveal itself as a shell, become inert, or turn out
-  // to be agent-owned. Every path drops any prior entry for the taskId so a
-  // stale bucket assignment can't pin the thread's status (review finding).
+  // Explicit task metadata can reclassify an entry. Sparse progress updates
+  // retain its known bucket instead of turning a monitor back into an agent.
   const drop = (threadId: string, taskId: string) => {
     const state = stateByThreadId.get(threadId);
     if (!state) {
@@ -142,10 +140,13 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
         }
       }
 
+      const isMonitor =
+        taskType === undefined
+          ? stateByThreadId.get(input.threadId)?.monitors.has(input.taskId) === true
+          : MONITOR_TASK_TYPES.has(taskType);
       drop(input.threadId, input.taskId);
       const state = stateFor(input.threadId);
-      const bucket =
-        taskType !== undefined && MONITOR_TASK_TYPES.has(taskType) ? state.monitors : state.agents;
+      const bucket = isMonitor ? state.monitors : state.agents;
       bucket.add(input.taskId);
     },
 
